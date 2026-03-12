@@ -216,11 +216,15 @@ function saveState(s) {
       const { error } = await supabase
         .from('app_state')
         .upsert({ id: 1, state: s, updated_at: new Date().toISOString() });
-      if (error) console.error('Failed to save to Supabase:', error);
+      if (error) {
+        console.error('Failed to save to Supabase:', error);
+      } else {
+        console.log('✓ state saved to Supabase');
+      }
     } catch (err) {
       console.error('Supabase save error:', err);
     }
-  }, 600);
+  }, 800);
 }
 
 // ============================================================
@@ -434,7 +438,7 @@ const CSS = `
   .inp-edit{border-color:var(--amber-d) !important;background:rgba(30,215,96,.04) !important}
 
   /* ── REALTIME DOT ────────────────────────────────────────── */
-  .rt-dot{width:7px;height:7px;border-radius:50%;background:var(--dimmer);display:inline-block;flex-shrink:0;transition:background .3s}
+  .rt-dot{width:8px;height:8px;border-radius:50%;background:var(--dimmer);display:block;flex-shrink:0;transition:background .3s}
   .rt-dot.live{background:var(--green);animation:rtPulse 2.5s infinite}
   @keyframes rtPulse{0%{box-shadow:0 0 0 0 rgba(30,215,96,.55)}70%{box-shadow:0 0 0 7px rgba(30,215,96,0)}100%{box-shadow:0 0 0 0 rgba(30,215,96,0)}}
 
@@ -2196,9 +2200,27 @@ export default function App(){
           setState(normaliseState(payload.new.state || {}));
         }
       )
+      .on(
+        'postgres_changes',
+        {event:'INSERT',schema:'public',table:'app_state',filter:'id=eq.1'},
+        (payload)=>{
+          isRemoteUpdate.current=true;
+          setState(normaliseState(payload.new.state || {}));
+        }
+      )
       .subscribe((status)=>{
-        if(status==='SUBSCRIBED'){console.log('✓ realtime connected');setRtConnected(true);}
-        if(status==='CHANNEL_ERROR'||status==='CLOSED'){setRtConnected(false);}
+        console.log('Realtime status:', status);
+        if(status==='SUBSCRIBED'){setRtConnected(true);}
+        if(status==='CHANNEL_ERROR'||status==='CLOSED'){
+          setRtConnected(false);
+          // Attempt reconnect after 3s
+          setTimeout(()=>{
+            if(subscriptionRef.current){
+              supabase.removeChannel(subscriptionRef.current);
+            }
+            subscribeToStateChanges();
+          }, 3000);
+        }
       });
 
     subscriptionRef.current = channel;
@@ -2295,7 +2317,12 @@ export default function App(){
             ))}
           </nav>
 
-          <div className="fac" style={{gap:6}}>
+          <div className="fac" style={{gap:8}}>
+            {/* Realtime connection dot — always visible in topbar */}
+            <div className="fac" style={{gap:5}} title={rtConnected?"Live — connected to database":"Connecting…"}>
+              <span className={`rt-dot ${rtConnected?"live":""}`}></span>
+              <span className="xs text-dd" style={{whiteSpace:"nowrap"}}>{rtConnected?"Live":"…"}</span>
+            </div>
             {isAdmin ? (
               <>
                 <span className="admin-badge">Admin</span>
