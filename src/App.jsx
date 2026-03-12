@@ -1015,329 +1015,84 @@ function placementsLeft(pid,state){
 // ADMIN: ONBOARD
 // ============================================================
 
-function OnboardView({ state, setState, showToast }) {
+async function addSingle() {
+  const name = single.trim();
+  if (!name) return;
 
-  const [single,setSingle] = useState("");
-  const [bulk,setBulk] = useState("");
-  const [preview,setPreview] = useState([]);
-  const [bulkErr,setBulkErr] = useState("");
-  const [confirm,setConfirm] = useState(null);
-  const [editingId,setEditingId] = useState(null);
-  const [editName,setEditName] = useState("");
-  const [search,setSearch] = useState("");
+  // Check for duplicates locally
+  if (state.players.some(p => p.name.toLowerCase() === name.toLowerCase())) {
+    showToast("Player already exists", "error");
+    return;
+  }
 
-  function addSingle(){
+  const newPlayer = {
+    id: crypto.randomUUID(),
+    name,
+    mmr: CONFIG.STARTING_MMR,
+    pts: CONFIG.STARTING_PTS,
+    wins: 0,
+    losses: 0,
+    streak: 0,
+    championships: []
+  };
 
-    const name = single.trim();
-    if(!name) return;
+  try {
+    // Save to Supabase first
+    const { error } = await supabase.from('players').insert([newPlayer]);
+    if (error) throw error;
 
-    const result = Admin.addPlayer(state,name);
-
-    if(result.error){
-      showToast(result.error,"error");
-      return;
-    }
-
-    setState(s=>{
-      const updated={
+    // Update state after successful DB write
+    setState(s => {
+      const updated = {
         ...s,
-        players:[...s.players,result.player]
+        players: [...s.players, newPlayer]
       };
-      return logAdmin(updated,"ADD_PLAYER",{name});
+      return logAdmin(updated, "ADD_PLAYER", { name });
     });
 
     setSingle("");
-    showToast(`${name} added`);
+    showToast(`${name} added`, "success");
+  } catch (err) {
+    console.error("Failed to add player:", err);
+    showToast(`Failed to add player: ${err.message}`, "error");
   }
+}
 
-  function parseBulk(){
+async function confirmBulk() {
+  if (!preview.length) return;
 
-    const names=[...new Set(
-      bulk.split(/[\n,]+/)
-        .map(n=>n.trim())
-        .filter(Boolean)
-    )];
+  const newPlayers = preview.map(name => ({
+    id: crypto.randomUUID(),
+    name,
+    mmr: CONFIG.STARTING_MMR,
+    pts: CONFIG.STARTING_PTS,
+    wins: 0,
+    losses: 0,
+    streak: 0,
+    championships: []
+  }));
 
-    const dupes=names.filter(n=>
-      state.players.find(p=>p.name.toLowerCase()===n.toLowerCase())
-    );
+  try {
+    // Save all new players to DB
+    const { error } = await supabase.from('players').insert(newPlayers);
+    if (error) throw error;
 
-    setBulkErr(
-      dupes.length
-      ?`Already exists: ${dupes.join(", ")}`
-      :""
-    );
-
-    setPreview(
-      names.filter(n=>
-        !state.players.find(p=>p.name.toLowerCase()===n.toLowerCase())
-      )
-    );
-  }
-
-  function confirmBulk(){
-
-    if(!preview.length) return;
-
-    const ps=preview.map(name=>({
-      id:crypto.randomUUID(),
-      name,
-      mmr:CONFIG.STARTING_MMR,
-      pts:CONFIG.STARTING_PTS,
-      wins:0,
-      losses:0,
-      streak:0,
-      championships:[]
-    }));
-
-    setState(s=>{
-      const updated={
+    // Update state after success
+    setState(s => {
+      const updated = {
         ...s,
-        players:[...s.players,...ps]
+        players: [...s.players, ...newPlayers]
       };
-      return logAdmin(updated,"BULK_ADD_PLAYERS",{count:ps.length});
+      return logAdmin(updated, "BULK_ADD_PLAYERS", { count: newPlayers.length });
     });
 
-    showToast(`${ps.length} players added`);
+    showToast(`${newPlayers.length} players added`, "success");
     setBulk("");
     setPreview([]);
+  } catch (err) {
+    console.error("Failed to add players:", err);
+    showToast(`Failed to add players: ${err.message}`, "error");
   }
-
-  function startEdit(p){
-    setEditingId(p.id);
-    setEditName(p.name);
-  }
-
-  function saveEdit(id){
-
-    const name=editName.trim();
-    if(!name) return;
-
-    const result=Admin.renamePlayer(state,id,name);
-
-    if(result.error){
-      showToast(result.error,"error");
-      return;
-    }
-
-    setState(s=>{
-      const updated={
-        ...s,
-        players:result.players
-      };
-      return logAdmin(updated,"RENAME_PLAYER",{id,name});
-    });
-
-    setEditingId(null);
-    showToast("Name updated");
-  }
-
-  function removePlayer(id,name){
-
-    setConfirm({
-      title:"Remove Player?",
-      msg:`Remove ${name}? Their game history will remain but they'll be off the leaderboard.`,
-      danger:true,
-      onConfirm:()=>{
-
-        setState(s=>{
-          const updated={
-            ...s,
-            players:s.players.filter(p=>p.id!==id)
-          };
-          return logAdmin(updated,"REMOVE_PLAYER",{id,name});
-        });
-
-        showToast("Player removed");
-        setConfirm(null);
-      }
-    });
-
-  }
-
-  const filteredPlayers =
-    [...state.players]
-    .filter(p=>p.name.toLowerCase().includes(search.toLowerCase()))
-    .sort((a,b)=>(b.pts||0)-(a.pts||0));
-
-
-  return (
-    <div className="stack">
-
-      <div className="grid-2">
-
-        <div className="card">
-
-          <div className="card-header">
-            <span className="card-title">Add Player</span>
-          </div>
-
-          <div style={{padding:18}}>
-
-            <div className="field">
-              <label className="lbl">Name</label>
-              <input
-                className="inp"
-                placeholder="e.g. Jamie"
-                value={single}
-                onChange={e=>setSingle(e.target.value)}
-                onKeyDown={e=>e.key==="Enter"&&addSingle()}
-              />
-            </div>
-
-            <button
-              className="btn btn-p w-full"
-              onClick={addSingle}
-            >
-              Add Player
-            </button>
-
-          </div>
-
-        </div>
-
-
-        <div className="card">
-
-          <div className="card-header">
-            <span className="card-title">Bulk Import</span>
-          </div>
-
-          <div style={{padding:18}}>
-
-            <div className="field">
-              <label className="lbl">Names</label>
-              <textarea
-                className="inp"
-                rows={4}
-                placeholder={"Alex\nJordan, Sam\nRiley"}
-                value={bulk}
-                onChange={e=>setBulk(e.target.value)}
-              />
-            </div>
-
-            {bulkErr && <div className="msg msg-e">{bulkErr}</div>}
-            {preview.length>0 &&
-              <div className="msg msg-s">
-                Ready to add: {preview.join(", ")}
-              </div>
-            }
-
-            <div className="fac mt8">
-              <button className="btn btn-g" onClick={parseBulk}>Preview</button>
-              <button
-                className="btn btn-p"
-                disabled={!preview.length}
-                onClick={confirmBulk}
-              >
-                Add {preview.length}
-              </button>
-            </div>
-
-          </div>
-
-        </div>
-
-      </div>
-
-
-      <div className="card">
-
-        <div className="card-header">
-          <span className="card-title">Roster ({state.players.length})</span>
-
-          <input
-            className="inp"
-            placeholder="Search players..."
-            value={search}
-            onChange={e=>setSearch(e.target.value)}
-            style={{width:180}}
-          />
-
-        </div>
-
-
-        <table className="tbl">
-
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Points</th>
-              <th>W/L</th>
-              <th>Streak</th>
-              <th></th>
-            </tr>
-          </thead>
-
-          <tbody>
-
-            {filteredPlayers.map(p=>(
-              <tr key={p.id}>
-
-                <td>
-
-                  {editingId===p.id
-                    ?(
-                      <div className="fac">
-                        <input
-                          className="inp inp-edit"
-                          value={editName}
-                          onChange={e=>setEditName(e.target.value)}
-                        />
-                        <button className="btn btn-p btn-sm" onClick={()=>saveEdit(p.id)}>Save</button>
-                        <button className="btn btn-g btn-sm" onClick={()=>setEditingId(null)}>✕</button>
-                      </div>
-                    )
-                    :(
-                      <span className="bold">
-                        {p.name}
-                        {(p.championships||[]).length>0 && <span style={{marginLeft:5}}>🏆</span>}
-                      </span>
-                    )
-                  }
-
-                </td>
-
-                <td>{p.pts||0}</td>
-
-                <td>
-                  <span className="text-g">{p.wins}W</span> /
-                  <span className="text-r">{p.losses}L</span>
-                </td>
-
-                <td>
-                  <StreakBadge streak={p.streak}/>
-                </td>
-
-                <td>
-
-                  <div className="fac" style={{justifyContent:"flex-end"}}>
-
-                    <button className="btn btn-g btn-sm" onClick={()=>startEdit(p)}>
-                      Rename
-                    </button>
-
-                    <button className="btn btn-d btn-sm" onClick={()=>removePlayer(p.id,p.name)}>
-                      Remove
-                    </button>
-
-                  </div>
-
-                </td>
-
-              </tr>
-            ))}
-
-          </tbody>
-
-        </table>
-
-      </div>
-
-      {confirm && <ConfirmDialog {...confirm} onCancel={()=>setConfirm(null)}/>}
-
-    </div>
-  );
 }
 
 // ============================================================
