@@ -2178,13 +2178,17 @@ export default function App(){
 
   },[]);
 
+  // Always keep a ref to latest state so saveState never captures stale closure
+  const stateRef = useRef(state);
+  useEffect(()=>{ stateRef.current = state; }, [state]);
+
   // autosave — skip when change came from realtime (prevents echo loop)
   const lastSaveTime = useRef(0);
   useEffect(()=>{
     if(!loading){
       if(isRemoteUpdate.current){ isRemoteUpdate.current=false; return; }
       lastSaveTime.current = Date.now();
-      saveState(state);
+      saveState(stateRef.current);
     }
   },[state,loading]);
 
@@ -2206,8 +2210,8 @@ export default function App(){
         'postgres_changes',
         {event:'UPDATE',schema:'public',table:'app_state',filter:'id=eq.1'},
         (payload)=>{
-          // Ignore echoes from our own saves (within 3s window)
-          if(Date.now() - lastSaveTime.current < 3000) return;
+          // Ignore echoes from our own saves (within 5s window)
+          if(Date.now() - lastSaveTime.current < 5000) return;
           isRemoteUpdate.current=true;
           setState(normaliseState(payload.new.state || {}));
         }
@@ -2216,7 +2220,7 @@ export default function App(){
         'postgres_changes',
         {event:'INSERT',schema:'public',table:'app_state',filter:'id=eq.1'},
         (payload)=>{
-          if(Date.now() - lastSaveTime.current < 3000) return;
+          if(Date.now() - lastSaveTime.current < 5000) return;
           isRemoteUpdate.current=true;
           setState(normaliseState(payload.new.state || {}));
         }
