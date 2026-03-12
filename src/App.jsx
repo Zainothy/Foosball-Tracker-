@@ -1026,9 +1026,9 @@ function LeaderboardView({ state, onSelectPlayer, rtConnected }) {
 // ============================================================
 function HistoryView({ state, setState, isAdmin, showToast }) {
   const [filter, setFilter] = useState("");
-  const [selectedGame, setSelectedGame] = useState(null);
+  const [selectedGameId, setSelectedGameId] = useState(null);
 
-  const allGames = state.games ?? [];
+  const allGames = [...(state.games ?? [])].sort((a, b) => new Date(b.date) - new Date(a.date));
   const filtered = allGames.filter(g=>{
     if (!filter) return true;
     return [...g.sideA,...g.sideB].map(id=>pName(id,state.players)).join(" ").toLowerCase().includes(filter.toLowerCase());
@@ -1046,7 +1046,7 @@ function HistoryView({ state, setState, isAdmin, showToast }) {
           const sAN=g.sideA.map(id=>pName(id,state.players));
           const sBN=g.sideB.map(id=>pName(id,state.players));
           return (
-            <div className="game-row" key={g.id} onClick={()=>setSelectedGame(g)}>
+            <div className="game-row" key={g.id} onClick={()=>setSelectedGameId(g.id)}>
               <div className="g-side">
                 {sAN.map((n,i)=><span key={i} className={g.winner==="A"?"g-name-w":"g-name-l"}>{n}</span>)}
                 <span className="xs text-dd">
@@ -1071,10 +1071,13 @@ function HistoryView({ state, setState, isAdmin, showToast }) {
         })}
         {filtered.length===0 && <div style={{padding:32,textAlign:"center",color:"var(--dimmer)",fontSize:12}}>No games found</div>}
       </div>
-      {selectedGame && (
-        <GameDetail game={selectedGame} state={state} setState={setState}
-          isAdmin={isAdmin} showToast={showToast} onClose={()=>setSelectedGame(null)}/>
-      )}
+      {selectedGameId && (() => {
+        const selectedGame = state.games.find(g => g.id === selectedGameId);
+        return selectedGame ? (
+          <GameDetail game={selectedGame} state={state} setState={setState}
+            isAdmin={isAdmin} showToast={showToast} onClose={()=>setSelectedGameId(null)}/>
+        ) : null;
+      })()}
     </div>
   );
 }
@@ -1167,91 +1170,166 @@ function placementsLeft(pid,state){
 // ============================================================
 // ADMIN: ONBOARD
 // ============================================================
+function OnboardView({ state, setState, showToast }) {
+  const [single, setSingle] = useState("");
+  const [bulk, setBulk] = useState("");
+  const [preview, setPreview] = useState([]);
+  const [confirm, setConfirm] = useState(null);
 
-async function addSingle() {
-  const name = single.trim();
-  if (!name) return;
-
-  // Check for duplicates locally
-  if (state.players.some(p => p.name.toLowerCase() === name.toLowerCase())) {
-    showToast("Player already exists", "error");
-    return;
+  function parseBulk(text) {
+    return text
+      .split(/[\n,]+/)
+      .map(s => s.trim())
+      .filter(Boolean)
+      .filter(name => !state.players.some(p => p.name.toLowerCase() === name.toLowerCase()));
   }
 
-  const newPlayer = {
-    id: crypto.randomUUID(),
-    name,
-    mmr: CONFIG.STARTING_MMR,
-    pts: CONFIG.STARTING_PTS,
-    wins: 0,
-    losses: 0,
-    streak: 0,
-    championships: []
-  };
-
-  try {
-    // Save to Supabase first
-    const { error } = await supabase.from('players').insert([newPlayer]);
-    if (error) throw error;
-
-    // Update state after successful DB write
-    setState(s => {
-      const updated = {
-        ...s,
-        players: [...s.players, newPlayer]
-      };
-      return logAdmin(updated, "ADD_PLAYER", { name });
-    });
-
+  function addSingle() {
+    const name = single.trim();
+    if (!name) return;
+    if (state.players.some(p => p.name.toLowerCase() === name.toLowerCase())) {
+      showToast("Player already exists", "error");
+      return;
+    }
+    const newPlayer = {
+      id: crypto.randomUUID(),
+      name,
+      mmr: CONFIG.STARTING_MMR,
+      pts: CONFIG.STARTING_PTS,
+      wins: 0,
+      losses: 0,
+      streak: 0,
+      championships: []
+    };
+    setState(s => logAdmin({ ...s, players: [...s.players, newPlayer] }, "ADD_PLAYER", { name }));
     setSingle("");
-    showToast(`${name} added`, "success");
-  } catch (err) {
-    console.error("Failed to add player:", err);
-    showToast(`Failed to add player: ${err.message}`, "error");
+    showToast(`${name} added`);
   }
-}
 
-async function confirmBulk() {
-  if (!preview.length) return;
-
-  const newPlayers = preview.map(name => ({
-    id: crypto.randomUUID(),
-    name,
-    mmr: CONFIG.STARTING_MMR,
-    pts: CONFIG.STARTING_PTS,
-    wins: 0,
-    losses: 0,
-    streak: 0,
-    championships: []
-  }));
-
-  try {
-    // Save all new players to DB
-    const { error } = await supabase.from('players').insert(newPlayers);
-    if (error) throw error;
-
-    // Update state after success
-    setState(s => {
-      const updated = {
-        ...s,
-        players: [...s.players, ...newPlayers]
-      };
-      return logAdmin(updated, "BULK_ADD_PLAYERS", { count: newPlayers.length });
-    });
-
-    showToast(`${newPlayers.length} players added`, "success");
+  function confirmBulk() {
+    if (!preview.length) return;
+    const newPlayers = preview.map(name => ({
+      id: crypto.randomUUID(),
+      name,
+      mmr: CONFIG.STARTING_MMR,
+      pts: CONFIG.STARTING_PTS,
+      wins: 0,
+      losses: 0,
+      streak: 0,
+      championships: []
+    }));
+    setState(s => logAdmin({ ...s, players: [...s.players, ...newPlayers] }, "BULK_ADD_PLAYERS", { count: newPlayers.length }));
+    showToast(`${newPlayers.length} players added`);
     setBulk("");
     setPreview([]);
-  } catch (err) {
-    console.error("Failed to add players:", err);
-    showToast(`Failed to add players: ${err.message}`, "error");
   }
+
+  function removePlayer(id) {
+    const p = state.players.find(x => x.id === id);
+    setConfirm({
+      title: "Remove Player?",
+      msg: `Remove ${p?.name}? Their game history will remain but they will no longer appear on the leaderboard.`,
+      danger: true,
+      onConfirm: () => {
+        setState(s => logAdmin({ ...s, players: s.players.filter(x => x.id !== id) }, "REMOVE_PLAYER", { name: p?.name }));
+        showToast(`${p?.name} removed`);
+        setConfirm(null);
+      }
+    });
+  }
+
+  return (
+    <div className="stack page-fade">
+      {/* Add single player */}
+      <div className="card">
+        <div className="card-header"><span className="card-title">Add Player</span></div>
+        <div style={{ padding: 18 }}>
+          <div className="field">
+            <label className="lbl">Player Name</label>
+            <div className="fac">
+              <input
+                className="inp"
+                placeholder="e.g. Jamie"
+                value={single}
+                onChange={e => setSingle(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && addSingle()}
+              />
+              <button className="btn btn-p" onClick={addSingle} disabled={!single.trim()}>Add</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Bulk add */}
+      <div className="card">
+        <div className="card-header"><span className="card-title">Bulk Add</span></div>
+        <div style={{ padding: 18 }}>
+          <div className="field">
+            <label className="lbl">Names (one per line or comma-separated)</label>
+            <textarea
+              className="inp"
+              rows={4}
+              placeholder={"Alex\nJordan\nSam"}
+              value={bulk}
+              onChange={e => { setBulk(e.target.value); setPreview(parseBulk(e.target.value)); }}
+            />
+          </div>
+          {preview.length > 0 && (
+            <div className="msg msg-w sm mb8">
+              Will add {preview.length} player{preview.length > 1 ? "s" : ""}: {preview.join(", ")}
+            </div>
+          )}
+          <button className="btn btn-p" onClick={confirmBulk} disabled={!preview.length}>
+            Add {preview.length > 0 ? preview.length : ""} Players
+          </button>
+        </div>
+      </div>
+
+      {/* Current roster */}
+      <div className="card">
+        <div className="card-header">
+          <span className="card-title">Current Roster ({state.players.length})</span>
+        </div>
+        <div className="tbl-wrap">
+          <table className="tbl">
+            <thead>
+              <tr><th>#</th><th>Name</th><th>Points</th><th>W/L</th><th></th></tr>
+            </thead>
+            <tbody>
+              {[...state.players]
+                .sort((a, b) => (b.pts || 0) - (a.pts || 0))
+                .map((p, i) => (
+                  <tr key={p.id}>
+                    <td><span className="rk">#{i + 1}</span></td>
+                    <td><span className="bold">{p.name}</span></td>
+                    <td><span className="text-am bold">{p.pts || 0}</span></td>
+                    <td>
+                      <span className="text-g">{p.wins}</span>
+                      <span className="text-dd">/</span>
+                      <span className="text-r">{p.losses}</span>
+                    </td>
+                    <td>
+                      <button className="btn btn-d btn-sm" onClick={() => removePlayer(p.id)}>Remove</button>
+                    </td>
+                  </tr>
+                ))}
+              {state.players.length === 0 && (
+                <tr><td colSpan={5} style={{ textAlign: "center", padding: 32, color: "var(--dimmer)" }}>No players yet</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {confirm && <ConfirmDialog {...confirm} onCancel={() => setConfirm(null)} />}
+    </div>
+  );
 }
 
 // ============================================================
 // ADMIN: LOG GAMES
 // ============================================================
-const EMPTY_ROW = () => ({ id: Date.now() + Math.random() + "", sideA: [], sideB: [], scoreA: "", scoreB: "" });
+const EMPTY_ROW = () => ({ id: crypto.randomUUID(), sideA: [], sideB: [], scoreA: "", scoreB: "" });
 
 function LogView({ state, setState, showToast }) {
   const [rows, setRows] = useState([EMPTY_ROW()]);
@@ -1276,7 +1354,8 @@ function LogView({ state, setState, showToast }) {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [rows]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, state]);
 
   // ============================================================
   // TOGGLE PLAYER IN ROW
@@ -1385,7 +1464,7 @@ function LogView({ state, setState, showToast }) {
       });
 
       newGames.push({
-        id: Date.now() + Math.random() + "", sideA: row.sideA, sideB: row.sideB,
+        id: crypto.randomUUID(), sideA: row.sideA, sideB: row.sideB,
         winner, scoreA: sA, scoreB: sB, ptsGain: gain, ptsLoss: loss,
         mmrGain: gain, mmrLoss: loss, eloScale, ptsFactor, winMult, lossMult,
         date: new Date().toISOString(), monthKey
