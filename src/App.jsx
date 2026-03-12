@@ -1445,7 +1445,7 @@ export default function App(){
             {PUB.map(t=><button key={t} className={`nav-btn ${tab===t?"active":""}`} onClick={()=>setTab(t)}>{t}</button>)}
             {isAdmin&&ADM.map(t=>(
               <button key={t} className={`nav-btn ${tab==="admin"&&adminTab===t?"active":""}`}
-                onClick={()=>{setTab("admin");setAdminTab(t);}}>{t}</button>
+                onClick={()=>{setTab("admin ");setAdminTab(t);}}>{t}</button>
             ))}
           </nav>
           <div className="fac">
