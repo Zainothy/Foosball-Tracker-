@@ -269,19 +269,19 @@ const CSS = `
   .topbar{display:flex;align-items:center;justify-content:space-between;padding:0 20px;height:52px;background:var(--s1);border-bottom:1px solid var(--b1);position:sticky;top:0;z-index:100;gap:12px}
   .brand{font-family:var(--disp);font-size:19px;font-weight:800;letter-spacing:2px;color:var(--amber);text-transform:uppercase;white-space:nowrap}
   .brand span{color:var(--dim);font-weight:400}
-  .nav{display:flex;gap:2px;flex-wrap:nowrap}
+  .nav{display:flex;gap:2px;flex-wrap:nowrap;overflow:hidden}
   .nav-btn{background:none;border:none;cursor:pointer;font-family:var(--mono);font-size:11px;font-weight:500;color:var(--dim);padding:5px 11px;border-radius:3px;text-transform:uppercase;letter-spacing:1px;transition:all .15s;white-space:nowrap}
   .nav-btn:hover{color:var(--text);background:var(--s2)}
   .nav-btn.active{color:var(--amber);background:var(--amber-g);font-weight:700}
   .admin-badge{font-size:10px;font-weight:600;color:var(--amber);background:var(--amber-g);border:1px solid var(--amber-d);border-radius:3px;padding:2px 7px;letter-spacing:1px;text-transform:uppercase;white-space:nowrap}
 
   /* Hamburger — mobile only */
-  .ham-btn{display:none;background:none;border:none;cursor:pointer;padding:6px;color:var(--dim);flex-direction:column;gap:4px}
+  .ham-btn{display:none;background:none;border:none;cursor:pointer;padding:6px;color:var(--dim);flex-direction:column;gap:4px;flex-shrink:0}
   .ham-btn span{display:block;width:20px;height:2px;background:currentColor;border-radius:1px;transition:all .2s}
   .ham-btn.open span:nth-child(1){transform:translateY(6px) rotate(45deg)}
   .ham-btn.open span:nth-child(2){opacity:0}
   .ham-btn.open span:nth-child(3){transform:translateY(-6px) rotate(-45deg)}
-  .mob-nav{display:none;position:absolute;top:52px;left:0;right:0;background:var(--s1);border-bottom:2px solid var(--b2);padding:8px 12px;flex-direction:column;gap:2px;z-index:99}
+  .mob-nav{display:none;position:fixed;top:52px;left:0;right:0;background:var(--s1);border-bottom:2px solid var(--b2);padding:8px 12px;flex-direction:column;gap:2px;z-index:99;box-shadow:0 8px 24px rgba(0,0,0,.4)}
   .mob-nav.open{display:flex}
   .mob-nav .nav-btn{text-align:left;padding:9px 12px;font-size:12px}
 
@@ -2170,6 +2170,7 @@ export default function App(){
     initState();
 
     return ()=>{
+      clearTimeout(reconnectTimer.current);
       if(subscriptionRef.current){
         supabase.removeChannel(subscriptionRef.current);
       }
@@ -2178,9 +2179,11 @@ export default function App(){
   },[]);
 
   // autosave — skip when change came from realtime (prevents echo loop)
+  const lastSaveTime = useRef(0);
   useEffect(()=>{
     if(!loading){
       if(isRemoteUpdate.current){ isRemoteUpdate.current=false; return; }
+      lastSaveTime.current = Date.now();
       saveState(state);
     }
   },[state,loading]);
@@ -2188,14 +2191,23 @@ export default function App(){
   // ============================================================
   // REALTIME SUBSCRIPTION
   // ============================================================
+  const reconnectTimer = useRef(null);
+
   function subscribeToStateChanges(){
+    // Clean up any existing channel first
+    if(subscriptionRef.current){
+      supabase.removeChannel(subscriptionRef.current);
+      subscriptionRef.current = null;
+    }
 
     const channel = supabase
-      .channel('app_state_changes')
+      .channel('app_state_changes_' + Date.now())
       .on(
         'postgres_changes',
         {event:'UPDATE',schema:'public',table:'app_state',filter:'id=eq.1'},
         (payload)=>{
+          // Ignore echoes from our own saves (within 3s window)
+          if(Date.now() - lastSaveTime.current < 3000) return;
           isRemoteUpdate.current=true;
           setState(normaliseState(payload.new.state || {}));
         }
@@ -2204,27 +2216,25 @@ export default function App(){
         'postgres_changes',
         {event:'INSERT',schema:'public',table:'app_state',filter:'id=eq.1'},
         (payload)=>{
+          if(Date.now() - lastSaveTime.current < 3000) return;
           isRemoteUpdate.current=true;
           setState(normaliseState(payload.new.state || {}));
         }
       )
       .subscribe((status)=>{
         console.log('Realtime status:', status);
-        if(status==='SUBSCRIBED'){setRtConnected(true);}
+        if(status==='SUBSCRIBED'){
+          setRtConnected(true);
+          clearTimeout(reconnectTimer.current);
+        }
         if(status==='CHANNEL_ERROR'||status==='CLOSED'){
           setRtConnected(false);
-          // Attempt reconnect after 3s
-          setTimeout(()=>{
-            if(subscriptionRef.current){
-              supabase.removeChannel(subscriptionRef.current);
-            }
-            subscribeToStateChanges();
-          }, 3000);
+          clearTimeout(reconnectTimer.current);
+          reconnectTimer.current = setTimeout(()=>subscribeToStateChanges(), 5000);
         }
       });
 
     subscriptionRef.current = channel;
-
   }
 
   // ============================================================
