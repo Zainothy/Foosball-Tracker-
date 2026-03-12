@@ -194,18 +194,23 @@ async function loadState() {
     // Fresh DB row (empty) — return seed so demo data shows
     if (!s.players || s.players.length === 0) return SEED;
 
-    return {
-      players: s.players || [],
-      games: s.games || [],
-      monthlyPlacements: s.monthlyPlacements || {},
-      finals: s.finals || {},
-      rules: s.rules || DEFAULT_RULES,
-    };
+    return normaliseState(s);
 
   } catch (err) {
     console.error('Supabase load error:', err);
     return SEED;
   }
+}
+
+// Normalise raw state from Supabase (handles missing keys)
+function normaliseState(s) {
+  return {
+    players: s.players || [],
+    games: s.games || [],
+    monthlyPlacements: s.monthlyPlacements || {},
+    finals: s.finals || {},
+    rules: s.rules || DEFAULT_RULES,
+  };
 }
 
 // Debounced save — prevents hammering Supabase on rapid state changes
@@ -284,7 +289,7 @@ const CSS = `
   .rk{font-family:var(--disp);font-size:17px;font-weight:800;color:var(--dimmer);min-width:26px;display:inline-block}
   .rk.r1{color:var(--amber)}.rk.r2{color:#aaa}.rk.r3{color:#cd7f32}
   .btn{font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:1px;text-transform:uppercase;padding:7px 14px;border-radius:4px;cursor:pointer;border:1px solid;transition:all .15s;white-space:nowrap}
-  .btn-p{background:var(--amber);color:#000;border-color:var(--amber)}.btn-p:hover{background:#ffc04a}
+  .btn-p{background:var(--amber);color:#000;border-color:var(--amber)}.btn-p:hover{background:#3dff7a}
   .btn-g{background:transparent;color:var(--dim);border-color:var(--b2)}.btn-g:hover{color:var(--text);border-color:var(--dim)}
   .btn-d{background:transparent;color:var(--red);border-color:var(--red)}.btn-d:hover{background:rgba(224,82,82,.1)}
   .btn-warn{background:transparent;color:var(--amber);border-color:var(--amber-d)}.btn-warn:hover{background:var(--amber-g)}
@@ -301,7 +306,7 @@ const CSS = `
   .msg{font-size:12px;padding:7px 11px;border-radius:4px;margin-top:7px}
   .msg-e{background:rgba(224,82,82,.1);color:var(--red);border:1px solid rgba(224,82,82,.3)}
   .msg-s{background:rgba(76,175,125,.1);color:var(--green);border:1px solid rgba(76,175,125,.3)}
-  .msg-w{background:rgba(245,166,35,.08);color:var(--amber);border:1px solid rgba(245,166,35,.25)}
+  .msg-w{background:rgba(30,215,96,.08);color:var(--amber);border:1px solid rgba(30,215,96,.25)}
   .toast{position:fixed;bottom:20px;right:20px;z-index:999;background:var(--s1);border:1px solid var(--b2);padding:11px 16px;border-radius:6px;font-size:12px;animation:slideUp .2s ease;box-shadow:0 8px 32px rgba(0,0,0,.5);max-width:300px}
   .toast.success{border-left:3px solid var(--green);color:var(--green)}
   .toast.error{border-left:3px solid var(--red);color:var(--red)}
@@ -355,7 +360,7 @@ const CSS = `
   .prof-av{width:50px;height:50px;border-radius:6px;background:var(--amber-g);border:2px solid var(--amber-d);display:flex;align-items:center;justify-content:center;font-family:var(--disp);font-size:22px;font-weight:800;color:var(--amber);flex-shrink:0}
   .prof-name{font-family:var(--disp);font-size:24px;font-weight:800}
   .prof-sub{font-size:11px;color:var(--dim);margin-top:2px}
-  .championship-banner{background:linear-gradient(135deg,rgba(245,166,35,.18),rgba(245,166,35,.06));border:1px solid var(--amber-d);border-radius:6px;padding:10px 14px;display:flex;align-items:center;gap:10px;margin-bottom:14px}
+  .championship-banner{background:linear-gradient(135deg,rgba(30,215,96,.15),rgba(30,215,96,.04));border:1px solid var(--amber-d);border-radius:6px;padding:10px 14px;display:flex;align-items:center;gap:10px;margin-bottom:14px}
   .login-wrap{display:flex;align-items:center;justify-content:center;min-height:60vh}
   .login-box{background:var(--s1);border:1px solid var(--b1);border-radius:8px;padding:28px;width:100%;max-width:300px}
   .login-title{font-family:var(--disp);font-size:20px;font-weight:800;text-transform:uppercase;letter-spacing:2px;color:var(--amber);margin-bottom:18px}
@@ -386,21 +391,7 @@ const CSS = `
   .undo-bar{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--s2);border:1px solid var(--b2);border-radius:6px;padding:10px 16px;display:flex;align-items:center;gap:12px;font-size:12px;z-index:150;box-shadow:0 8px 32px rgba(0,0,0,.5);animation:slideUp .2s ease}
 
   /* Edit highlight */
-  .inp-edit{border-color:var(--amber-d) !important;background:rgba(245,166,35,.05) !important}
-
-  /* Realtime indicator */
-  .rt-dot{width:7px;height:7px;border-radius:50%;background:var(--dimmer);display:inline-block;flex-shrink:0}
-  .rt-dot.live{background:var(--green);box-shadow:0 0 0 0 rgba(30,215,96,.6);animation:rtPulse 2s infinite}
-  @keyframes rtPulse{0%{box-shadow:0 0 0 0 rgba(30,215,96,.5)}70%{box-shadow:0 0 0 6px rgba(30,215,96,0)}100%{box-shadow:0 0 0 0 rgba(30,215,96,0)}}
-
-  /* Leaderboard row animations */
-  .lb-row{transition:background .1s}
-  .lb-row.rank-up{animation:rankUp .6s ease}
-  .lb-row.rank-down{animation:rankDown .6s ease}
-  .lb-row.pts-changed{animation:ptsFlash .8s ease}
-  @keyframes rankUp{0%{background:rgba(30,215,96,.18)}100%{background:transparent}}
-  @keyframes rankDown{0%{background:rgba(224,82,82,.15)}100%{background:transparent}}
-  @keyframes ptsFlash{0%,100%{background:transparent}30%{background:rgba(30,215,96,.12)}}
+  .inp-edit{border-color:var(--amber-d) !important;background:rgba(30,215,96,.04) !important}
 `;
 
 // ============================================================
@@ -840,7 +831,7 @@ function LeaderboardView({ state, onSelectPlayer, rtConnected }) {
   const ranked = [...(state.players ?? [])].sort((a,b)=>(b.pts||0)-(a.pts||0));
   const monthGames = (state.games ?? []).filter(g=>g.monthKey===monthKey);
 
-  // Track previous ranks + pts to drive animations on realtime update
+  // Track previous rank + pts per player to animate on realtime updates
   const prevSnapshot = useRef({});
   const [animMap, setAnimMap] = useState({});
 
@@ -868,7 +859,7 @@ function LeaderboardView({ state, onSelectPlayer, rtConnected }) {
   return (
     <div className="stack">
       <div className="grid-3">
-        <div className="stat-box"><div className="stat-lbl">Players</div><div className="stat-val am">{state.players.length}</div></div>
+        <div className="stat-box"><div className="stat-lbl">Players</div><div className="stat-val am">{(state.players??[]).length}</div></div>
         <div className="stat-box"><div className="stat-lbl">Games This Month</div><div className="stat-val">{monthGames.length}</div></div>
         <div className="stat-box"><div className="stat-lbl">Top Points</div><div className="stat-val am">{ranked[0]?.pts??0}</div></div>
       </div>
@@ -901,7 +892,7 @@ function LeaderboardView({ state, onSelectPlayer, rtConnected }) {
                   </td>
                   <td>
                     <span className="bold" style={{fontSize:14}}>{p.pts||0}</span>
-                    {anim==="rank-up" && <span className="xs text-g" style={{marginLeft:5}}>▲</span>}
+                    {anim==="rank-up"   && <span className="xs text-g" style={{marginLeft:5}}>▲</span>}
                     {anim==="rank-down" && <span className="xs text-r" style={{marginLeft:5}}>▼</span>}
                   </td>
                   <td><span className="text-g bold">{p.wins}</span></td>
@@ -1908,8 +1899,8 @@ export default function App(){
   const[loading,setLoading]=useState(true);
   const[rtConnected,setRtConnected]=useState(false);
   const subscriptionRef=useRef(null);
-  // Flag: when true, the next state change came from Supabase realtime
-  // so we skip saving it back (prevents echo loop)
+  // Prevents echo loop: when true the next autosave is skipped
+  // (the state update came from Supabase, not a local action)
   const isRemoteUpdate=useRef(false);
 
   // ============================================================
@@ -1939,7 +1930,7 @@ export default function App(){
 
   },[]);
 
-  // autosave — skipped when the update came from realtime
+  // autosave — skip when the state change came from realtime
   useEffect(()=>{
     if(!loading){
       if(isRemoteUpdate.current){
@@ -1961,9 +1952,10 @@ export default function App(){
         'postgres_changes',
         {event:'UPDATE',schema:'public',table:'app_state',filter:'id=eq.1'},
         (payload)=>{
-          // Mark as remote so the autosave effect skips this update
+          // Normalise incoming payload (same shape guarantee as loadState)
+          const incoming = normaliseState(payload.new.state || {});
           isRemoteUpdate.current=true;
-          setState(payload.new.state);
+          setState(incoming);
         }
       )
       .subscribe((status)=>{
@@ -2038,9 +2030,8 @@ export default function App(){
 
         <div className="topbar">
 
-          <div className="brand" style={{display:"flex",alignItems:"center",gap:10}}>
+          <div className="brand">
             St. Marylebone <span>Table Tracker</span>
-            <span className={`rt-dot ${rtConnected?"live":""}`} title={rtConnected?"Live":"Connecting…"}/>
           </div>
 
           <nav className="nav">
