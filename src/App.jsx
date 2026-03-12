@@ -191,10 +191,15 @@ async function loadState() {
 
     const s = data?.state || {};
 
+    // Fresh DB row (empty) — return seed so demo data shows
+    if (!s.players || s.players.length === 0) return SEED;
+
     return {
       players: s.players || [],
       games: s.games || [],
       monthlyPlacements: s.monthlyPlacements || {},
+      finals: s.finals || {},
+      rules: s.rules || DEFAULT_RULES,
     };
 
   } catch (err) {
@@ -203,20 +208,20 @@ async function loadState() {
   }
 }
 
-async function saveState(s) {
-  try {
-    const { error } = await supabase
-      .from('app_state')
-      .update({ state: s, updated_at: new Date().toISOString() })
-      .eq('id', 1);
-    
-    if (error) {
-      console.error('Failed to save to Supabase:', error);
-      return;
+// Debounced save — prevents hammering Supabase on rapid state changes
+let _saveTimer = null;
+function saveState(s) {
+  clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(async () => {
+    try {
+      const { error } = await supabase
+        .from('app_state')
+        .upsert({ id: 1, state: s, updated_at: new Date().toISOString() });
+      if (error) console.error('Failed to save to Supabase:', error);
+    } catch (err) {
+      console.error('Supabase save error:', err);
     }
-  } catch (err) {
-    console.error('Supabase save error:', err);
-  }
+  }, 600);
 }
 
 // ============================================================
@@ -382,6 +387,20 @@ const CSS = `
 
   /* Edit highlight */
   .inp-edit{border-color:var(--amber-d) !important;background:rgba(245,166,35,.05) !important}
+
+  /* Realtime indicator */
+  .rt-dot{width:7px;height:7px;border-radius:50%;background:var(--dimmer);display:inline-block;flex-shrink:0}
+  .rt-dot.live{background:var(--green);box-shadow:0 0 0 0 rgba(30,215,96,.6);animation:rtPulse 2s infinite}
+  @keyframes rtPulse{0%{box-shadow:0 0 0 0 rgba(30,215,96,.5)}70%{box-shadow:0 0 0 6px rgba(30,215,96,0)}100%{box-shadow:0 0 0 0 rgba(30,215,96,0)}}
+
+  /* Leaderboard row animations */
+  .lb-row{transition:background .1s}
+  .lb-row.rank-up{animation:rankUp .6s ease}
+  .lb-row.rank-down{animation:rankDown .6s ease}
+  .lb-row.pts-changed{animation:ptsFlash .8s ease}
+  @keyframes rankUp{0%{background:rgba(30,215,96,.18)}100%{background:transparent}}
+  @keyframes rankDown{0%{background:rgba(224,82,82,.15)}100%{background:transparent}}
+  @keyframes ptsFlash{0%,100%{background:transparent}30%{background:rgba(30,215,96,.12)}}
 `;
 
 // ============================================================
@@ -816,12 +835,35 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
 // ============================================================
 // LEADERBOARD VIEW
 // ============================================================
-function LeaderboardView({ state, onSelectPlayer }) {
-const monthKey = getMonthKey();
-const ranked = [...(state.players ?? [])]
-  .sort((a, b) => (b.pts || 0) - (a.pts || 0));
-const monthGames = (state.games ?? [])
-  .filter(g => g.monthKey === monthKey);
+function LeaderboardView({ state, onSelectPlayer, rtConnected }) {
+  const monthKey = getMonthKey();
+  const ranked = [...(state.players ?? [])].sort((a,b)=>(b.pts||0)-(a.pts||0));
+  const monthGames = (state.games ?? []).filter(g=>g.monthKey===monthKey);
+
+  // Track previous ranks + pts to drive animations on realtime update
+  const prevSnapshot = useRef({});
+  const [animMap, setAnimMap] = useState({});
+
+  useEffect(()=>{
+    const prev = prevSnapshot.current;
+    const next = {};
+    const anims = {};
+    ranked.forEach((p,i)=>{
+      const prevRank = prev[p.id]?.rank;
+      const prevPts  = prev[p.id]?.pts;
+      if(prevRank !== undefined && prevRank !== i){
+        anims[p.id] = i < prevRank ? "rank-up" : "rank-down";
+      } else if(prevPts !== undefined && prevPts !== (p.pts||0)){
+        anims[p.id] = "pts-changed";
+      }
+      next[p.id] = { rank:i, pts:p.pts||0 };
+    });
+    prevSnapshot.current = next;
+    if(Object.keys(anims).length){
+      setAnimMap(anims);
+      setTimeout(()=>setAnimMap({}), 900);
+    }
+  },[state.players]);
 
   return (
     <div className="stack">
@@ -833,6 +875,10 @@ const monthGames = (state.games ?? [])
       <div className="card">
         <div className="card-header">
           <span className="card-title">Rankings — {fmtMonth(monthKey)}</span>
+          <div className="fac" style={{gap:6}}>
+            <span className={`rt-dot ${rtConnected?"live":""}`} title={rtConnected?"Live — updates in real time":"Connecting…"}/>
+            <span className="xs text-dd">{rtConnected?"Live":"…"}</span>
+          </div>
         </div>
         <table className="tbl">
           <thead>
@@ -843,8 +889,9 @@ const monthGames = (state.games ?? [])
               const placements=(state.monthlyPlacements[monthKey]||{})[p.id]||0;
               const total=p.wins+p.losses;
               const pct=total?Math.round(p.wins/total*100):0;
+              const anim = animMap[p.id] || "";
               return (
-                <tr key={p.id} onClick={()=>onSelectPlayer(p)}>
+                <tr key={p.id} className={`lb-row ${anim}`} onClick={()=>onSelectPlayer(p)}>
                   <td><span className={`rk ${i===0?"r1":i===1?"r2":i===2?"r3":""}`}>
                     {i===0?"①":i===1?"②":i===2?"③":`#${i+1}`}
                   </span></td>
@@ -852,7 +899,11 @@ const monthGames = (state.games ?? [])
                     <span className="bold">{p.name}</span>
                     {(p.championships||[]).length>0 && <span style={{marginLeft:6,fontSize:13}}>🏆</span>}
                   </td>
-                  <td><span className="bold" style={{fontSize:14}}>{p.pts||0}</span></td>
+                  <td>
+                    <span className="bold" style={{fontSize:14}}>{p.pts||0}</span>
+                    {anim==="rank-up" && <span className="xs text-g" style={{marginLeft:5}}>▲</span>}
+                    {anim==="rank-down" && <span className="xs text-r" style={{marginLeft:5}}>▼</span>}
+                  </td>
                   <td><span className="text-g bold">{p.wins}</span></td>
                   <td><span className="text-r bold">{p.losses}</span></td>
                   <td><span className={pct>=50?"text-g":"text-d"}>{total?`${pct}%`:"—"}</span></td>
@@ -876,7 +927,8 @@ function HistoryView({ state, setState, isAdmin, showToast }) {
   const [filter, setFilter] = useState("");
   const [selectedGame, setSelectedGame] = useState(null);
 
-  const filtered = state.games.filter(g=>{
+  const allGames = state.games ?? [];
+  const filtered = allGames.filter(g=>{
     if (!filter) return true;
     return [...g.sideA,...g.sideB].map(id=>pName(id,state.players)).join(" ").toLowerCase().includes(filter.toLowerCase());
   });
@@ -885,7 +937,7 @@ function HistoryView({ state, setState, isAdmin, showToast }) {
     <div className="stack">
       <div className="card">
         <div className="card-header">
-          <span className="card-title">Match History ({state.games.length})</span>
+          <span className="card-title">Match History ({allGames.length})</span>
           <input className="inp" placeholder="Filter by player…" value={filter}
             onChange={e=>setFilter(e.target.value)} style={{width:170}}/>
         </div>
@@ -1854,7 +1906,11 @@ export default function App(){
 
   // realtime + loading
   const[loading,setLoading]=useState(true);
+  const[rtConnected,setRtConnected]=useState(false);
   const subscriptionRef=useRef(null);
+  // Flag: when true, the next state change came from Supabase realtime
+  // so we skip saving it back (prevents echo loop)
+  const isRemoteUpdate=useRef(false);
 
   // ============================================================
   // LOAD STATE
@@ -1883,9 +1939,13 @@ export default function App(){
 
   },[]);
 
-  // autosave
+  // autosave — skipped when the update came from realtime
   useEffect(()=>{
     if(!loading){
+      if(isRemoteUpdate.current){
+        isRemoteUpdate.current=false;
+        return;
+      }
       saveState(state);
     }
   },[state,loading]);
@@ -1901,13 +1961,14 @@ export default function App(){
         'postgres_changes',
         {event:'UPDATE',schema:'public',table:'app_state',filter:'id=eq.1'},
         (payload)=>{
-          console.log('Realtime update received');
+          // Mark as remote so the autosave effect skips this update
+          isRemoteUpdate.current=true;
           setState(payload.new.state);
         }
       )
       .subscribe((status)=>{
-        if(status==='SUBSCRIBED') console.log('✓ realtime connected');
-        if(status==='CHANNEL_ERROR') console.error('✗ realtime error');
+        if(status==='SUBSCRIBED'){console.log('✓ realtime connected');setRtConnected(true);}
+        if(status==='CHANNEL_ERROR'||status==='CLOSED'){setRtConnected(false);}
       });
 
     subscriptionRef.current = channel;
@@ -1977,8 +2038,9 @@ export default function App(){
 
         <div className="topbar">
 
-          <div className="brand">
+          <div className="brand" style={{display:"flex",alignItems:"center",gap:10}}>
             St. Marylebone <span>Table Tracker</span>
+            <span className={`rt-dot ${rtConnected?"live":""}`} title={rtConnected?"Live":"Connecting…"}/>
           </div>
 
           <nav className="nav">
@@ -2046,6 +2108,7 @@ export default function App(){
           {tab==="leaderboard" && (
             <LeaderboardView
               state={state}
+              rtConnected={rtConnected}
               onSelectPlayer={p=>{
                 setSelPlayer(p);
                 setEditPlayer(null);
