@@ -2182,10 +2182,12 @@ export default function App(){
   const stateRef = useRef(state);
   useEffect(()=>{ stateRef.current = state; }, [state]);
 
-  // autosave — skip when change came from realtime (prevents echo loop)
+  // autosave — skip on initial load, skip when change came from realtime
   const lastSaveTime = useRef(0);
+  const isInitialLoad = useRef(true);
   useEffect(()=>{
     if(!loading){
+      if(isInitialLoad.current){ isInitialLoad.current=false; return; }
       if(isRemoteUpdate.current){ isRemoteUpdate.current=false; return; }
       lastSaveTime.current = Date.now();
       saveState(stateRef.current);
