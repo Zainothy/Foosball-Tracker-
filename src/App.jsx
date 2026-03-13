@@ -1919,23 +1919,47 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
   // ── DATE EDITOR ───────────────────────────────────────────
   function DateEditor() {
     if (!isAdmin) return null;
+    const parsed = state.finalsDate ? new Date(state.finalsDate) : null;
+    const [dd, setDd] = useState(parsed ? String(parsed.getDate()).padStart(2,"0") : "");
+    const [mm, setMm] = useState(parsed ? String(parsed.getMonth()+1).padStart(2,"0") : "");
+    const [yyyy, setYyyy] = useState(parsed ? String(parsed.getFullYear()) : "");
+    const [hh, setHh] = useState(parsed ? String(parsed.getHours()).padStart(2,"0") : "18");
+    const [mn, setMn] = useState(parsed ? String(parsed.getMinutes()).padStart(2,"0") : "00");
+
+    function handleSave() {
+      if (!dd || !mm || !yyyy) {
+        setState(s => ({ ...s, finalsDate: null }));
+        showToast("Finals date cleared");
+        setEditingDate(false);
+        return;
+      }
+      const iso = new Date(parseInt(yyyy), parseInt(mm)-1, parseInt(dd), parseInt(hh)||0, parseInt(mn)||0).toISOString();
+      setState(s => ({ ...s, finalsDate: iso }));
+      showToast("Finals date saved");
+      setEditingDate(false);
+    }
+
     return (
-      <div style={{ marginTop: 10 }} onClick={e => e.stopPropagation()}>
+      <div style={{ marginTop: 10 }}>
         {editingDate ? (
-          <div className="fac" style={{ justifyContent: "center", gap: 6, flexWrap: "wrap" }}>
-            <input
-              className="inp"
-              type="datetime-local"
-              value={dateInput}
-              onChange={e => setDateInput(e.target.value)}
-              onClick={e => e.stopPropagation()}
-              style={{ width: 210, fontSize: 11, colorScheme: "dark" }}
-            />
-            <button className="btn btn-p btn-sm" onClick={e => { e.stopPropagation(); saveFinalsDate(); }}>Save</button>
-            <button className="btn btn-g btn-sm" onClick={e => { e.stopPropagation(); setEditingDate(false); }}>Cancel</button>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+            <div className="fac" style={{ gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
+              {[["Day","DD",dd,setDd,60,1,31],["Month","MM",mm,setMm,60,1,12],["Year","YYYY",yyyy,setYyyy,80,2025,2099],["Hour","HH",hh,setHh,60,0,23],["Min","MM",mn,setMn,60,0,59]].map(([lbl,ph,val,set,w,min,max])=>(
+                <div key={lbl} style={{ display:"flex",flexDirection:"column",alignItems:"center",gap:3 }}>
+                  <span className="xs text-dd">{lbl}</span>
+                  <input className="inp" type="number" placeholder={ph} min={min} max={max}
+                    value={val} onChange={e=>set(e.target.value)}
+                    style={{ width:w, textAlign:"center", fontSize:14 }} />
+                </div>
+              ))}
+            </div>
+            <div className="fac" style={{ gap: 6 }}>
+              <button className="btn btn-p btn-sm" onClick={handleSave}>Save</button>
+              <button className="btn btn-g btn-sm" onClick={() => setEditingDate(false)}>Cancel</button>
+            </div>
           </div>
         ) : (
-          <button className="btn btn-g btn-sm" onClick={e => { e.stopPropagation(); setDateInput(state.finalsDate || ""); setEditingDate(true); }}>
+          <button className="btn btn-g btn-sm" onClick={() => setEditingDate(true)}>
             {state.finalsDate ? "Edit Finals Date" : "Set Finals Date"}
           </button>
         )}
@@ -1971,23 +1995,40 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
               <span className="card-title">Preview — If Finals Happened Today</span>
               <span className="tag tag-a">LIVE RANKINGS</span>
             </div>
-            <div style={{ padding: 20 }}>
-              {previewUpper && (
-                <>
-                  <div className="xs text-dd" style={{ letterSpacing: 2, textTransform: "uppercase", marginBottom: 10 }}>Upper Bracket — Top 4</div>
-                  <div className="bracket" style={{ justifyContent: "flex-start", padding: 0, marginBottom: 20 }}>
-                    <BMatch matchKey="upper" label="Upper Final" overrideSideA={previewUpper.teamA} overrideSideB={previewUpper.teamB} preview />
+            <div style={{ padding: 20, overflowX: "auto" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 16, minWidth: "fit-content" }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+                  {previewUpper && (
+                    <div>
+                      <div className="xs text-dd" style={{ letterSpacing: 2, textTransform: "uppercase", marginBottom: 8 }}>Upper — Top 4</div>
+                      <BMatch matchKey="upper" label="" overrideSideA={previewUpper.teamA} overrideSideB={previewUpper.teamB} preview />
+                    </div>
+                  )}
+                  {previewLower && (
+                    <div>
+                      <div className="xs text-dd" style={{ letterSpacing: 2, textTransform: "uppercase", marginBottom: 8 }}>Lower — Ranks 5–8</div>
+                      <BMatch matchKey="lower" label="" overrideSideA={previewLower.teamA} overrideSideB={previewLower.teamB} preview />
+                    </div>
+                  )}
+                </div>
+                <div style={{ color: "var(--dimmer)", fontSize: 22, fontWeight: 800 }}>→</div>
+                <div>
+                  <div className="xs text-dd" style={{ letterSpacing: 2, textTransform: "uppercase", marginBottom: 8 }}>Grand Final</div>
+                  <div style={{ background: "var(--s2)", border: "1px dashed var(--b2)", borderRadius: 8, minWidth: 220, padding: "14px 16px" }}>
+                    <div style={{ padding: "8px 0", textAlign: "center" }}>
+                      <div className="xs text-dd" style={{ letterSpacing: 2, marginBottom: 4 }}>Upper Winner</div>
+                      <div className="disp text-am" style={{ fontSize: 16 }}>TBD</div>
+                    </div>
+                    <div style={{ borderTop: "1px solid var(--b1)", padding: "6px 0", textAlign: "center" }}>
+                      <div className="xs text-dd" style={{ letterSpacing: 3 }}>vs</div>
+                    </div>
+                    <div style={{ padding: "8px 0", textAlign: "center" }}>
+                      <div className="xs text-dd" style={{ letterSpacing: 2, marginBottom: 4 }}>Lower Winner</div>
+                      <div className="disp text-am" style={{ fontSize: 16 }}>TBD</div>
+                    </div>
                   </div>
-                </>
-              )}
-              {previewLower && (
-                <>
-                  <div className="xs text-dd" style={{ letterSpacing: 2, textTransform: "uppercase", marginBottom: 10 }}>Lower Bracket — Ranks 5–8</div>
-                  <div className="bracket" style={{ justifyContent: "flex-start", padding: 0 }}>
-                    <BMatch matchKey="lower" label="Lower Final" overrideSideA={previewLower.teamA} overrideSideB={previewLower.teamB} preview />
-                  </div>
-                </>
-              )}
+                </div>
+              </div>
             </div>
           </div>
         )}
