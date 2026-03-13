@@ -28,10 +28,15 @@ const CONFIG = {
   RANK_WEIGHT: 0.4,             // 0 = ignore rank, 1 = double at max gap
   RANK_DIVISOR: 5,              // rank diff normaliser (field of ~10)
 
-  // Streak: exponential scale with sigmoid cap
-  // mult = 1 + tanh(streak / STREAK_SCALE) * (CAP - 1)
-  STREAK_SCALE: 3,              // streak of 3 = ~halfway to cap
-  STREAK_CAP: 2.2,              // absolute max multiplier
+  // ── STREAK SYSTEM (quality-weighted, convergence-safe) ────
+  // Streak power accumulates quality (eloScale * rankScale) per win,
+  // resets to 0 on loss. Prevents unclosable gaps from weak-opponent farming.
+  STREAK_POWER_SCALE: 4.0,      // tanh half-point (higher = slower ramp)
+  STREAK_WIN_MAX: 0.45,         // max bonus for win streak (+45% = 1.45x cap)
+  STREAK_LOSS_MAX: 0.35,        // max amplifier for loss streak (1.35x cap)
+  STREAK_QUALITY_DECAY: 0.88,   // per-game decay if opponent eloScale < 1.1
+  STREAK_DECAY_THRESHOLD: 1.05, // eloScale below this = "easy" opponent
+  STREAK_WINDOW: 8,             // rolling quality window (games)
 
   MAX_PLACEMENTS_PER_MONTH: 5,  // per player per calendar month
 };
@@ -88,12 +93,27 @@ At the end of each month, the top 4 players enter a bracket:
 // MMR / POINTS ENGINE
 // ============================================================
 
-// Streak multiplier: tanh curve — grows fast early, plateaus hard at cap.
-// streak=1→~1.3, streak=3→~1.9, streak=6→~2.15, streak=10→~2.2
-function streakMult(streak) {
-  const s = Math.max(0, Math.abs(streak));
-  const t = Math.tanh(s / CONFIG.STREAK_SCALE);
-  return 1 + t * (CONFIG.STREAK_CAP - 1);
+// Quality-weighted streak multiplier.
+// streakPower = accumulated (eloScale * rankScale) from recent wins,
+// decays if only playing weak opponents, resets to 0 on loss.
+// Max bonus 1.45x win / 1.35x loss — prevents unclosable gaps.
+function streakMult(streakPower, isWinner) {
+  const power = Math.max(0, streakPower || 0);
+  const t = Math.tanh(power / CONFIG.STREAK_POWER_SCALE);
+  const cap = isWinner ? CONFIG.STREAK_WIN_MAX : CONFIG.STREAK_LOSS_MAX;
+  return 1 + t * cap;
+}
+
+// Update a player's streakPower after a game result.
+// qualityScore = eloScale * rankScale from this game (how "hard" was the opponent).
+function updateStreakPower(currentPower, isWin, qualityScore) {
+  if (!isWin) return 0; // loss always resets streak power
+  const base = (currentPower || 0);
+  // Decay if opponent was easy (below threshold)
+  const decayed = qualityScore < CONFIG.STREAK_DECAY_THRESHOLD
+    ? base * CONFIG.STREAK_QUALITY_DECAY
+    : base;
+  return Math.min(decayed + qualityScore, CONFIG.STREAK_WINDOW * 2); // absolute cap
 }
 
 function avg(ids, players, key) {
@@ -107,20 +127,20 @@ function avg(ids, players, key) {
 function replayGames(basePlayers, games) {
   let players = basePlayers.map(p => ({
     ...p, mmr: CONFIG.STARTING_MMR, pts: CONFIG.STARTING_PTS,
-    wins: 0, losses: 0, streak: 0,
+    wins: 0, losses: 0, streak: 0, streakPower: 0,
   }));
   const sorted = [...games].sort((a, b) => new Date(a.date) - new Date(b.date));
   const updatedGames = sorted.map(g => {
     const winIds = g.winner === "A" ? g.sideA : g.sideB;
     const losIds = g.winner === "A" ? g.sideB : g.sideA;
-    const ranked = [...players].sort((a,b)=>(b.pts||0)-(a.pts||0));
-    const rankOf = id => { const i = ranked.findIndex(p=>p.id===id); return i === -1 ? ranked.length : i; };
-    const oppAvgMMR  = ids => avg(ids, players, "mmr");
-    const oppAvgRank = ids => ids.reduce((s,id)=>s+rankOf(id),0)/ids.length;
+    const ranked = [...players].sort((a, b) => (b.pts || 0) - (a.pts || 0));
+    const rankOf = id => { const i = ranked.findIndex(p => p.id === id); return i === -1 ? ranked.length : i; };
+    const oppAvgMMR = ids => avg(ids, players, "mmr");
+    const oppAvgRank = ids => ids.reduce((s, id) => s + rankOf(id), 0) / ids.length;
     const winnerScore = Math.max(g.scoreA, g.scoreB);
-    const loserScore  = Math.min(g.scoreA, g.scoreB);
-    const oppWinMMR  = oppAvgMMR(winIds);
-    const oppLosMMR  = oppAvgMMR(losIds);
+    const loserScore = Math.min(g.scoreA, g.scoreB);
+    const oppWinMMR = oppAvgMMR(winIds);
+    const oppLosMMR = oppAvgMMR(losIds);
     const oppWinRank = oppAvgRank(winIds);
     const oppLosRank = oppAvgRank(losIds);
 
@@ -132,11 +152,11 @@ function replayGames(basePlayers, games) {
       const isWinner = winIds.includes(pid);
       const d = calcPlayerDelta({
         winnerScore, loserScore,
-        playerMMR:    p.mmr,
-        playerRank:   rankOf(pid),
-        playerStreak: p.streak || 0,
-        oppAvgMMR:    isWinner ? oppLosMMR  : oppWinMMR,
-        oppAvgRank:   isWinner ? oppLosRank : oppWinRank,
+        playerMMR: p.mmr,
+        playerRank: rankOf(pid),
+        playerStreakPower: p.streakPower || 0,
+        oppAvgMMR: isWinner ? oppLosMMR : oppWinMMR,
+        oppAvgRank: isWinner ? oppLosRank : oppWinRank,
         isWinner,
       });
       playerDeltas[pid] = d;
@@ -147,16 +167,17 @@ function replayGames(basePlayers, games) {
       if (!d) return p;
       const isWin = winIds.includes(p.id);
       if (isWin) {
-        const ns = (p.streak||0) >= 0 ? (p.streak||0)+1 : 1;
-        return { ...p, mmr: p.mmr+d.gain, pts: (p.pts||0)+d.gain, wins: p.wins+1, streak: ns };
+        const ns = (p.streak || 0) >= 0 ? (p.streak || 0) + 1 : 1;
+        const newPower = updateStreakPower(p.streakPower || 0, true, d.qualityScore || 1);
+        return { ...p, mmr: p.mmr + d.gain, pts: (p.pts || 0) + d.gain, wins: p.wins + 1, streak: ns, streakPower: newPower };
       }
-      const ns = (p.streak||0) <= 0 ? (p.streak||0)-1 : -1;
-      return { ...p, mmr: Math.max(0,p.mmr-d.loss), pts: Math.max(0,(p.pts||0)-d.loss), losses: p.losses+1, streak: ns };
+      const ns = (p.streak || 0) <= 0 ? (p.streak || 0) - 1 : -1;
+      return { ...p, mmr: Math.max(0, p.mmr - d.loss), pts: Math.max(0, (p.pts || 0) - d.loss), losses: p.losses + 1, streak: ns, streakPower: 0 };
     });
 
     // Summary gain/loss for display (average of individual deltas)
-    const avgGain = Math.round(winIds.reduce((s,id)=>s+(playerDeltas[id]?.gain||0),0)/Math.max(winIds.length,1));
-    const avgLoss = Math.round(losIds.reduce((s,id)=>s+(playerDeltas[id]?.loss||0),0)/Math.max(losIds.length,1));
+    const avgGain = Math.round(winIds.reduce((s, id) => s + (playerDeltas[id]?.gain || 0), 0) / Math.max(winIds.length, 1));
+    const avgLoss = Math.round(losIds.reduce((s, id) => s + (playerDeltas[id]?.loss || 0), 0) / Math.max(losIds.length, 1));
 
     return { ...g, ptsGain: avgGain, ptsLoss: avgLoss, mmrGain: avgGain, mmrLoss: avgLoss, playerDeltas };
   });
@@ -175,48 +196,49 @@ function replayGames(basePlayers, games) {
 // different gains if one is heavily favoured and the other is an underdog.
 //
 function calcPlayerDelta({ winnerScore, loserScore, playerMMR, playerRank,
-                           playerStreak, oppAvgMMR, oppAvgRank, isWinner }) {
-  // 1. Score dominance (same for all players in the game)
-  const scoreDiff  = winnerScore - loserScore;
+  playerStreakPower, oppAvgMMR, oppAvgRank, isWinner }) {
+  // 1. Score dominance
+  const scoreDiff = winnerScore - loserScore;
   const scoreRatio = scoreDiff / Math.max(winnerScore, 1);
-  const scoreMult  = 1 + CONFIG.SCORE_WEIGHT * Math.pow(scoreRatio, CONFIG.SCORE_EXP);
+  const scoreMult = 1 + CONFIG.SCORE_WEIGHT * Math.pow(scoreRatio, CONFIG.SCORE_EXP);
 
-  // 2. MMR surprise: sigmoid of (myMMR - oppAvgMMR)
-  //    positive gap = favourite → low eloScale (smaller reward for expected win)
-  //    negative gap = underdog  → high eloScale (bigger reward for upset)
-  const mmrGap   = playerMMR - oppAvgMMR;
+  // 2. MMR surprise
+  const mmrGap = playerMMR - oppAvgMMR;
   const eloScale = 2 / (1 + Math.exp(mmrGap / CONFIG.ELO_DIVISOR));
 
-  // 3. Rank gap vs opponents
-  const rankDiff  = isWinner
-    ? (oppAvgRank - playerRank)   // positive = I ranked lower = upset bonus
-    : (playerRank - oppAvgRank);  // positive = I ranked higher = punished more
+  // 3. Rank gap
+  const rankDiff = isWinner
+    ? (oppAvgRank - playerRank)
+    : (playerRank - oppAvgRank);
   const rankScale = 1 + CONFIG.RANK_WEIGHT * Math.tanh(rankDiff / CONFIG.RANK_DIVISOR);
 
-  // 4. Streak
-  const mult = streakMult(playerStreak);
+  // 4. Quality-weighted streak (capped, convergence-safe)
+  const mult = streakMult(playerStreakPower, isWinner);
+
+  // Quality score this game = how "hard" was the opponent
+  const qualityScore = eloScale * rankScale;
 
   if (isWinner) {
     const gain = Math.max(2, Math.round(CONFIG.BASE_GAIN * scoreMult * eloScale * rankScale * mult));
-    return { gain, loss: 0, scoreMult, eloScale, rankScale, streakMult: mult };
+    return { gain, loss: 0, scoreMult, eloScale, rankScale, streakMultVal: mult, qualityScore };
   } else {
     const loss = Math.max(1, Math.round(CONFIG.BASE_LOSS * scoreMult * (2 - eloScale) * (2 - rankScale) * mult));
-    return { gain: 0, loss, scoreMult, eloScale, rankScale, streakMult: mult };
+    return { gain: 0, loss, scoreMult, eloScale, rankScale, streakMultVal: mult, qualityScore };
   }
 }
 
-// Legacy team-level wrapper used by GameDetail display (summary only, not for applying deltas)
+// Legacy team-level wrapper used by GameDetail display (summary only)
 function calcDelta({ winnerScore, loserScore, winnerAvgMMR, loserAvgMMR,
-                     winnerAvgStreak, loserAvgStreak, winnerAvgRank, loserAvgRank }) {
-  const scoreDiff  = winnerScore - loserScore;
+  winnerAvgStreakPower, loserAvgStreakPower, winnerAvgRank, loserAvgRank }) {
+  const scoreDiff = winnerScore - loserScore;
   const scoreRatio = scoreDiff / Math.max(winnerScore, 1);
-  const scoreMult  = 1 + CONFIG.SCORE_WEIGHT * Math.pow(scoreRatio, CONFIG.SCORE_EXP);
-  const mmrGap     = winnerAvgMMR - loserAvgMMR;
-  const eloScale   = 2 / (1 + Math.exp(mmrGap / CONFIG.ELO_DIVISOR));
-  const rankDiff   = (loserAvgRank ?? 0) - (winnerAvgRank ?? 0);
-  const rankScale  = 1 + CONFIG.RANK_WEIGHT * Math.tanh(rankDiff / CONFIG.RANK_DIVISOR);
-  const winMult    = streakMult(winnerAvgStreak);
-  const lossMult   = streakMult(loserAvgStreak);
+  const scoreMult = 1 + CONFIG.SCORE_WEIGHT * Math.pow(scoreRatio, CONFIG.SCORE_EXP);
+  const mmrGap = winnerAvgMMR - loserAvgMMR;
+  const eloScale = 2 / (1 + Math.exp(mmrGap / CONFIG.ELO_DIVISOR));
+  const rankDiff = (loserAvgRank ?? 0) - (winnerAvgRank ?? 0);
+  const rankScale = 1 + CONFIG.RANK_WEIGHT * Math.tanh(rankDiff / CONFIG.RANK_DIVISOR);
+  const winMult = streakMult(winnerAvgStreakPower ?? 0, true);
+  const lossMult = streakMult(loserAvgStreakPower ?? 0, false);
   const gain = Math.max(2, Math.round(CONFIG.BASE_GAIN * scoreMult * eloScale * rankScale * winMult));
   const loss = Math.max(1, Math.round(CONFIG.BASE_LOSS * scoreMult * (2 - eloScale) * (2 - rankScale) * lossMult));
   return { gain, loss, eloScale, rankScale, winMult, lossMult, scoreMult };
@@ -241,17 +263,17 @@ function getMonthKey() {
 const MK = getMonthKey();
 const SEED = {
   players: [
-    { id:"p1", name:"Alex",   mmr:1060, pts:74,  wins:9,  losses:3, streak: 4, championships:[] },
-    { id:"p2", name:"Jordan", mmr:1038, pts:55,  wins:8,  losses:4, streak: 3, championships:[] },
-    { id:"p3", name:"Sam",    mmr:1018, pts:38,  wins:6,  losses:5, streak: 1, championships:[] },
-    { id:"p4", name:"Riley",  mmr: 992, pts:18,  wins:4,  losses:6, streak:-2, championships:[] },
-    { id:"p5", name:"Casey",  mmr: 981, pts:10,  wins:3,  losses:7, streak:-3, championships:[] },
-    { id:"p6", name:"Morgan", mmr: 970, pts: 4,  wins:2,  losses:8, streak:-4, championships:[] },
+    { id: "p1", name: "Alex", mmr: 1060, pts: 74, wins: 9, losses: 3, streak: 4, championships: [] },
+    { id: "p2", name: "Jordan", mmr: 1038, pts: 55, wins: 8, losses: 4, streak: 3, championships: [] },
+    { id: "p3", name: "Sam", mmr: 1018, pts: 38, wins: 6, losses: 5, streak: 1, championships: [] },
+    { id: "p4", name: "Riley", mmr: 992, pts: 18, wins: 4, losses: 6, streak: -2, championships: [] },
+    { id: "p5", name: "Casey", mmr: 981, pts: 10, wins: 3, losses: 7, streak: -3, championships: [] },
+    { id: "p6", name: "Morgan", mmr: 970, pts: 4, wins: 2, losses: 8, streak: -4, championships: [] },
   ],
   games: [
-    { id:"g1", sideA:["p1","p2"], sideB:["p3","p4"], winner:"A", scoreA:10, scoreB:6,  ptsGain:14, ptsLoss:6,  mmrGain:14, mmrLoss:6,  eloScale:.52, ptsFactor:.55, winMult:1.7, lossMult:1.1, date:new Date(Date.now()-86400000*3).toISOString(), monthKey:MK },
-    { id:"g2", sideA:["p3","p5"], sideB:["p4","p6"], winner:"A", scoreA:10, scoreB:7,  ptsGain:12, ptsLoss:5,  mmrGain:12, mmrLoss:5,  eloScale:.50, ptsFactor:.50, winMult:1.2, lossMult:1.0, date:new Date(Date.now()-86400000*2).toISOString(), monthKey:MK },
-    { id:"g3", sideA:["p2","p4"], sideB:["p1","p3"], winner:"A", scoreA:10, scoreB:8,  ptsGain:13, ptsLoss:5,  mmrGain:13, mmrLoss:5,  eloScale:.55, ptsFactor:.48, winMult:1.4, lossMult:1.3, date:new Date(Date.now()-86400000).toISOString(),   monthKey:MK },
+    { id: "g1", sideA: ["p1", "p2"], sideB: ["p3", "p4"], winner: "A", scoreA: 10, scoreB: 6, ptsGain: 14, ptsLoss: 6, mmrGain: 14, mmrLoss: 6, eloScale: .52, ptsFactor: .55, winMult: 1.7, lossMult: 1.1, date: new Date(Date.now() - 86400000 * 3).toISOString(), monthKey: MK },
+    { id: "g2", sideA: ["p3", "p5"], sideB: ["p4", "p6"], winner: "A", scoreA: 10, scoreB: 7, ptsGain: 12, ptsLoss: 5, mmrGain: 12, mmrLoss: 5, eloScale: .50, ptsFactor: .50, winMult: 1.2, lossMult: 1.0, date: new Date(Date.now() - 86400000 * 2).toISOString(), monthKey: MK },
+    { id: "g3", sideA: ["p2", "p4"], sideB: ["p1", "p3"], winner: "A", scoreA: 10, scoreB: 8, ptsGain: 13, ptsLoss: 5, mmrGain: 13, mmrLoss: 5, eloScale: .55, ptsFactor: .48, winMult: 1.4, lossMult: 1.3, date: new Date(Date.now() - 86400000).toISOString(), monthKey: MK },
   ],
   monthlyPlacements: {},
   finals: {},
@@ -297,10 +319,10 @@ function normaliseState(s) {
 
 // Duplicate game check: same players + same score on same day
 function isDuplicateGame(candidate, existing) {
-  const day = candidate.date.slice(0,10);
+  const day = candidate.date.slice(0, 10);
   const cSet = new Set([...candidate.sideA, ...candidate.sideB]);
   return existing.some(g => {
-    if (g.date.slice(0,10) !== day) return false;
+    if (g.date.slice(0, 10) !== day) return false;
     const gSet = new Set([...g.sideA, ...g.sideB]);
     if (gSet.size !== cSet.size) return false;
     for (const id of cSet) if (!gSet.has(id)) return false;
@@ -354,9 +376,9 @@ async function _flushSave() {
       console.error('Save failed after max retries — fetching remote to reconcile');
       _sq.state = null; _sq.retries = 0;
       try {
-        const { data: cur } = await supabase.from('app_state').select('state').eq('id',1).single();
+        const { data: cur } = await supabase.from('app_state').select('state').eq('id', 1).single();
         if (cur?.state && _sq.onConflict) _sq.onConflict(normaliseState(cur.state));
-      } catch {}
+      } catch { }
     }
   }
 }
@@ -628,17 +650,25 @@ const CSS = `
     .brand span{display:none}
     .nav{display:none}
     .ham-btn{display:flex}
-    .main{padding:12px 10px}
+    .main{padding:10px 8px}
     .grid-3{grid-template-columns:1fr 1fr}
     .grid-2{grid-template-columns:1fr}
     .stat-val{font-size:20px}
-    .modal{padding:16px;max-height:85vh}
+    .modal{padding:14px 12px;max-height:92vh;max-width:100%;margin:0;border-radius:8px 8px 0 0;position:fixed;bottom:0;left:0;right:0;overflow-y:auto}
+    .overlay{align-items:flex-end;padding:0}
     .cd-num{font-size:32px}
     .cd-unit{min-width:38px}
     .cd-sep{font-size:26px}
-    .tbl{min-width:420px}
-    .tbl td,.tbl th{padding:8px 10px}
-    .game-row{grid-template-columns:1fr auto 1fr;padding:9px 12px}
+    .tbl{min-width:380px}
+    .tbl td,.tbl th{padding:7px 8px;font-size:12px}
+    .game-row{grid-template-columns:1fr auto 1fr;padding:9px 10px;gap:6px}
+    .g-score{font-size:17px;min-width:42px}
+    .g-side{font-size:11px}
+    .modal-lg{max-width:100%}
+    .stack{gap:10px}
+    .card-header{padding:10px 12px}
+    .bracket{padding:12px;gap:12px}
+    .b-match{width:160px}
   }
   @media(max-width:380px){
     .grid-3{grid-template-columns:1fr}
@@ -665,27 +695,27 @@ const CSS = `
 // ============================================================
 function fmtDate(iso) {
   const d = new Date(iso);
-  return d.toLocaleDateString("en-GB", { day:"numeric", month:"short" }) + " " +
-    d.toLocaleTimeString("en-GB", { hour:"2-digit", minute:"2-digit" });
+  return d.toLocaleDateString("en-GB", { day: "numeric", month: "short" }) + " " +
+    d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
 }
 function fmtMonth(key) {
   if (!key) return "";
   const [y, m] = key.split("-");
-  return new Date(y, m - 1).toLocaleString("en-GB", { month:"long", year:"numeric" });
+  return new Date(y, m - 1).toLocaleString("en-GB", { month: "long", year: "numeric" });
 }
 function pName(id, players) { return players.find(p => p.id === id)?.name || "?"; }
 
-function StreakBadge({ streak, showMult=false }) {
+function StreakBadge({ streak, streakPower = 0, showMult = false }) {
   const s = streak || 0;
   if (s === 0) return <span className="text-dd">—</span>;
-  const m = streakMult(s);
+  const m = streakMult(streakPower || Math.abs(s) * 0.8, s > 0);
   return s > 0
-    ? <span className="text-g bold">▲{s}{showMult && <span className="xs" style={{opacity:.7}}> ×{m.toFixed(2)}</span>}</span>
-    : <span className="text-r bold">▼{Math.abs(s)}{showMult && <span className="xs" style={{opacity:.7}}> ×{m.toFixed(2)}</span>}</span>;
+    ? <span className="text-g bold">▲{s}{showMult && <span className="xs" style={{ opacity: .7 }}> ×{m.toFixed(2)}</span>}</span>
+    : <span className="text-r bold">▼{Math.abs(s)}{showMult && <span className="xs" style={{ opacity: .7 }}> ×{m.toFixed(2)}</span>}</span>;
 }
 function Pips({ used }) {
-  return <>{Array.from({length:CONFIG.MAX_PLACEMENTS_PER_MONTH}).map((_,i)=>
-    <span key={i} className={`pip ${i<used?"pip-u":"pip-f"}`}/>
+  return <>{Array.from({ length: CONFIG.MAX_PLACEMENTS_PER_MONTH }).map((_, i) =>
+    <span key={i} className={`pip ${i < used ? "pip-u" : "pip-f"}`} />
   )}</>;
 }
 function PosBadge({ pos }) {
@@ -698,16 +728,16 @@ function PosBadge({ pos }) {
     if (p === "both" || p === "flex") return <span key="flex" className="pos-badge pos-both">⚡ FLEX</span>;
     return null;
   }).filter(Boolean);
-  return <div className="fac" style={{gap:3,flexWrap:"wrap"}}>{badges}</div>;
+  return <div className="fac" style={{ gap: 3, flexWrap: "wrap" }}>{badges}</div>;
 }
 function Toast({ t }) {
   if (!t) return null;
-  return <div className={`toast ${t.type||"info"}`}>{t.msg}</div>;
+  return <div className={`toast ${t.type || "info"}`}>{t.msg}</div>;
 }
-function Modal({ onClose, children, large=false }) {
+function Modal({ onClose, children, large = false }) {
   return (
-    <div className="overlay" onClick={e=>e.target===e.currentTarget&&onClose()}>
-      <div className={`modal ${large?"modal-lg":""}`}>{children}</div>
+    <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className={`modal ${large ? "modal-lg" : ""}`}>{children}</div>
     </div>
   );
 }
@@ -729,15 +759,15 @@ function renderMd(md) {
     .replace(/<\/ul>\s*<ul>/g, "");
 }
 
-function ConfirmDialog({ title, msg, onConfirm, onCancel, danger=false }) {
+function ConfirmDialog({ title, msg, onConfirm, onCancel, danger = false }) {
   return (
     <Modal onClose={onCancel}>
       <div className="confirm-modal">
-        <div className="modal-title" style={{color:danger?"var(--red)":"var(--amber)"}}>{title}</div>
+        <div className="modal-title" style={{ color: danger ? "var(--red)" : "var(--amber)" }}>{title}</div>
         <p className="text-d sm mb16">{msg}</p>
-        <div className="fac" style={{justifyContent:"center",gap:10}}>
+        <div className="fac" style={{ justifyContent: "center", gap: 10 }}>
           <button className="btn btn-g" onClick={onCancel}>Cancel</button>
-          <button className={`btn ${danger?"btn-d":"btn-p"}`} onClick={onConfirm}>Confirm</button>
+          <button className={`btn ${danger ? "btn-d" : "btn-p"}`} onClick={onConfirm}>Confirm</button>
         </div>
       </div>
     </Modal>
@@ -749,37 +779,37 @@ function ConfirmDialog({ title, msg, onConfirm, onCancel, danger=false }) {
 // ============================================================
 function PlayerProfile({ player, state, onClose, isAdmin, onEdit }) {
   const monthKey = getMonthKey();
-  const placements = (state.monthlyPlacements[monthKey]||{})[player.id]||0;
+  const placements = (state.monthlyPlacements[monthKey] || {})[player.id] || 0;
   const myGames = [...state.games]
-    .filter(g=>g.sideA.includes(player.id)||g.sideB.includes(player.id))
-    .sort((a,b)=>new Date(b.date)-new Date(a.date));
-  const rank = [...state.players].sort((a,b)=>(b.pts||0)-(a.pts||0)).findIndex(p=>p.id===player.id)+1;
+    .filter(g => g.sideA.includes(player.id) || g.sideB.includes(player.id))
+    .sort((a, b) => new Date(b.date) - new Date(a.date));
+  const rank = [...state.players].sort((a, b) => (b.pts || 0) - (a.pts || 0)).findIndex(p => p.id === player.id) + 1;
   const champs = player.championships || [];
 
   return (
     <Modal onClose={onClose} large>
       {champs.length > 0 && (
         <div className="championship-banner">
-          <span style={{fontSize:22}}>🏆</span>
+          <span style={{ fontSize: 22 }}>🏆</span>
           <div>
-            <div className="xs text-am bold" style={{letterSpacing:2,textTransform:"uppercase"}}>Monthly Champion</div>
-            <div className="sm text-d mt8" style={{marginTop:2}}>
-              {champs.map((c,i)=>(
-                <span key={i}>{fmtMonth(c.month)}{c.partner ? ` (w/ ${c.partner})` : ""}{i<champs.length-1?" · ":""}</span>
+            <div className="xs text-am bold" style={{ letterSpacing: 2, textTransform: "uppercase" }}>Monthly Champion</div>
+            <div className="sm text-d mt8" style={{ marginTop: 2 }}>
+              {champs.map((c, i) => (
+                <span key={i}>{fmtMonth(c.month)}{c.partner ? ` (w/ ${c.partner})` : ""}{i < champs.length - 1 ? " · " : ""}</span>
               ))}
             </div>
           </div>
           {isAdmin && (
-            <button className="btn btn-warn btn-sm" style={{marginLeft:"auto"}} onClick={onEdit}>Edit</button>
+            <button className="btn btn-warn btn-sm" style={{ marginLeft: "auto" }} onClick={onEdit}>Edit</button>
           )}
         </div>
       )}
 
       <div className="prof-head">
         <div className="prof-av">{player.name[0].toUpperCase()}</div>
-        <div style={{flex:1}}>
+        <div style={{ flex: 1 }}>
           <div className="prof-name">{player.name}</div>
-          <div className="prof-sub">Rank #{rank} · {player.pts||0} pts</div>
+          <div className="prof-sub">Rank #{rank} · {player.pts || 0} pts</div>
         </div>
         {isAdmin && !champs.length && (
           <button className="btn btn-g btn-sm" onClick={onEdit}>Edit Profile</button>
@@ -791,65 +821,65 @@ function PlayerProfile({ player, state, onClose, isAdmin, onEdit }) {
           <div className="stat-lbl">Points</div>
           <div className="stat-val am">
             {placements >= CONFIG.MAX_PLACEMENTS_PER_MONTH
-              ? (player.pts||0)
+              ? (player.pts || 0)
               : <span className="text-dd" title="Complete placements to reveal points">?</span>}
           </div>
         </div>
         <div className="stat-box">
           <div className="stat-lbl">Record</div>
-          <div className="stat-val" style={{fontSize:20}}>
+          <div className="stat-val" style={{ fontSize: 20 }}>
             <span className="text-g">{player.wins}</span>
-            <span className="text-dd" style={{fontSize:13}}>/</span>
+            <span className="text-dd" style={{ fontSize: 13 }}>/</span>
             <span className="text-r">{player.losses}</span>
           </div>
         </div>
         <div className="stat-box">
           <div className="stat-lbl">Streak</div>
-          <div className="stat-val" style={{fontSize:20}}><StreakBadge streak={player.streak} showMult /></div>
+          <div className="stat-val" style={{ fontSize: 20 }}><StreakBadge streak={player.streak} showMult /></div>
         </div>
       </div>
 
       <div className="grid-3 mb16">
         <div className="stat-box">
           <div className="stat-lbl">Win Rate</div>
-          <div className="stat-val" style={{fontSize:20}}>
-            {player.wins+player.losses>0
-              ? <span className={player.wins/(player.wins+player.losses)>=.5?"text-g":"text-r"}>
-                  {Math.round(player.wins/(player.wins+player.losses)*100)}%
-                </span>
+          <div className="stat-val" style={{ fontSize: 20 }}>
+            {player.wins + player.losses > 0
+              ? <span className={player.wins / (player.wins + player.losses) >= .5 ? "text-g" : "text-r"}>
+                {Math.round(player.wins / (player.wins + player.losses) * 100)}%
+              </span>
               : <span className="text-dd">—</span>}
           </div>
         </div>
         <div className="stat-box">
           <div className="stat-lbl">Position</div>
-          <div style={{marginTop:8}}><PosBadge pos={player.position}/></div>
+          <div style={{ marginTop: 8 }}><PosBadge pos={player.position} /></div>
         </div>
         <div className="stat-box">
           <div className="stat-lbl">Placements this month</div>
-          <div style={{marginTop:10}}><Pips used={placements}/></div>
+          <div style={{ marginTop: 10 }}><Pips used={placements} /></div>
         </div>
       </div>
 
       <div className="sec">Match History</div>
-      {myGames.length===0 && <div className="text-d sm">No games yet</div>}
-      {myGames.map(g=>{
+      {myGames.length === 0 && <div className="text-d sm">No games yet</div>}
+      {myGames.map(g => {
         const onA = g.sideA.includes(player.id);
-        const won = (onA&&g.winner==="A")||(!onA&&g.winner==="B");
-        const mates = (onA?g.sideA:g.sideB).filter(id=>id!==player.id).map(id=>pName(id,state.players));
-        const opps  = (onA?g.sideB:g.sideA).map(id=>pName(id,state.players));
-        const myScore = onA?g.scoreA:g.scoreB;
-        const oppScore = onA?g.scoreB:g.scoreA;
+        const won = (onA && g.winner === "A") || (!onA && g.winner === "B");
+        const mates = (onA ? g.sideA : g.sideB).filter(id => id !== player.id).map(id => pName(id, state.players));
+        const opps = (onA ? g.sideB : g.sideA).map(id => pName(id, state.players));
+        const myScore = onA ? g.scoreA : g.scoreB;
+        const oppScore = onA ? g.scoreB : g.scoreA;
         return (
-          <div key={g.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"7px 0",borderBottom:"1px solid var(--b1)",fontSize:12,gap:6,flexWrap:"wrap"}}>
-            <span className={`tag ${won?"tag-w":"tag-l"}`}>{won?"WIN":"LOSS"}</span>
-            {mates.length>0 && <span className="text-d sm">w/ {mates.join(" & ")}</span>}
+          <div key={g.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderBottom: "1px solid var(--b1)", fontSize: 12, gap: 6, flexWrap: "wrap" }}>
+            <span className={`tag ${won ? "tag-w" : "tag-l"}`}>{won ? "WIN" : "LOSS"}</span>
+            {mates.length > 0 && <span className="text-d sm">w/ {mates.join(" & ")}</span>}
             <span className="text-d sm">vs {opps.join(" & ")}</span>
-            <span className="disp text-am" style={{fontSize:15}}>{myScore}–{oppScore}</span>
-            <span className={won?"text-g":"text-r"}>
+            <span className="disp text-am" style={{ fontSize: 15 }}>{myScore}–{oppScore}</span>
+            <span className={won ? "text-g" : "text-r"}>
               {(() => {
                 const d = g.playerDeltas?.[player.id];
                 const delta = d ? (won ? d.gain : d.loss) : (won ? g.ptsGain : g.ptsLoss);
-                return `${won?"+":"−"}${delta}pts`;
+                return `${won ? "+" : "−"}${delta}pts`;
               })()}
             </span>
             <span className="text-dd xs">{fmtDate(g.date)}</span>
@@ -866,12 +896,12 @@ function PlayerProfile({ player, state, onClose, isAdmin, onEdit }) {
 // ============================================================
 function EditPlayerModal({ player, state, setState, showToast, onClose }) {
   const [name, setName] = useState(player.name);
-  const [pts, setPts] = useState(String(player.pts||0));
-  const [streak, setStreak] = useState(String(player.streak||0));
+  const [pts, setPts] = useState(String(player.pts || 0));
+  const [streak, setStreak] = useState(String(player.streak || 0));
   const [positions, setPositions] = useState(() => {
     const p = player.position;
     if (!p || p === "none") return [];
-    if (p === "both") return ["attack","defense","flex"];
+    if (p === "both") return ["attack", "defense", "flex"];
     if (Array.isArray(p)) return p;
     return [p];
   });
@@ -882,12 +912,12 @@ function EditPlayerModal({ player, state, setState, showToast, onClose }) {
   function save() {
     const newPts = parseInt(pts);
     const newStreak = parseInt(streak);
-    if (isNaN(newPts) || isNaN(newStreak)) { showToast("Invalid values","error"); return; }
-    if (!name.trim()) { showToast("Name required","error"); return; }
+    if (isNaN(newPts) || isNaN(newStreak)) { showToast("Invalid values", "error"); return; }
+    if (!name.trim()) { showToast("Name required", "error"); return; }
     setState(s => ({
       ...s,
-      players: s.players.map(p => p.id===player.id
-        ? {...p, name:name.trim(), pts:newPts, streak:newStreak, position: positions.length === 0 ? "none" : positions}
+      players: s.players.map(p => p.id === player.id
+        ? { ...p, name: name.trim(), pts: newPts, streak: newStreak, position: positions.length === 0 ? "none" : positions }
         : p
       )
     }));
@@ -896,12 +926,12 @@ function EditPlayerModal({ player, state, setState, showToast, onClose }) {
   }
 
   function addChamp() {
-    if (!champMonth) { showToast("Select a month","error"); return; }
+    if (!champMonth) { showToast("Select a month", "error"); return; }
     const c = { month: champMonth, partner: champPartner.trim() || null };
     setState(s => ({
       ...s,
-      players: s.players.map(p => p.id===player.id
-        ? {...p, championships:[...(p.championships||[]), c]}
+      players: s.players.map(p => p.id === player.id
+        ? { ...p, championships: [...(p.championships || []), c] }
         : p
       )
     }));
@@ -912,8 +942,8 @@ function EditPlayerModal({ player, state, setState, showToast, onClose }) {
   function removeChamp(i) {
     setState(s => ({
       ...s,
-      players: s.players.map(p => p.id===player.id
-        ? {...p, championships:(p.championships||[]).filter((_,idx)=>idx!==i)}
+      players: s.players.map(p => p.id === player.id
+        ? { ...p, championships: (p.championships || []).filter((_, idx) => idx !== i) }
         : p
       )
     }));
@@ -922,11 +952,11 @@ function EditPlayerModal({ player, state, setState, showToast, onClose }) {
 
   function recalcPlayer() {
     setConfirm({
-      title:"Recalculate from Games?",
-      msg:`This will recalculate ${player.name}'s pts, mmr, wins, losses, and streak from the game log. Manual edits will be overwritten.`,
+      title: "Recalculate from Games?",
+      msg: `This will recalculate ${player.name}'s pts, mmr, wins, losses, and streak from the game log. Manual edits will be overwritten.`,
       onConfirm: () => {
         const { players, games } = replayGames(state.players, state.games);
-        setState(s => ({...s, players, games}));
+        setState(s => ({ ...s, players, games }));
         showToast("All stats recalculated from game log");
         setConfirm(null);
         onClose();
@@ -935,9 +965,9 @@ function EditPlayerModal({ player, state, setState, showToast, onClose }) {
   }
 
   // Generate month options (last 12 months)
-  const monthOptions = Array.from({length:12}).map((_,i) => {
-    const d = new Date(); d.setMonth(d.getMonth()-i);
-    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+  const monthOptions = Array.from({ length: 12 }).map((_, i) => {
+    const d = new Date(); d.setMonth(d.getMonth() - i);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
   });
 
   return (
@@ -947,51 +977,51 @@ function EditPlayerModal({ player, state, setState, showToast, onClose }) {
 
         <div className="sec">Profile</div>
         <div className="field"><label className="lbl">Name</label>
-          <input className="inp inp-edit" value={name} onChange={e=>setName(e.target.value)}/></div>
+          <input className="inp inp-edit" value={name} onChange={e => setName(e.target.value)} /></div>
         <div className="grid-2">
           <div className="field"><label className="lbl">Points (visible)</label>
-            <input className="inp inp-edit" type="number" value={pts} onChange={e=>setPts(e.target.value)}/></div>
+            <input className="inp inp-edit" type="number" value={pts} onChange={e => setPts(e.target.value)} /></div>
           <div className="field"><label className="lbl">Streak (+win / -loss)</label>
-            <input className="inp inp-edit" type="number" value={streak} onChange={e=>setStreak(e.target.value)}/></div>
+            <input className="inp inp-edit" type="number" value={streak} onChange={e => setStreak(e.target.value)} /></div>
         </div>
         <div className="field mt8"><label className="lbl">Position Preference</label>
-          <div className="fac" style={{gap:6,flexWrap:"wrap",marginBottom:4}}>
-            {[["attack","🗡 Attack"],["defense","🛡 Defense"],["flex","⚡ Flex"]].map(([v,l])=>{
+          <div className="fac" style={{ gap: 6, flexWrap: "wrap", marginBottom: 4 }}>
+            {[["attack", "🗡 Attack"], ["defense", "🛡 Defense"], ["flex", "⚡ Flex"]].map(([v, l]) => {
               const on = positions.includes(v);
               return (
-                <button key={v} className={`pill ${on?"on":""}`} onClick={()=>{
-                  setPositions(prev => prev.includes(v) ? prev.filter(x=>x!==v) : [...prev, v]);
+                <button key={v} className={`pill ${on ? "on" : ""}`} onClick={() => {
+                  setPositions(prev => prev.includes(v) ? prev.filter(x => x !== v) : [...prev, v]);
                 }}>{l}</button>
               );
             })}
           </div>
-          <div className="xs text-dd" style={{marginTop:3}}>Select all that apply. Flex = comfortable in either role.</div>
+          <div className="xs text-dd" style={{ marginTop: 3 }}>Select all that apply. Flex = comfortable in either role.</div>
         </div>
         <div className="msg msg-w sm">Manually editing pts/streak will diverge from game history. Use recalculate to re-sync.</div>
 
-        <div className="divider"/>
+        <div className="divider" />
         <div className="sec">Championships</div>
-        {(player.championships||[]).map((c,i)=>(
-          <div key={i} className="fbc" style={{padding:"6px 0",borderBottom:"1px solid var(--b1)",fontSize:12}}>
-            <span className="text-am">🏆 {fmtMonth(c.month)}{c.partner?` (w/ ${c.partner})`:""}</span>
-            <button className="btn btn-d btn-sm" onClick={()=>removeChamp(i)}>Remove</button>
+        {(player.championships || []).map((c, i) => (
+          <div key={i} className="fbc" style={{ padding: "6px 0", borderBottom: "1px solid var(--b1)", fontSize: 12 }}>
+            <span className="text-am">🏆 {fmtMonth(c.month)}{c.partner ? ` (w/ ${c.partner})` : ""}</span>
+            <button className="btn btn-d btn-sm" onClick={() => removeChamp(i)}>Remove</button>
           </div>
         ))}
         <div className="grid-2 mt8">
           <div className="field"><label className="lbl">Month</label>
-            <select className="inp" value={champMonth} onChange={e=>setChampMonth(e.target.value)}>
+            <select className="inp" value={champMonth} onChange={e => setChampMonth(e.target.value)}>
               <option value="">Select…</option>
-              {monthOptions.map(m=><option key={m} value={m}>{fmtMonth(m)}</option>)}
+              {monthOptions.map(m => <option key={m} value={m}>{fmtMonth(m)}</option>)}
             </select>
           </div>
           <div className="field"><label className="lbl">Partner (optional)</label>
-            <input className="inp" placeholder="Teammate name" value={champPartner} onChange={e=>setChampPartner(e.target.value)}/>
+            <input className="inp" placeholder="Teammate name" value={champPartner} onChange={e => setChampPartner(e.target.value)} />
           </div>
         </div>
         <button className="btn btn-warn btn-sm" onClick={addChamp}>+ Add Championship</button>
 
-        <div className="divider"/>
-        <div className="fac" style={{justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
+        <div className="divider" />
+        <div className="fac" style={{ justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
           <button className="btn btn-g btn-sm" onClick={recalcPlayer}>Recalculate All from Games</button>
           <div className="fac">
             <button className="btn btn-g" onClick={onClose}>Cancel</button>
@@ -999,7 +1029,7 @@ function EditPlayerModal({ player, state, setState, showToast, onClose }) {
           </div>
         </div>
       </Modal>
-      {confirm && <ConfirmDialog {...confirm} onCancel={()=>setConfirm(null)}/>}
+      {confirm && <ConfirmDialog {...confirm} onCancel={() => setConfirm(null)} />}
     </>
   );
 }
@@ -1014,23 +1044,23 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
   const [winner, setWinner] = useState(game.winner);
   const [confirm, setConfirm] = useState(null);
 
-  const sA = game.sideA.map(id=>state.players.find(p=>p.id===id)).filter(Boolean);
-  const sB = game.sideB.map(id=>state.players.find(p=>p.id===id)).filter(Boolean);
+  const sA = game.sideA.map(id => state.players.find(p => p.id === id)).filter(Boolean);
+  const sB = game.sideB.map(id => state.players.find(p => p.id === id)).filter(Boolean);
 
   function saveEdit() {
     const nA = parseInt(scoreA), nB = parseInt(scoreB);
-    if (isNaN(nA)||isNaN(nB)||nA<0||nB<0) { showToast("Invalid scores","error"); return; }
-    if (nA===nB) { showToast("No draws","error"); return; }
+    if (isNaN(nA) || isNaN(nB) || nA < 0 || nB < 0) { showToast("Invalid scores", "error"); return; }
+    if (nA === nB) { showToast("No draws", "error"); return; }
     // Update game record, then replay all games to recalculate stats
-    const updatedGame = {...game, scoreA:nA, scoreB:nB, winner};
-    const editedGames = state.games.map(g=>g.id===game.id ? updatedGame : g);
-    const basePlayers = state.players.map(p=>({...p, mmr:CONFIG.STARTING_MMR, pts:CONFIG.STARTING_PTS, wins:0, losses:0, streak:0}));
+    const updatedGame = { ...game, scoreA: nA, scoreB: nB, winner };
+    const editedGames = state.games.map(g => g.id === game.id ? updatedGame : g);
+    const basePlayers = state.players.map(p => ({ ...p, mmr: CONFIG.STARTING_MMR, pts: CONFIG.STARTING_PTS, wins: 0, losses: 0, streak: 0 }));
     const { players: newPlayers, games: newGames } = replayGames(basePlayers, editedGames);
     const mergedPlayers = newPlayers.map(p => {
-      const orig = state.players.find(x=>x.id===p.id);
-      return {...p, name:orig?.name||p.name, championships:orig?.championships||[], position:orig?.position||p.position};
+      const orig = state.players.find(x => x.id === p.id);
+      return { ...p, name: orig?.name || p.name, championships: orig?.championships || [], position: orig?.position || p.position };
     });
-    setState(s=>({...s, games:newGames, players:mergedPlayers}));
+    setState(s => ({ ...s, games: newGames, players: mergedPlayers }));
     showToast("Game updated & stats recalculated");
     setEditing(false);
     onClose();
@@ -1038,18 +1068,18 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
 
   function deleteGame() {
     setConfirm({
-      title:"Delete Game?",
-      msg:"This will permanently remove the game and recalculate all affected stats.",
-      danger:true,
-      onConfirm:()=>{
-        const filteredGames = state.games.filter(g=>g.id!==game.id);
-        const basePlayers = state.players.map(p=>({...p, mmr:CONFIG.STARTING_MMR, pts:CONFIG.STARTING_PTS, wins:0, losses:0, streak:0}));
+      title: "Delete Game?",
+      msg: "This will permanently remove the game and recalculate all affected stats.",
+      danger: true,
+      onConfirm: () => {
+        const filteredGames = state.games.filter(g => g.id !== game.id);
+        const basePlayers = state.players.map(p => ({ ...p, mmr: CONFIG.STARTING_MMR, pts: CONFIG.STARTING_PTS, wins: 0, losses: 0, streak: 0 }));
         const { players: newPlayers, games: newGames } = replayGames(basePlayers, filteredGames);
         const mergedPlayers = newPlayers.map(p => {
-          const orig = state.players.find(x=>x.id===p.id);
-          return {...p, name:orig?.name||p.name, championships:orig?.championships||[], position:orig?.position||p.position};
+          const orig = state.players.find(x => x.id === p.id);
+          return { ...p, name: orig?.name || p.name, championships: orig?.championships || [], position: orig?.position || p.position };
         });
-        setState(s=>({...s, games:newGames, players:mergedPlayers}));
+        setState(s => ({ ...s, games: newGames, players: mergedPlayers }));
         showToast("Game deleted & stats recalculated");
         setConfirm(null);
         onClose();
@@ -1061,71 +1091,71 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
     <>
       <Modal onClose={onClose}>
         <div className="fbc mb16">
-          <div className="modal-title" style={{marginBottom:0}}>Match Detail</div>
+          <div className="modal-title" style={{ marginBottom: 0 }}>Match Detail</div>
           {isAdmin && !editing && (
             <div className="fac">
-              <button className="btn btn-warn btn-sm" onClick={()=>setEditing(true)}>Edit</button>
+              <button className="btn btn-warn btn-sm" onClick={() => setEditing(true)}>Edit</button>
               <button className="btn btn-d btn-sm" onClick={deleteGame}>Delete</button>
             </div>
           )}
         </div>
         <div className="xs text-dd mb16">{fmtDate(game.date)}</div>
 
-        <div style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:14,alignItems:"center",marginBottom:18}}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr auto 1fr", gap: 14, alignItems: "center", marginBottom: 18 }}>
           <div>
-            <div className="xs text-dd" style={{marginBottom:5}}>{game.winner==="A"?"WINNER":"LOSER"}</div>
-            {sA.map(p=><div key={p.id} className={`bold ${game.winner==="A"?"text-g":"text-r"}`}>{p.name}</div>)}
+            <div className="xs text-dd" style={{ marginBottom: 5 }}>{game.winner === "A" ? "WINNER" : "LOSER"}</div>
+            {sA.map(p => <div key={p.id} className={`bold ${game.winner === "A" ? "text-g" : "text-r"}`}>{p.name}</div>)}
           </div>
-          <div style={{textAlign:"center"}}>
+          <div style={{ textAlign: "center" }}>
             {editing ? (
-              <div className="fac" style={{justifyContent:"center",gap:6}}>
+              <div className="fac" style={{ justifyContent: "center", gap: 6 }}>
                 <input className="inp inp-edit" type="number" min="0" value={scoreA}
-                  onChange={e=>setScoreA(e.target.value)}
-                  style={{width:56,textAlign:"center",fontSize:18,fontFamily:"var(--disp)",fontWeight:800}}/>
+                  onChange={e => setScoreA(e.target.value)}
+                  style={{ width: 56, textAlign: "center", fontSize: 18, fontFamily: "var(--disp)", fontWeight: 800 }} />
                 <span className="text-dd">–</span>
                 <input className="inp inp-edit" type="number" min="0" value={scoreB}
-                  onChange={e=>setScoreB(e.target.value)}
-                  style={{width:56,textAlign:"center",fontSize:18,fontFamily:"var(--disp)",fontWeight:800}}/>
+                  onChange={e => setScoreB(e.target.value)}
+                  style={{ width: 56, textAlign: "center", fontSize: 18, fontFamily: "var(--disp)", fontWeight: 800 }} />
               </div>
             ) : (
-              <div className="disp text-am" style={{fontSize:34}}>{game.scoreA}–{game.scoreB}</div>
+              <div className="disp text-am" style={{ fontSize: 34 }}>{game.scoreA}–{game.scoreB}</div>
             )}
             {editing && (
               <div className="mt8">
                 <label className="lbl">Winner</label>
-                <select className="inp" value={winner} onChange={e=>setWinner(e.target.value)}>
-                  <option value="A">Side A ({sA.map(p=>p.name).join(" & ")})</option>
-                  <option value="B">Side B ({sB.map(p=>p.name).join(" & ")})</option>
+                <select className="inp" value={winner} onChange={e => setWinner(e.target.value)}>
+                  <option value="A">Side A ({sA.map(p => p.name).join(" & ")})</option>
+                  <option value="B">Side B ({sB.map(p => p.name).join(" & ")})</option>
                 </select>
               </div>
             )}
             {!editing && (
               <div className="xs text-dd mt8">
-                {game.winner==="A"
+                {game.winner === "A"
                   ? <><span className="text-g">+{game.ptsGain}pts</span> / <span className="text-r">-{game.ptsLoss}pts</span></>
                   : <><span className="text-r">-{game.ptsLoss}pts</span> / <span className="text-g">+{game.ptsGain}pts</span></>}
               </div>
             )}
           </div>
-          <div style={{textAlign:"right"}}>
-            <div className="xs text-dd" style={{marginBottom:5}}>{game.winner==="B"?"WINNER":"LOSER"}</div>
-            {sB.map(p=><div key={p.id} className={`bold ${game.winner==="B"?"text-g":"text-r"}`}>{p.name}</div>)}
+          <div style={{ textAlign: "right" }}>
+            <div className="xs text-dd" style={{ marginBottom: 5 }}>{game.winner === "B" ? "WINNER" : "LOSER"}</div>
+            {sB.map(p => <div key={p.id} className={`bold ${game.winner === "B" ? "text-g" : "text-r"}`}>{p.name}</div>)}
           </div>
         </div>
 
-        {!editing && game.eloScale!=null && (
-          <div style={{background:"var(--s2)",borderRadius:6,padding:"8px 12px",fontSize:11,color:"var(--dimmer)",display:"flex",gap:16,flexWrap:"wrap"}}>
-            <span>Elo scale: <span className="text-am">{(game.eloScale*100).toFixed(0)}%</span></span>
+        {!editing && game.eloScale != null && (
+          <div style={{ background: "var(--s2)", borderRadius: 6, padding: "8px 12px", fontSize: 11, color: "var(--dimmer)", display: "flex", gap: 16, flexWrap: "wrap" }}>
+            <span>Elo scale: <span className="text-am">{(game.eloScale * 100).toFixed(0)}%</span></span>
             <span>Rank scale: <span className="text-am">{game.rankScale?.toFixed(2) ?? "—"}</span></span>
             <span>Win streak ×: <span className="text-am">{game.winMult?.toFixed(2)}</span></span>
             <span>Loss streak ×: <span className="text-am">{game.lossMult?.toFixed(2)}</span></span>
           </div>
         )}
 
-        <div className="fac mt16" style={{justifyContent:"flex-end",gap:8}}>
+        <div className="fac mt16" style={{ justifyContent: "flex-end", gap: 8 }}>
           {editing ? (
             <>
-              <button className="btn btn-g" onClick={()=>setEditing(false)}>Cancel</button>
+              <button className="btn btn-g" onClick={() => setEditing(false)}>Cancel</button>
               <button className="btn btn-p" onClick={saveEdit}>Save & Recalculate</button>
             </>
           ) : (
@@ -1133,7 +1163,7 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
           )}
         </div>
       </Modal>
-      {confirm && <ConfirmDialog {...confirm} onCancel={()=>setConfirm(null)}/>}
+      {confirm && <ConfirmDialog {...confirm} onCancel={() => setConfirm(null)} />}
     </>
   );
 }
@@ -1143,7 +1173,7 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
 // ============================================================
 function LeaderboardView({ state, setState, onSelectPlayer, rtConnected, isAdmin, showToast }) {
   const monthKey = getMonthKey();
-  const ranked = [...(state.players ?? [])].sort((a,b)=>(b.pts||0)-(a.pts||0));
+  const ranked = [...(state.players ?? [])].sort((a, b) => (b.pts || 0) - (a.pts || 0));
   const [showRecalcConfirm, setShowRecalcConfirm] = useState(false);
 
   function doRecalc() {
@@ -1152,107 +1182,107 @@ function LeaderboardView({ state, setState, onSelectPlayer, rtConnected, isAdmin
     showToast("All stats recalculated from game log");
     setShowRecalcConfirm(false);
   }
-  const monthGames = (state.games ?? []).filter(g=>g.monthKey===monthKey);
+  const monthGames = (state.games ?? []).filter(g => g.monthKey === monthKey);
 
   const prevSnapshot = useRef({});
   const [animMap, setAnimMap] = useState({});
-  useEffect(()=>{
+  useEffect(() => {
     const prev = prevSnapshot.current;
     const next = {};
     const anims = {};
-    ranked.forEach((p,i)=>{
+    ranked.forEach((p, i) => {
       const pr = prev[p.id]?.rank, pp = prev[p.id]?.pts;
-      if(pr!==undefined && pr!==i) anims[p.id] = i<pr?"rank-up":"rank-down";
-      else if(pp!==undefined && pp!==(p.pts||0)) anims[p.id]="pts-changed";
-      next[p.id]={rank:i,pts:p.pts||0};
+      if (pr !== undefined && pr !== i) anims[p.id] = i < pr ? "rank-up" : "rank-down";
+      else if (pp !== undefined && pp !== (p.pts || 0)) anims[p.id] = "pts-changed";
+      next[p.id] = { rank: i, pts: p.pts || 0 };
     });
-    prevSnapshot.current=next;
-    if(Object.keys(anims).length){ setAnimMap(anims); setTimeout(()=>setAnimMap({}),900); }
-  },[state.players]);
+    prevSnapshot.current = next;
+    if (Object.keys(anims).length) { setAnimMap(anims); setTimeout(() => setAnimMap({}), 900); }
+  }, [state.players]);
 
   return (
     <>
-    <div className="stack page-fade">
-      {isAdmin && (
-        <div style={{display:"flex",justifyContent:"flex-end"}}>
-          <button className="btn btn-warn" style={{gap:6}} onClick={()=>setShowRecalcConfirm(true)}>
-            ↺ Recalculate All Stats
-          </button>
+      <div className="stack page-fade">
+        {isAdmin && (
+          <div style={{ display: "flex", justifyContent: "flex-end" }}>
+            <button className="btn btn-warn" style={{ gap: 6 }} onClick={() => setShowRecalcConfirm(true)}>
+              ↺ Recalculate All Stats
+            </button>
+          </div>
+        )}
+        <div className="grid-3">
+          <div className="stat-box"><div className="stat-lbl">Players</div><div className="stat-val am">{(state.players ?? []).length}</div></div>
+          <div className="stat-box"><div className="stat-lbl">Games This Month</div><div className="stat-val">{monthGames.length}</div></div>
+          <div className="stat-box"><div className="stat-lbl">Top Points</div><div className="stat-val am">{ranked[0]?.pts ?? 0}</div></div>
         </div>
-      )}
-      <div className="grid-3">
-        <div className="stat-box"><div className="stat-lbl">Players</div><div className="stat-val am">{(state.players??[]).length}</div></div>
-        <div className="stat-box"><div className="stat-lbl">Games This Month</div><div className="stat-val">{monthGames.length}</div></div>
-        <div className="stat-box"><div className="stat-lbl">Top Points</div><div className="stat-val am">{ranked[0]?.pts??0}</div></div>
-      </div>
-      <div className="card">
-        <div className="card-header">
-          <span className="card-title">Rankings — {fmtMonth(monthKey)}</span>
-          <div className="fac" style={{gap:8}}>
-            <span className={`rt-dot ${rtConnected?"live":""}`} title={rtConnected?"Live":"Connecting…"}/>
-            <span className="xs text-dd">{rtConnected?"Live":"…"}</span>
+        <div className="card">
+          <div className="card-header">
+            <span className="card-title">Rankings — {fmtMonth(monthKey)}</span>
+            <div className="fac" style={{ gap: 8 }}>
+              <span className={`rt-dot ${rtConnected ? "live" : ""}`} title={rtConnected ? "Live" : "Connecting…"} />
+              <span className="xs text-dd">{rtConnected ? "Live" : "…"}</span>
+            </div>
+          </div>
+          <div className="tbl-wrap">
+            <table className="tbl">
+              <thead>
+                <tr><th>#</th><th>Player</th><th>Points</th><th>W</th><th>L</th><th>Win%</th><th>Streak</th><th>Position</th><th>Placements</th></tr>
+              </thead>
+              <tbody>
+                {ranked.map((p, i) => {
+                  const placements = (state.monthlyPlacements[monthKey] || {})[p.id] || 0;
+                  const total = p.wins + p.losses;
+                  const pct = total ? Math.round(p.wins / total * 100) : 0;
+                  const anim = animMap[p.id] || "";
+                  return (
+                    <tr key={p.id} className={`lb-row ${anim}`} style={{ animationDelay: `${i * 28}ms` }} onClick={() => onSelectPlayer(p)}>
+                      <td><span className={`rk ${placements >= CONFIG.MAX_PLACEMENTS_PER_MONTH ? (i === 0 ? "r1" : i === 1 ? "r2" : i === 2 ? "r3" : "") : ""}`}
+                        style={placements < CONFIG.MAX_PLACEMENTS_PER_MONTH ? { color: "var(--dimmer)" } : {}}>
+                        {placements >= CONFIG.MAX_PLACEMENTS_PER_MONTH
+                          ? (i === 0 ? "①" : i === 1 ? "②" : i === 2 ? "③" : `#${i + 1}`)
+                          : "?"}
+                      </span></td>
+                      <td>
+                        <span className="bold">{p.name}</span>
+                        {(p.championships || []).length > 0 && <span style={{ marginLeft: 6, fontSize: 13 }}>🏆</span>}
+                      </td>
+                      <td>
+                        {placements >= CONFIG.MAX_PLACEMENTS_PER_MONTH
+                          ? <><span className="bold" style={{ fontSize: 14 }}>{p.pts || 0}</span>
+                            {anim === "rank-up" && <span className="xs text-g" style={{ marginLeft: 5 }}>▲</span>}
+                            {anim === "rank-down" && <span className="xs text-r" style={{ marginLeft: 5 }}>▼</span>}
+                          </>
+                          : <span className="bold text-dd" style={{ fontSize: 14 }} title="Complete placements to reveal ranking">?</span>
+                        }
+                      </td>
+                      <td><span className="text-g bold">{p.wins}</span></td>
+                      <td><span className="text-r bold">{p.losses}</span></td>
+                      <td><span className={pct >= 50 ? "text-g" : "text-d"}>{total ? `${pct}%` : "—"}</span></td>
+                      <td><StreakBadge streak={p.streak} showMult /></td>
+                      <td><PosBadge pos={p.position} /></td>
+                      <td>
+                        {(state.monthlyPlacements[monthKey] || {})[p.id] >= CONFIG.MAX_PLACEMENTS_PER_MONTH
+                          ? <span className="placement-badge placement-done">✓ Placed</span>
+                          : <span className="placement-badge placement-pending"><Pips used={placements} /> {CONFIG.MAX_PLACEMENTS_PER_MONTH - placements} left</span>
+                        }
+                      </td>
+                    </tr>
+                  );
+                })}
+                {ranked.length === 0 && <tr><td colSpan={9} style={{ textAlign: "center", padding: 32, color: "var(--dimmer)" }}>No players yet</td></tr>}
+              </tbody>
+            </table>
           </div>
         </div>
-        <div className="tbl-wrap">
-        <table className="tbl">
-          <thead>
-            <tr><th>#</th><th>Player</th><th>Points</th><th>W</th><th>L</th><th>Win%</th><th>Streak</th><th>Position</th><th>Placements</th></tr>
-          </thead>
-          <tbody>
-            {ranked.map((p,i)=>{
-              const placements=(state.monthlyPlacements[monthKey]||{})[p.id]||0;
-              const total=p.wins+p.losses;
-              const pct=total?Math.round(p.wins/total*100):0;
-              const anim=animMap[p.id]||"";
-              return (
-                <tr key={p.id} className={`lb-row ${anim}`} style={{animationDelay:`${i*28}ms`}} onClick={()=>onSelectPlayer(p)}>
-                  <td><span className={`rk ${placements >= CONFIG.MAX_PLACEMENTS_PER_MONTH ? (i===0?"r1":i===1?"r2":i===2?"r3":"") : ""}`}
-                    style={placements < CONFIG.MAX_PLACEMENTS_PER_MONTH ? {color:"var(--dimmer)"} : {}}>
-                    {placements >= CONFIG.MAX_PLACEMENTS_PER_MONTH
-                      ? (i===0?"①":i===1?"②":i===2?"③":`#${i+1}`)
-                      : "?"}
-                  </span></td>
-                  <td>
-                    <span className="bold">{p.name}</span>
-                    {(p.championships||[]).length>0&&<span style={{marginLeft:6,fontSize:13}}>🏆</span>}
-                  </td>
-                  <td>
-                    {placements >= CONFIG.MAX_PLACEMENTS_PER_MONTH
-                      ? <><span className="bold" style={{fontSize:14}}>{p.pts||0}</span>
-                          {anim==="rank-up"&&<span className="xs text-g" style={{marginLeft:5}}>▲</span>}
-                          {anim==="rank-down"&&<span className="xs text-r" style={{marginLeft:5}}>▼</span>}
-                        </>
-                      : <span className="bold text-dd" style={{fontSize:14}} title="Complete placements to reveal ranking">?</span>
-                    }
-                  </td>
-                  <td><span className="text-g bold">{p.wins}</span></td>
-                  <td><span className="text-r bold">{p.losses}</span></td>
-                  <td><span className={pct>=50?"text-g":"text-d"}>{total?`${pct}%`:"—"}</span></td>
-                  <td><StreakBadge streak={p.streak} showMult /></td>
-                  <td><PosBadge pos={p.position}/></td>
-                  <td>
-                    {(state.monthlyPlacements[monthKey]||{})[p.id] >= CONFIG.MAX_PLACEMENTS_PER_MONTH
-                      ? <span className="placement-badge placement-done">✓ Placed</span>
-                      : <span className="placement-badge placement-pending"><Pips used={placements}/> {CONFIG.MAX_PLACEMENTS_PER_MONTH - placements} left</span>
-                    }
-                  </td>
-                </tr>
-              );
-            })}
-            {ranked.length===0&&<tr><td colSpan={9} style={{textAlign:"center",padding:32,color:"var(--dimmer)"}}>No players yet</td></tr>}
-          </tbody>
-        </table>
-        </div>
       </div>
-    </div>
-    {showRecalcConfirm && (
-      <ConfirmDialog
-        title="Recalculate All Stats?"
-        msg="This will replay every game in history and rewrite all player points, MMR, streaks, wins, losses, and the pts shown in match history. This cannot be undone (but you can undo via the undo button after logging games)."
-        onConfirm={doRecalc}
-        onCancel={()=>setShowRecalcConfirm(false)}
-      />
-    )}
+      {showRecalcConfirm && (
+        <ConfirmDialog
+          title="Recalculate All Stats?"
+          msg="This will replay every game in history and rewrite all player points, MMR, streaks, wins, losses, and the pts shown in match history. This cannot be undone (but you can undo via the undo button after logging games)."
+          onConfirm={doRecalc}
+          onCancel={() => setShowRecalcConfirm(false)}
+        />
+      )}
     </>
   );
 }
@@ -1261,69 +1291,118 @@ function LeaderboardView({ state, setState, onSelectPlayer, rtConnected, isAdmin
 // HISTORY VIEW
 // ============================================================
 function HistoryView({ state, setState, isAdmin, showToast }) {
-  const [filter, setFilter] = useState("");
+  const [playerFilter, setPlayerFilter] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [showFilters, setShowFilters] = useState(false);
   const [selectedGameId, setSelectedGameId] = useState(null);
 
   const allGames = [...(state.games ?? [])].sort((a, b) => new Date(b.date) - new Date(a.date));
-  const filtered = allGames.filter(g=>{
-    if (!filter) return true;
-    return [...g.sideA,...g.sideB].map(id=>pName(id,state.players)).join(" ").toLowerCase().includes(filter.toLowerCase());
+
+  const filtered = allGames.filter(g => {
+    if (playerFilter) {
+      const names = [...g.sideA, ...g.sideB].map(id => pName(id, state.players)).join(" ").toLowerCase();
+      if (!names.includes(playerFilter.toLowerCase())) return false;
+    }
+    if (dateFrom && new Date(g.date) < new Date(dateFrom)) return false;
+    if (dateTo && new Date(g.date) > new Date(dateTo + "T23:59:59")) return false;
+    return true;
   });
+
+  // Group by calendar date
+  const groups = [];
+  let lastDay = null;
+  for (const g of filtered) {
+    const day = new Date(g.date).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+    if (day !== lastDay) { groups.push({ day, games: [] }); lastDay = day; }
+    groups[groups.length - 1].games.push(g);
+  }
+
+  const hasFilters = playerFilter || dateFrom || dateTo;
+
+  function GameRow({ g }) {
+    const sAN = g.sideA.map(id => pName(id, state.players));
+    const sBN = g.sideB.map(id => pName(id, state.players));
+    return (
+      <div className="game-row" onClick={() => setSelectedGameId(g.id)}>
+        <div className="g-side">
+          {sAN.map((n, i) => <span key={i} className={g.winner === "A" ? "g-name-w" : "g-name-l"}>{n}</span>)}
+          <span className="xs text-dd" style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+            {g.sideA.map(id => {
+              const d = g.playerDeltas?.[id];
+              const delta = d ? (g.winner === "A" ? d.gain : d.loss) : (g.winner === "A" ? g.ptsGain : g.ptsLoss);
+              return <span key={id} className={g.winner === "A" ? "text-g" : "text-r"}>{g.winner === "A" ? "+" : "-"}{delta} {pName(id, state.players).split(" ")[0]}</span>;
+            })}
+          </span>
+        </div>
+        <div>
+          <div className="g-score">{g.scoreA}–{g.scoreB}</div>
+          <div className="g-date">{new Date(g.date).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}</div>
+        </div>
+        <div className="g-side right">
+          {sBN.map((n, i) => <span key={i} className={g.winner === "B" ? "g-name-w" : "g-name-l"}>{n}</span>)}
+          <span className="xs text-dd" style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+            {g.sideB.map(id => {
+              const d = g.playerDeltas?.[id];
+              const delta = d ? (g.winner === "B" ? d.gain : d.loss) : (g.winner === "B" ? g.ptsGain : g.ptsLoss);
+              return <span key={id} className={g.winner === "B" ? "text-g" : "text-r"}>{g.winner === "B" ? "+" : "-"}{delta} {pName(id, state.players).split(" ")[0]}</span>;
+            })}
+          </span>
+        </div>
+        <span className={`tag ${g.winner === "A" ? "tag-w" : "tag-b"}`}>{g.winner === "A" ? sAN[0] : sBN[0]} won</span>
+      </div>
+    );
+  }
 
   return (
     <div className="stack page-fade">
       <div className="card">
         <div className="card-header">
           <span className="card-title">Match History ({allGames.length})</span>
-          <input className="inp" placeholder="Filter by player…" value={filter}
-            onChange={e=>setFilter(e.target.value)} style={{width:170}}/>
+          <div className="fac" style={{ gap: 6 }}>
+            {hasFilters && <span className="xs tag tag-a">{filtered.length} shown</span>}
+            <button className={`btn btn-sm ${showFilters ? "btn-p" : "btn-g"}`}
+              onClick={() => setShowFilters(f => !f)}>⚡ Filter</button>
+          </div>
         </div>
-        {filtered.map(g=>{
-          const sAN=g.sideA.map(id=>pName(id,state.players));
-          const sBN=g.sideB.map(id=>pName(id,state.players));
-          return (
-            <div className="game-row" key={g.id} onClick={()=>setSelectedGameId(g.id)}>
-              <div className="g-side">
-                {sAN.map((n,i)=><span key={i} className={g.winner==="A"?"g-name-w":"g-name-l"}>{n}</span>)}
-                <span className="xs text-dd" style={{display:"flex",flexDirection:"column",gap:1}}>
-                  {g.sideA.map(id=>{
-                    const d = g.playerDeltas?.[id];
-                    const delta = d ? (g.winner==="A"?d.gain:d.loss) : (g.winner==="A"?g.ptsGain:g.ptsLoss);
-                    return <span key={id} className={g.winner==="A"?"text-g":"text-r"}>
-                      {g.winner==="A"?"+":"-"}{delta} {pName(id,state.players).split(" ")[0]}
-                    </span>;
-                  })}
-                </span>
-              </div>
-              <div>
-                <div className="g-score">{g.scoreA}–{g.scoreB}</div>
-                <div className="g-date">{fmtDate(g.date)}</div>
-              </div>
-              <div className="g-side right">
-                {sBN.map((n,i)=><span key={i} className={g.winner==="B"?"g-name-w":"g-name-l"}>{n}</span>)}
-                <span className="xs text-dd" style={{display:"flex",flexDirection:"column",gap:1}}>
-                  {g.sideB.map(id=>{
-                    const d = g.playerDeltas?.[id];
-                    const delta = d ? (g.winner==="B"?d.gain:d.loss) : (g.winner==="B"?g.ptsGain:g.ptsLoss);
-                    return <span key={id} className={g.winner==="B"?"text-g":"text-r"}>
-                      {g.winner==="B"?"+":"-"}{delta} {pName(id,state.players).split(" ")[0]}
-                    </span>;
-                  })}
-                </span>
-              </div>
-              <span className={`tag ${g.winner==="A"?"tag-w":"tag-b"}`}>
-                {g.winner==="A"?sAN[0]:sBN[0]} won
-              </span>
+        {showFilters && (
+          <div style={{ padding: "10px 16px", background: "var(--s2)", borderBottom: "1px solid var(--b1)", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+            <div style={{ flex: "1 1 140px" }}>
+              <div className="lbl">Player</div>
+              <input className="inp" placeholder="Search player…" value={playerFilter}
+                onChange={e => setPlayerFilter(e.target.value)} style={{ fontSize: 11, padding: "5px 8px" }} />
             </div>
-          );
-        })}
-        {filtered.length===0 && <div style={{padding:32,textAlign:"center",color:"var(--dimmer)",fontSize:12}}>No games found</div>}
+            <div style={{ flex: "1 1 120px" }}>
+              <div className="lbl">From</div>
+              <input className="inp" type="date" value={dateFrom}
+                onChange={e => setDateFrom(e.target.value)} style={{ fontSize: 11, padding: "5px 8px" }} />
+            </div>
+            <div style={{ flex: "1 1 120px" }}>
+              <div className="lbl">To</div>
+              <input className="inp" type="date" value={dateTo}
+                onChange={e => setDateTo(e.target.value)} style={{ fontSize: 11, padding: "5px 8px" }} />
+            </div>
+            {hasFilters && (
+              <button className="btn btn-d btn-sm" style={{ alignSelf: "flex-end" }}
+                onClick={() => { setPlayerFilter(""); setDateFrom(""); setDateTo(""); }}>Clear</button>
+            )}
+          </div>
+        )}
+        {groups.length === 0 && <div style={{ padding: 32, textAlign: "center", color: "var(--dimmer)", fontSize: 12 }}>No games found</div>}
+        {groups.map(({ day, games }) => (
+          <div key={day}>
+            <div style={{ padding: "7px 18px", background: "var(--s2)", borderBottom: "1px solid var(--b1)", fontSize: 10, letterSpacing: 1.5, textTransform: "uppercase", color: "var(--dimmer)", fontWeight: 600 }}>
+              {day} · {games.length} game{games.length !== 1 ? "s" : ""}
+            </div>
+            {games.map(g => <GameRow key={g.id} g={g} />)}
+          </div>
+        ))}
       </div>
       {selectedGameId && (() => {
         const selectedGame = state.games.find(g => g.id === selectedGameId);
         return selectedGame ? (
           <GameDetail game={selectedGame} state={state} setState={setState}
-            isAdmin={isAdmin} showToast={showToast} onClose={()=>setSelectedGameId(null)}/>
+            isAdmin={isAdmin} showToast={showToast} onClose={() => setSelectedGameId(null)} />
         ) : null;
       })()}
     </div>
@@ -1336,28 +1415,28 @@ function HistoryView({ state, setState, isAdmin, showToast }) {
 
 // roles (future proof)
 const ROLES = {
-  VIEWER:0,
-  REFEREE:1,
-  ADMIN:2,
-  OWNER:3
+  VIEWER: 0,
+  REFEREE: 1,
+  ADMIN: 2,
+  OWNER: 3
 };
 
-function can(required,user){
+function can(required, user) {
   return (user?.role ?? 0) >= required;
 }
 
 // admin audit log
-function logAdmin(state,action,details){
+function logAdmin(state, action, details) {
   return {
     ...state,
-    audit:[
+    audit: [
       {
-        id:crypto.randomUUID(),
+        id: crypto.randomUUID(),
         action,
         details,
-        date:new Date().toISOString()
+        date: new Date().toISOString()
       },
-      ...(state.audit||[])
+      ...(state.audit || [])
     ]
   };
 }
@@ -1365,38 +1444,38 @@ function logAdmin(state,action,details){
 // centralized admin actions
 const Admin = {
 
-  addPlayer(state,name){
-    const exists = state.players.find(p=>p.name.toLowerCase()===name.toLowerCase());
-    if(exists) return {error:"Player already exists"};
+  addPlayer(state, name) {
+    const exists = state.players.find(p => p.name.toLowerCase() === name.toLowerCase());
+    if (exists) return { error: "Player already exists" };
 
     return {
-      player:{
-        id:crypto.randomUUID(),
+      player: {
+        id: crypto.randomUUID(),
         name,
-        mmr:CONFIG.STARTING_MMR,
-        pts:CONFIG.STARTING_PTS,
-        wins:0,
-        losses:0,
-        streak:0,
-        championships:[]
+        mmr: CONFIG.STARTING_MMR,
+        pts: CONFIG.STARTING_PTS,
+        wins: 0,
+        losses: 0,
+        streak: 0,
+        championships: []
       }
     };
   },
 
-  renamePlayer(state,id,newName){
+  renamePlayer(state, id, newName) {
     const taken = state.players.find(
-      p=>p.id!==id && p.name.toLowerCase()===newName.toLowerCase()
+      p => p.id !== id && p.name.toLowerCase() === newName.toLowerCase()
     );
-    if(taken) return {error:"Name already taken"};
+    if (taken) return { error: "Name already taken" };
 
     return {
-      players: state.players.map(p=>p.id===id?{...p,name:newName}:p)
+      players: state.players.map(p => p.id === id ? { ...p, name: newName } : p)
     };
   },
 
-  removePlayer(state,id){
+  removePlayer(state, id) {
     return {
-      players: state.players.filter(p=>p.id!==id)
+      players: state.players.filter(p => p.id !== id)
     };
   }
 
@@ -1407,10 +1486,10 @@ const Admin = {
 // HELPERS
 // ============================================================
 
-function placementsLeft(pid,state){
-  const m=getMonthKey();
-  const used=state.monthlyPlacements[m]?.[pid]||0;
-  return CONFIG.MAX_PLACEMENTS_PER_MONTH-used;
+function placementsLeft(pid, state) {
+  const m = getMonthKey();
+  const used = state.monthlyPlacements[m]?.[pid] || 0;
+  return CONFIG.MAX_PLACEMENTS_PER_MONTH - used;
 }
 
 
@@ -1577,6 +1656,115 @@ function OnboardView({ state, setState, showToast }) {
 // ============================================================
 // ADMIN: LOG GAMES
 // ============================================================
+// ============================================================
+// TEAM BALANCER
+// ============================================================
+function TeamBalancer({ players }) {
+  const [selected, setSelected] = useState([]);
+  const [search, setSearch] = useState("");
+
+  const sorted = [...players].sort((a, b) => (b.mmr || 0) - (a.mmr || 0));
+  const visible = sorted.filter(p => !search || p.name.toLowerCase().includes(search.toLowerCase()));
+
+  function toggle(id) {
+    setSelected(s => s.includes(id) ? s.filter(x => x !== id) : s.length < 4 ? [...s, id] : s);
+  }
+
+  // Generate all 3 possible 2v2 splits from 4 players
+  function getBalancings(pids) {
+    const [a, b, c, d] = pids;
+    const splits = [
+      [[a, b], [c, d]],
+      [[a, c], [b, d]],
+      [[a, d], [b, c]],
+    ];
+    return splits.map(([t1, t2]) => {
+      const mmr1 = t1.reduce((s, id) => s + (players.find(p => p.id === id)?.mmr || 1000), 0) / 2;
+      const mmr2 = t2.reduce((s, id) => s + (players.find(p => p.id === id)?.mmr || 1000), 0) / 2;
+      const diff = Math.abs(mmr1 - mmr2);
+      const total = mmr1 + mmr2;
+      const balance = Math.round((1 - diff / Math.max(total / 2, 1)) * 100);
+      return { t1, t2, mmr1: Math.round(mmr1), mmr2: Math.round(mmr2), diff: Math.round(diff), balance };
+    }).sort((a, b) => a.diff - b.diff);
+  }
+
+  const matchups = selected.length === 4 ? getBalancings(selected) : null;
+  const best = matchups?.[0];
+
+  return (
+    <div className="card">
+      <div className="card-header">
+        <span className="card-title">⚖ Team Balancer</span>
+        {selected.length > 0 && (
+          <button className="btn btn-g btn-sm" onClick={() => setSelected([])}>Clear</button>
+        )}
+      </div>
+      <div style={{ padding: 14 }}>
+        <div className="lbl">{selected.length}/4 players selected</div>
+        {selected.length > 0 && (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+            {selected.map(id => {
+              const p = players.find(x => x.id === id);
+              return <span key={id} className="tag tag-a" style={{ cursor: "pointer", fontSize: 11, padding: "3px 8px" }}
+                onClick={() => toggle(id)}>{p?.name} ×</span>;
+            })}
+          </div>
+        )}
+        <input className="inp" placeholder="Search players…" value={search}
+          onChange={e => setSearch(e.target.value)} style={{ marginBottom: 8, fontSize: 12 }} />
+        <div style={{ display: "flex", flexDirection: "column", gap: 3, maxHeight: 160, overflowY: "auto", marginBottom: 14 }}>
+          {visible.map(p => {
+            const sel = selected.includes(p.id);
+            const full = !sel && selected.length >= 4;
+            return (
+              <div key={p.id} className={`player-chip ${sel ? "sel-a" : ""} ${full ? "disabled" : ""}`}
+                onClick={() => !full && toggle(p.id)}>
+                <span>{p.name}</span>
+                <span className="xs text-dd">{p.mmr || 1000} MMR · {p.pts || 0}pts</span>
+              </div>
+            );
+          })}
+        </div>
+
+        {matchups && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <div className="sec">Suggested matchups</div>
+            {matchups.map(({ t1, t2, mmr1, mmr2, diff, balance }, i) => (
+              <div key={i} style={{
+                background: i === 0 ? "rgba(30,215,96,.06)" : "var(--s2)",
+                border: `1px solid ${i === 0 ? "var(--amber-d)" : "var(--b2)"}`,
+                borderRadius: 6, padding: "10px 14px"
+              }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <span className="xs text-dd">Option {i + 1}</span>
+                  <span className={`tag ${i === 0 ? "tag-w" : "tag-a"}`}>{balance}% balanced</span>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr auto 1fr", gap: 10, alignItems: "center" }}>
+                  <div>
+                    {t1.map(id => <div key={id} className="bold" style={{ fontSize: 12 }}>{players.find(p => p.id === id)?.name}</div>)}
+                    <div className="xs text-dd" style={{ marginTop: 2 }}>{mmr1} avg MMR</div>
+                  </div>
+                  <div style={{ textAlign: "center", color: "var(--dimmer)", fontSize: 11, fontWeight: 700 }}>
+                    VS<br /><span style={{ fontSize: 10, color: diff < 30 ? "var(--green)" : diff < 80 ? "var(--orange)" : "var(--red)" }}>Δ{diff}</span>
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    {t2.map(id => <div key={id} className="bold" style={{ fontSize: 12 }}>{players.find(p => p.id === id)?.name}</div>)}
+                    <div className="xs text-dd" style={{ marginTop: 2 }}>{mmr2} avg MMR</div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {selected.length > 0 && selected.length < 4 && (
+          <div className="msg msg-w" style={{ marginTop: 8 }}>Select {4 - selected.length} more player{4 - selected.length !== 1 ? "s" : ""}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 const EMPTY_ROW = () => ({ id: crypto.randomUUID(), sideA: [], sideB: [], scoreA: "", scoreB: "", searchA: "", searchB: "" });
 
 function LogView({ state, setState, showToast }) {
@@ -1584,12 +1772,12 @@ function LogView({ state, setState, showToast }) {
   const [errors, setErrors] = useState({});
   const [undoStack, setUndoStack] = useState([]);
   const [confirm, setConfirm] = useState(null);
-  const [templates, setTemplates] = useState(() => { 
-    try { 
-      return JSON.parse(localStorage.getItem("foosball_tpl") || "[]"); 
-    } catch { 
-      return []; 
-    } 
+  const [templates, setTemplates] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem("foosball_tpl") || "[]");
+    } catch {
+      return [];
+    }
   });
   const [tplName, setTplName] = useState("");
   const undoTimeout = useRef(null);
@@ -1603,7 +1791,7 @@ function LogView({ state, setState, showToast }) {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, state]);
 
   // ============================================================
@@ -1674,12 +1862,12 @@ function LogView({ state, setState, showToast }) {
     if (!skipDuplicateCheck) {
       const today = new Date().toISOString();
       const duplicates = rows.filter(row => {
-        const sA = parseInt(row.scoreA,10), sB = parseInt(row.scoreB,10);
-        return isDuplicateGame({ sideA:row.sideA, sideB:row.sideB, scoreA:sA, scoreB:sB, date:today }, state.games);
+        const sA = parseInt(row.scoreA, 10), sB = parseInt(row.scoreB, 10);
+        return isDuplicateGame({ sideA: row.sideA, sideB: row.sideB, scoreA: sA, scoreB: sB, date: today }, state.games);
       });
       if (duplicates.length > 0) {
         const names = duplicates.map(r =>
-          [...r.sideA,...r.sideB].map(id=>pName(id,state.players)).join(', ')
+          [...r.sideA, ...r.sideB].map(id => pName(id, state.players)).join(', ')
         ).join('; ');
         setConfirm({
           title: "Duplicate Match Detected",
@@ -1706,28 +1894,28 @@ function LogView({ state, setState, showToast }) {
       const winnerScore = Math.max(sA, sB), loserScore = Math.min(sA, sB);
 
       // Rank positions before this game
-      const currentRanked = [...newPlayers].sort((a,b)=>(b.pts||0)-(a.pts||0));
-      const rankOf = id => currentRanked.findIndex(p=>p.id===id);
-      const avgRank = ids => ids.reduce((s,id)=>s+rankOf(id),0)/ids.length;
+      const currentRanked = [...newPlayers].sort((a, b) => (b.pts || 0) - (a.pts || 0));
+      const rankOf = id => currentRanked.findIndex(p => p.id === id);
+      const avgRank = ids => ids.reduce((s, id) => s + rankOf(id), 0) / ids.length;
 
       // Per-player deltas
-      const oppWinMMR  = avg(winnerIds, newPlayers, "mmr");
-      const oppLosMMR  = avg(loserIds,  newPlayers, "mmr");
+      const oppWinMMR = avg(winnerIds, newPlayers, "mmr");
+      const oppLosMMR = avg(loserIds, newPlayers, "mmr");
       const oppWinRank = avgRank(winnerIds);
       const oppLosRank = avgRank(loserIds);
       const allPids = [...winnerIds, ...loserIds];
       const playerDeltas = {};
       allPids.forEach(pid => {
-        const p = newPlayers.find(x=>x.id===pid);
+        const p = newPlayers.find(x => x.id === pid);
         if (!p) return;
         const isWin = winnerIds.includes(pid);
         playerDeltas[pid] = calcPlayerDelta({
           winnerScore, loserScore,
-          playerMMR:    p.mmr,
-          playerRank:   rankOf(pid),
-          playerStreak: p.streak || 0,
-          oppAvgMMR:    isWin ? oppLosMMR  : oppWinMMR,
-          oppAvgRank:   isWin ? oppLosRank : oppWinRank,
+          playerMMR: p.mmr,
+          playerRank: rankOf(pid),
+          playerStreakPower: p.streakPower || 0,
+          oppAvgMMR: isWin ? oppLosMMR : oppWinMMR,
+          oppAvgRank: isWin ? oppLosRank : oppWinRank,
           isWinner: isWin,
         });
       });
@@ -1736,18 +1924,19 @@ function LogView({ state, setState, showToast }) {
 
       newPlayers = newPlayers.map(p => {
         const isWinner = winnerIds.includes(p.id);
-        const isLoser  = loserIds.includes(p.id);
+        const isLoser = loserIds.includes(p.id);
         if (!isWinner && !isLoser) return p;
         const d = playerDeltas[p.id];
         const placedBefore = (placementsBefore[p.id] || 0) >= CONFIG.MAX_PLACEMENTS_PER_MONTH;
         if (isWinner) {
-          const ns = (p.streak||0) >= 0 ? (p.streak||0)+1 : 1;
-          const newPts = placedBefore ? (p.pts||0)+d.gain : (p.pts||0);
-          return { ...p, mmr: p.mmr+d.gain, pts: newPts, wins: p.wins+1, streak: ns };
+          const ns = (p.streak || 0) >= 0 ? (p.streak || 0) + 1 : 1;
+          const newPts = placedBefore ? (p.pts || 0) + d.gain : (p.pts || 0);
+          const newPower = updateStreakPower(p.streakPower || 0, true, d.qualityScore || 1);
+          return { ...p, mmr: p.mmr + d.gain, pts: newPts, wins: p.wins + 1, streak: ns, streakPower: newPower };
         }
-        const ns = (p.streak||0) <= 0 ? (p.streak||0)-1 : -1;
-        const newPts = placedBefore ? Math.max(0,(p.pts||0)-d.loss) : (p.pts||0);
-        return { ...p, mmr: Math.max(0,p.mmr-d.loss), pts: newPts, losses: p.losses+1, streak: ns };
+        const ns = (p.streak || 0) <= 0 ? (p.streak || 0) - 1 : -1;
+        const newPts = placedBefore ? Math.max(0, (p.pts || 0) - d.loss) : (p.pts || 0);
+        return { ...p, mmr: Math.max(0, p.mmr - d.loss), pts: newPts, losses: p.losses + 1, streak: ns, streakPower: 0 };
       });
 
       // Placements + calibration
@@ -1757,23 +1946,23 @@ function LogView({ state, setState, showToast }) {
         if (before + 1 === CONFIG.MAX_PLACEMENTS_PER_MONTH) {
           const thisPlayer = newPlayers.find(p => p.id === pid);
           if (thisPlayer) {
-            const placed = newPlayers.filter(p => p.id!==pid && (newPlacements[monthKey][p.id]||0) >= CONFIG.MAX_PLACEMENTS_PER_MONTH);
-            const byMmr = [...placed].sort((a,b)=>(b.mmr||0)-(a.mmr||0));
-            const ins = byMmr.findIndex(p=>(p.mmr||0)<(thisPlayer.mmr||0));
-            const rk = ins===-1 ? byMmr.length : ins;
+            const placed = newPlayers.filter(p => p.id !== pid && (newPlacements[monthKey][p.id] || 0) >= CONFIG.MAX_PLACEMENTS_PER_MONTH);
+            const byMmr = [...placed].sort((a, b) => (b.mmr || 0) - (a.mmr || 0));
+            const ins = byMmr.findIndex(p => (p.mmr || 0) < (thisPlayer.mmr || 0));
+            const rk = ins === -1 ? byMmr.length : ins;
             let cal;
-            if (!byMmr.length) cal = Math.round((thisPlayer.mmr-CONFIG.STARTING_MMR)*0.5);
-            else if (rk===0) cal = Math.round((byMmr[0].pts||0)*1.1+5);
-            else if (rk>=byMmr.length) cal = Math.max(0,Math.round((byMmr[byMmr.length-1].pts||0)*0.9-5));
-            else cal = Math.round(((byMmr[rk-1].pts||0)+(byMmr[rk].pts||0))/2);
-            newPlayers = newPlayers.map(p => p.id===pid ? {...p, pts: Math.max(0,cal)} : p);
+            if (!byMmr.length) cal = Math.round((thisPlayer.mmr - CONFIG.STARTING_MMR) * 0.5);
+            else if (rk === 0) cal = Math.round((byMmr[0].pts || 0) * 1.1 + 5);
+            else if (rk >= byMmr.length) cal = Math.max(0, Math.round((byMmr[byMmr.length - 1].pts || 0) * 0.9 - 5));
+            else cal = Math.round(((byMmr[rk - 1].pts || 0) + (byMmr[rk].pts || 0)) / 2);
+            newPlayers = newPlayers.map(p => p.id === pid ? { ...p, pts: Math.max(0, cal) } : p);
           }
         }
       });
 
       // Summary display values (avg of individual deltas)
-      const avgGain = Math.round(winnerIds.reduce((s,id)=>s+(playerDeltas[id]?.gain||0),0)/Math.max(winnerIds.length,1));
-      const avgLoss = Math.round(loserIds.reduce((s,id)=>s+(playerDeltas[id]?.loss||0),0)/Math.max(loserIds.length,1));
+      const avgGain = Math.round(winnerIds.reduce((s, id) => s + (playerDeltas[id]?.gain || 0), 0) / Math.max(winnerIds.length, 1));
+      const avgLoss = Math.round(loserIds.reduce((s, id) => s + (playerDeltas[id]?.loss || 0), 0) / Math.max(loserIds.length, 1));
 
       newGames.push({
         id: crypto.randomUUID(), sideA: row.sideA, sideB: row.sideB,
@@ -1808,212 +1997,213 @@ function LogView({ state, setState, showToast }) {
   // ============================================================
   return (
     <>
-    <div className="stack page-fade">
-      {templates.length > 0 && (
-        <div className="card">
-          <div className="card-header"><span className="card-title">Templates</span></div>
-          <div style={{ padding: 14, display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {templates.map((t, i) => (
-              <div key={i} className="fac" style={{ gap: 4 }}>
-                <button className="btn btn-g btn-sm" onClick={() => loadTpl(t)}>{t.name}</button>
-                <button className="btn btn-d btn-sm" onClick={() => deleteTpl(i)}>×</button>
-              </div>
-            ))}
+      <div className="stack page-fade">
+        <TeamBalancer players={state.players} />
+        {templates.length > 0 && (
+          <div className="card">
+            <div className="card-header"><span className="card-title">Templates</span></div>
+            <div style={{ padding: 14, display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {templates.map((t, i) => (
+                <div key={i} className="fac" style={{ gap: 4 }}>
+                  <button className="btn btn-g btn-sm" onClick={() => loadTpl(t)}>{t.name}</button>
+                  <button className="btn btn-d btn-sm" onClick={() => deleteTpl(i)}>×</button>
+                </div>
+              ))}
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
-      <div className="card">
-        <div className="card-header">
-          <span className="card-title">Log Games</span>
-          <span className="xs text-dd">{rows.length} game{rows.length > 1 ? "s" : ""}</span>
-        </div>
-        <div style={{ padding: 14 }}>
-          {rows.map((row, ri) => {
-            const sA = parseInt(row.scoreA, 10), sB = parseInt(row.scoreB, 10);
-            const canPreview = row.sideA.length === 2 && row.sideB.length === 2 && !isNaN(sA) && !isNaN(sB) && sA !== sB;
-            let prev = null;
-            if (canPreview) {
-              const wIds = sA > sB ? row.sideA : row.sideB, lIds = sA > sB ? row.sideB : row.sideA;
-              const currentRanked = [...state.players].sort((a,b)=>(b.pts||0)-(a.pts||0));
-              const rankOf = id => { const i = currentRanked.findIndex(p=>p.id===id); return i===-1?currentRanked.length:i; };
-              const oppWinMMR = avg(wIds, state.players, "mmr"), oppLosMMR = avg(lIds, state.players, "mmr");
-              const oppWinRank = wIds.reduce((s,id)=>s+rankOf(id),0)/wIds.length;
-              const oppLosRank = lIds.reduce((s,id)=>s+rankOf(id),0)/lIds.length;
-              const perPlayer = {};
-              [...wIds,...lIds].forEach(pid => {
-                const p = state.players.find(x=>x.id===pid); if(!p) return;
-                const isW = wIds.includes(pid);
-                perPlayer[pid] = calcPlayerDelta({
-                  winnerScore: Math.max(sA,sB), loserScore: Math.min(sA,sB),
-                  playerMMR: p.mmr, playerRank: rankOf(pid), playerStreak: p.streak||0,
-                  oppAvgMMR: isW ? oppLosMMR : oppWinMMR,
-                  oppAvgRank: isW ? oppLosRank : oppWinRank,
-                  isWinner: isW,
+        <div className="card">
+          <div className="card-header">
+            <span className="card-title">Log Games</span>
+            <span className="xs text-dd">{rows.length} game{rows.length > 1 ? "s" : ""}</span>
+          </div>
+          <div style={{ padding: 14 }}>
+            {rows.map((row, ri) => {
+              const sA = parseInt(row.scoreA, 10), sB = parseInt(row.scoreB, 10);
+              const canPreview = row.sideA.length === 2 && row.sideB.length === 2 && !isNaN(sA) && !isNaN(sB) && sA !== sB;
+              let prev = null;
+              if (canPreview) {
+                const wIds = sA > sB ? row.sideA : row.sideB, lIds = sA > sB ? row.sideB : row.sideA;
+                const currentRanked = [...state.players].sort((a, b) => (b.pts || 0) - (a.pts || 0));
+                const rankOf = id => { const i = currentRanked.findIndex(p => p.id === id); return i === -1 ? currentRanked.length : i; };
+                const oppWinMMR = avg(wIds, state.players, "mmr"), oppLosMMR = avg(lIds, state.players, "mmr");
+                const oppWinRank = wIds.reduce((s, id) => s + rankOf(id), 0) / wIds.length;
+                const oppLosRank = lIds.reduce((s, id) => s + rankOf(id), 0) / lIds.length;
+                const perPlayer = {};
+                [...wIds, ...lIds].forEach(pid => {
+                  const p = state.players.find(x => x.id === pid); if (!p) return;
+                  const isW = wIds.includes(pid);
+                  perPlayer[pid] = calcPlayerDelta({
+                    winnerScore: Math.max(sA, sB), loserScore: Math.min(sA, sB),
+                    playerMMR: p.mmr, playerRank: rankOf(pid), playerStreakPower: p.streakPower || 0,
+                    oppAvgMMR: isW ? oppLosMMR : oppWinMMR,
+                    oppAvgRank: isW ? oppLosRank : oppWinRank,
+                    isWinner: isW,
+                  });
                 });
-              });
-              prev = { perPlayer, wIds, lIds };
-            }
+                prev = { perPlayer, wIds, lIds };
+              }
 
-            return (
-              <div key={row.id} style={{ marginBottom: 10, padding: 12, background: "var(--s2)", borderRadius: 6, border: "1px solid var(--b1)" }}>
-                <div className="fbc mb8">
-                  <div style={{display:"flex",alignItems:"center",gap:8}}>
-                    <span className="xs text-dd">Game {ri + 1}</span>
-                    {(() => {
-                      const sA = parseInt(row.scoreA,10), sB = parseInt(row.scoreB,10);
-                      const playersOk = row.sideA.length===2 && row.sideB.length===2;
-                      const scoresOk = !isNaN(sA) && !isNaN(sB) && sA>=0 && sB>=0 && sA!==sB;
-                      const dupCheck = playersOk && scoresOk;
-                      if (!playersOk) return <span className="xs" style={{color:"var(--orange)"}}>● {4 - row.sideA.length - row.sideB.length} player{4-row.sideA.length-row.sideB.length!==1?"s":""} needed</span>;
-                      if (!scoresOk) return <span className="xs" style={{color:"var(--orange)"}}>● enter scores</span>;
-                      return <span className="xs text-g">✓ ready</span>;
-                    })()}
-                  </div>
-                  {rows.length > 1 && <button className="btn btn-d btn-sm" onClick={() => setRows(r => r.filter(x => x.id !== row.id))}>Remove</button>}
-                </div>
-
-                <div className="log-game-grid" style={{ display: "grid", gridTemplateColumns: "1fr 96px 1fr", gap: 10, alignItems: "start" }}>
-                  {/* Side A */}
-                  <div>
-                    <div className="lbl" style={{ color: "var(--green)" }}>Side A {row.sideA.length}/2</div>
-                    {row.sideA.length > 0 && (
-                      <div style={{ display:"flex", gap:4, flexWrap:"wrap", marginBottom:5 }}>
-                        {row.sideA.map(id => (
-                          <span key={id} className="tag tag-w" style={{cursor:"pointer",fontSize:11}}
-                            onClick={() => togglePlayer(row.id,"A",id)}>
-                            {pName(id,state.players)} ×
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                    <input
-                      className="inp" placeholder="Search…" value={row.searchA}
-                      onChange={e => setRows(r => r.map(x => x.id===row.id ? {...x, searchA: e.target.value} : x))}
-                      style={{marginBottom:4,fontSize:11,padding:"4px 7px"}}
-                    />
-                    <div style={{ display: "flex", flexDirection: "column", gap: 3, maxHeight:160, overflowY:"auto" }}>
-                      {[...state.players]
-                        .sort((a, b) => (b.pts || 0) - (a.pts || 0))
-                        .filter(p => !row.searchA || p.name.toLowerCase().includes(row.searchA.toLowerCase()))
-                        .map(p => {
-                          const onA = row.sideA.includes(p.id), onB = row.sideB.includes(p.id), full = !onA && row.sideA.length >= 2;
-                          if (onA) return null; // already shown above as tag
-                          return (
-                            <div key={p.id} className={`player-chip ${onB || full ? "disabled" : ""}`}
-                              onClick={() => !onB && !full ? togglePlayer(row.id, "A", p.id) : null}>
-                              <span>{p.name}</span>
-                              <span className="xs text-dd">{p.pts || 0}pts</span>
-                            </div>
-                          );
-                        })}
-                    </div>
-                  </div>
-
-                  {/* Scores / Preview */}
-                  <div style={{ display: "flex", flexDirection: "column", gap: 6, paddingTop: 16 }}>
-                    <div>
-                      <div className="lbl" style={{fontSize:9,lineHeight:1.3,color:"var(--green)",minHeight:22}}>
-                        {row.sideA.map(id=>pName(id,state.players)).join(" & ") || "A"}
-                      </div>
-                      <input className="inp" type="number" min="0" placeholder="10" value={row.scoreA}
-                        onChange={e => setRows(r => r.map(x => x.id === row.id ? { ...x, scoreA: e.target.value } : x))}
-                        style={{ textAlign: "center", fontSize: 18, fontFamily: "var(--disp)", fontWeight: 800 }} />
-                    </div>
-                    <div>
-                      <div className="lbl" style={{fontSize:9,lineHeight:1.3,color:"var(--blue)",minHeight:22}}>
-                        {row.sideB.map(id=>pName(id,state.players)).join(" & ") || "B"}
-                      </div>
-                      <input className="inp" type="number" min="0" placeholder="7" value={row.scoreB}
-                        onChange={e => setRows(r => r.map(x => x.id === row.id ? { ...x, scoreB: e.target.value } : x))}
-                        style={{ textAlign: "center", fontSize: 18, fontFamily: "var(--disp)", fontWeight: 800 }} />
-                    </div>
-
-                    {prev && (
-                      <div style={{ background: "var(--s1)", borderRadius: 4, padding: "6px 8px", fontSize: 10, lineHeight: 1.8 }}>
-                        {prev.wIds.map(id => {
-                          const d = prev.perPlayer[id];
-                          const n = state.players.find(p=>p.id===id)?.name?.split(" ")[0]||"?";
-                          return <div key={id} className="text-g">+{d?.gain??0} {n}</div>;
-                        })}
-                        {prev.lIds.map(id => {
-                          const d = prev.perPlayer[id];
-                          const n = state.players.find(p=>p.id===id)?.name?.split(" ")[0]||"?";
-                          return <div key={id} className="text-r">-{d?.loss??0} {n}</div>;
-                        })}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Side B */}
-                  <div>
-                    <div className="lbl" style={{ color: "var(--blue)" }}>Side B {row.sideB.length}/2</div>
-                    {row.sideB.length > 0 && (
-                      <div style={{ display:"flex", gap:4, flexWrap:"wrap", marginBottom:5 }}>
-                        {row.sideB.map(id => (
-                          <span key={id} className="tag tag-b" style={{cursor:"pointer",fontSize:11}}
-                            onClick={() => togglePlayer(row.id,"B",id)}>
-                            {pName(id,state.players)} ×
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                    <input
-                      className="inp" placeholder="Search…" value={row.searchB}
-                      onChange={e => setRows(r => r.map(x => x.id===row.id ? {...x, searchB: e.target.value} : x))}
-                      style={{marginBottom:4,fontSize:11,padding:"4px 7px"}}
-                    />
-                    <div style={{ display: "flex", flexDirection: "column", gap: 3, maxHeight:160, overflowY:"auto" }}>
-                      {[...state.players]
-                        .sort((a, b) => (b.pts || 0) - (a.pts || 0))
-                        .filter(p => !row.searchB || p.name.toLowerCase().includes(row.searchB.toLowerCase()))
-                        .map(p => {
-                          const onA = row.sideA.includes(p.id), onB = row.sideB.includes(p.id), full = !onB && row.sideB.length >= 2;
-                          if (onB) return null;
-                          return (
-                            <div key={p.id} className={`player-chip ${onA || full ? "disabled" : ""}`}
-                              onClick={() => !onA && !full ? togglePlayer(row.id, "B", p.id) : null}>
-                              <span>{p.name}</span>
-                              <span className="xs text-dd">{p.pts || 0}pts</span>
-                            </div>
-                          );
-                        })}
-                    </div>
-                  </div>
-                </div>
-
-                {errors[row.id] && (
-                  <div className="msg msg-e mt8" style={{fontWeight:600,fontSize:12}}>
-                    ⚠ {errors[row.id]}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-
-          <button className="add-row" onClick={() => setRows(r => [...r, EMPTY_ROW()])}>+ Add Another Game</button>
-
-          <div style={{ marginTop: 14, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-{(() => {
-              const readyCount = rows.filter(row => {
-                const sA = parseInt(row.scoreA,10), sB = parseInt(row.scoreB,10);
-                return row.sideA.length===2 && row.sideB.length===2 && !isNaN(sA) && !isNaN(sB) && sA>=0 && sB>=0 && sA!==sB;
-              }).length;
               return (
-                <button className="btn btn-p" onClick={submitAll} disabled={readyCount===0}
-                  style={{opacity:readyCount===0?0.4:1}}>
-                  Submit {readyCount}/{rows.length} Game{rows.length!==1?"s":""}
-                </button>
+                <div key={row.id} style={{ marginBottom: 10, padding: 12, background: "var(--s2)", borderRadius: 6, border: "1px solid var(--b1)" }}>
+                  <div className="fbc mb8">
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span className="xs text-dd">Game {ri + 1}</span>
+                      {(() => {
+                        const sA = parseInt(row.scoreA, 10), sB = parseInt(row.scoreB, 10);
+                        const playersOk = row.sideA.length === 2 && row.sideB.length === 2;
+                        const scoresOk = !isNaN(sA) && !isNaN(sB) && sA >= 0 && sB >= 0 && sA !== sB;
+                        const dupCheck = playersOk && scoresOk;
+                        if (!playersOk) return <span className="xs" style={{ color: "var(--orange)" }}>● {4 - row.sideA.length - row.sideB.length} player{4 - row.sideA.length - row.sideB.length !== 1 ? "s" : ""} needed</span>;
+                        if (!scoresOk) return <span className="xs" style={{ color: "var(--orange)" }}>● enter scores</span>;
+                        return <span className="xs text-g">✓ ready</span>;
+                      })()}
+                    </div>
+                    {rows.length > 1 && <button className="btn btn-d btn-sm" onClick={() => setRows(r => r.filter(x => x.id !== row.id))}>Remove</button>}
+                  </div>
+
+                  <div className="log-game-grid" style={{ display: "grid", gridTemplateColumns: "1fr 96px 1fr", gap: 10, alignItems: "start" }}>
+                    {/* Side A */}
+                    <div>
+                      <div className="lbl" style={{ color: "var(--green)" }}>Side A {row.sideA.length}/2</div>
+                      {row.sideA.length > 0 && (
+                        <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 5 }}>
+                          {row.sideA.map(id => (
+                            <span key={id} className="tag tag-w" style={{ cursor: "pointer", fontSize: 11 }}
+                              onClick={() => togglePlayer(row.id, "A", id)}>
+                              {pName(id, state.players)} ×
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      <input
+                        className="inp" placeholder="Search…" value={row.searchA}
+                        onChange={e => setRows(r => r.map(x => x.id === row.id ? { ...x, searchA: e.target.value } : x))}
+                        style={{ marginBottom: 4, fontSize: 11, padding: "4px 7px" }}
+                      />
+                      <div style={{ display: "flex", flexDirection: "column", gap: 3, maxHeight: 160, overflowY: "auto" }}>
+                        {[...state.players]
+                          .sort((a, b) => (b.pts || 0) - (a.pts || 0))
+                          .filter(p => !row.searchA || p.name.toLowerCase().includes(row.searchA.toLowerCase()))
+                          .map(p => {
+                            const onA = row.sideA.includes(p.id), onB = row.sideB.includes(p.id), full = !onA && row.sideA.length >= 2;
+                            if (onA) return null; // already shown above as tag
+                            return (
+                              <div key={p.id} className={`player-chip ${onB || full ? "disabled" : ""}`}
+                                onClick={() => !onB && !full ? togglePlayer(row.id, "A", p.id) : null}>
+                                <span>{p.name}</span>
+                                <span className="xs text-dd">{p.pts || 0}pts</span>
+                              </div>
+                            );
+                          })}
+                      </div>
+                    </div>
+
+                    {/* Scores / Preview */}
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6, paddingTop: 16 }}>
+                      <div>
+                        <div className="lbl" style={{ fontSize: 9, lineHeight: 1.3, color: "var(--green)", minHeight: 22 }}>
+                          {row.sideA.map(id => pName(id, state.players)).join(" & ") || "A"}
+                        </div>
+                        <input className="inp" type="number" min="0" placeholder="10" value={row.scoreA}
+                          onChange={e => setRows(r => r.map(x => x.id === row.id ? { ...x, scoreA: e.target.value } : x))}
+                          style={{ textAlign: "center", fontSize: 18, fontFamily: "var(--disp)", fontWeight: 800 }} />
+                      </div>
+                      <div>
+                        <div className="lbl" style={{ fontSize: 9, lineHeight: 1.3, color: "var(--blue)", minHeight: 22 }}>
+                          {row.sideB.map(id => pName(id, state.players)).join(" & ") || "B"}
+                        </div>
+                        <input className="inp" type="number" min="0" placeholder="7" value={row.scoreB}
+                          onChange={e => setRows(r => r.map(x => x.id === row.id ? { ...x, scoreB: e.target.value } : x))}
+                          style={{ textAlign: "center", fontSize: 18, fontFamily: "var(--disp)", fontWeight: 800 }} />
+                      </div>
+
+                      {prev && (
+                        <div style={{ background: "var(--s1)", borderRadius: 4, padding: "6px 8px", fontSize: 10, lineHeight: 1.8 }}>
+                          {prev.wIds.map(id => {
+                            const d = prev.perPlayer[id];
+                            const n = state.players.find(p => p.id === id)?.name?.split(" ")[0] || "?";
+                            return <div key={id} className="text-g">+{d?.gain ?? 0} {n}</div>;
+                          })}
+                          {prev.lIds.map(id => {
+                            const d = prev.perPlayer[id];
+                            const n = state.players.find(p => p.id === id)?.name?.split(" ")[0] || "?";
+                            return <div key={id} className="text-r">-{d?.loss ?? 0} {n}</div>;
+                          })}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Side B */}
+                    <div>
+                      <div className="lbl" style={{ color: "var(--blue)" }}>Side B {row.sideB.length}/2</div>
+                      {row.sideB.length > 0 && (
+                        <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 5 }}>
+                          {row.sideB.map(id => (
+                            <span key={id} className="tag tag-b" style={{ cursor: "pointer", fontSize: 11 }}
+                              onClick={() => togglePlayer(row.id, "B", id)}>
+                              {pName(id, state.players)} ×
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      <input
+                        className="inp" placeholder="Search…" value={row.searchB}
+                        onChange={e => setRows(r => r.map(x => x.id === row.id ? { ...x, searchB: e.target.value } : x))}
+                        style={{ marginBottom: 4, fontSize: 11, padding: "4px 7px" }}
+                      />
+                      <div style={{ display: "flex", flexDirection: "column", gap: 3, maxHeight: 160, overflowY: "auto" }}>
+                        {[...state.players]
+                          .sort((a, b) => (b.pts || 0) - (a.pts || 0))
+                          .filter(p => !row.searchB || p.name.toLowerCase().includes(row.searchB.toLowerCase()))
+                          .map(p => {
+                            const onA = row.sideA.includes(p.id), onB = row.sideB.includes(p.id), full = !onB && row.sideB.length >= 2;
+                            if (onB) return null;
+                            return (
+                              <div key={p.id} className={`player-chip ${onA || full ? "disabled" : ""}`}
+                                onClick={() => !onA && !full ? togglePlayer(row.id, "B", p.id) : null}>
+                                <span>{p.name}</span>
+                                <span className="xs text-dd">{p.pts || 0}pts</span>
+                              </div>
+                            );
+                          })}
+                      </div>
+                    </div>
+                  </div>
+
+                  {errors[row.id] && (
+                    <div className="msg msg-e mt8" style={{ fontWeight: 600, fontSize: 12 }}>
+                      ⚠ {errors[row.id]}
+                    </div>
+                  )}
+                </div>
               );
-            })()}
-            <input className="inp" placeholder="Template name…" value={tplName} onChange={e => setTplName(e.target.value)} style={{ width: 150 }} />
-            <button className="btn btn-g" onClick={saveTpl}>Save Template</button>
-            {undoStack.length > 0 && <button className="btn btn-warn" onClick={undoLast}>↩ Undo Last Submit</button>}
+            })}
+
+            <button className="add-row" onClick={() => setRows(r => [...r, EMPTY_ROW()])}>+ Add Another Game</button>
+
+            <div style={{ marginTop: 14, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              {(() => {
+                const readyCount = rows.filter(row => {
+                  const sA = parseInt(row.scoreA, 10), sB = parseInt(row.scoreB, 10);
+                  return row.sideA.length === 2 && row.sideB.length === 2 && !isNaN(sA) && !isNaN(sB) && sA >= 0 && sB >= 0 && sA !== sB;
+                }).length;
+                return (
+                  <button className="btn btn-p" onClick={submitAll} disabled={readyCount === 0}
+                    style={{ opacity: readyCount === 0 ? 0.4 : 1 }}>
+                    Submit {readyCount}/{rows.length} Game{rows.length !== 1 ? "s" : ""}
+                  </button>
+                );
+              })()}
+              <input className="inp" placeholder="Template name…" value={tplName} onChange={e => setTplName(e.target.value)} style={{ width: 150 }} />
+              <button className="btn btn-g" onClick={saveTpl}>Save Template</button>
+              {undoStack.length > 0 && <button className="btn btn-warn" onClick={undoLast}>↩ Undo Last Submit</button>}
+            </div>
           </div>
         </div>
       </div>
-    </div>
-    {confirm && <ConfirmDialog {...confirm} onCancel={()=>setConfirm(null)}/>}
+      {confirm && <ConfirmDialog {...confirm} onCancel={() => setConfirm(null)} />}
     </>
   );
 }
@@ -2024,21 +2214,21 @@ function FinalsDateEditor({ finalsDate, setState, showToast, isAdmin }) {
   const [editing, setEditing] = useState(false);
 
   const parsed = finalsDate ? new Date(finalsDate) : null;
-  const [dd,   setDd]   = useState(parsed ? String(parsed.getDate()).padStart(2,"0")        : "");
-  const [mm,   setMm]   = useState(parsed ? String(parsed.getMonth()+1).padStart(2,"0")     : "");
-  const [yyyy, setYyyy] = useState(parsed ? String(parsed.getFullYear())                    : "");
-  const [hh,   setHh]   = useState(parsed ? String(parsed.getHours()).padStart(2,"0")       : "18");
-  const [mn,   setMn]   = useState(parsed ? String(parsed.getMinutes()).padStart(2,"0")     : "00");
+  const [dd, setDd] = useState(parsed ? String(parsed.getDate()).padStart(2, "0") : "");
+  const [mm, setMm] = useState(parsed ? String(parsed.getMonth() + 1).padStart(2, "0") : "");
+  const [yyyy, setYyyy] = useState(parsed ? String(parsed.getFullYear()) : "");
+  const [hh, setHh] = useState(parsed ? String(parsed.getHours()).padStart(2, "0") : "18");
+  const [mn, setMn] = useState(parsed ? String(parsed.getMinutes()).padStart(2, "0") : "00");
 
   // Sync fields if finalsDate changes externally
   useEffect(() => {
     if (!finalsDate) { setDd(""); setMm(""); setYyyy(""); setHh("18"); setMn("00"); return; }
     const p = new Date(finalsDate);
-    setDd(String(p.getDate()).padStart(2,"0"));
-    setMm(String(p.getMonth()+1).padStart(2,"0"));
+    setDd(String(p.getDate()).padStart(2, "0"));
+    setMm(String(p.getMonth() + 1).padStart(2, "0"));
     setYyyy(String(p.getFullYear()));
-    setHh(String(p.getHours()).padStart(2,"0"));
-    setMn(String(p.getMinutes()).padStart(2,"0"));
+    setHh(String(p.getHours()).padStart(2, "0"));
+    setMn(String(p.getMinutes()).padStart(2, "0"));
   }, [finalsDate]);
 
   if (!isAdmin) return null;
@@ -2051,8 +2241,8 @@ function FinalsDateEditor({ finalsDate, setState, showToast, isAdmin }) {
       return;
     }
     const iso = new Date(
-      parseInt(yyyy), parseInt(mm)-1, parseInt(dd),
-      parseInt(hh)||0, parseInt(mn)||0
+      parseInt(yyyy), parseInt(mm) - 1, parseInt(dd),
+      parseInt(hh) || 0, parseInt(mn) || 0
     ).toISOString();
     setState(s => ({ ...s, finalsDate: iso }));
     showToast("Finals date saved");
@@ -2070,11 +2260,11 @@ function FinalsDateEditor({ finalsDate, setState, showToast, isAdmin }) {
   }
 
   const fields = [
-    ["Day",  "DD",   dd,   setDd,   60, 1,    31  ],
-    ["Month","MM",   mm,   setMm,   60, 1,    12  ],
+    ["Day", "DD", dd, setDd, 60, 1, 31],
+    ["Month", "MM", mm, setMm, 60, 1, 12],
     ["Year", "YYYY", yyyy, setYyyy, 80, 2025, 2099],
-    ["Hour", "HH",   hh,   setHh,   60, 0,    23  ],
-    ["Min",  "MM",   mn,   setMn,   60, 0,    59  ],
+    ["Hour", "HH", hh, setHh, 60, 0, 23],
+    ["Min", "MM", mn, setMn, 60, 0, 59],
   ];
 
   return (
@@ -2132,10 +2322,10 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
     }
     const diff = Math.max(0, target - new Date());
     return {
-      days:  Math.floor(diff / 864e5),
+      days: Math.floor(diff / 864e5),
       hours: Math.floor((diff / 36e5) % 24),
-      mins:  Math.floor((diff / 6e4) % 60),
-      secs:  Math.floor((diff / 1e3) % 60),
+      mins: Math.floor((diff / 6e4) % 60),
+      secs: Math.floor((diff / 1e3) % 60),
       diff,
     };
   }
@@ -2354,7 +2544,7 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
           <div className="disp text-am" style={{ fontSize: 36, letterSpacing: 2, marginBottom: 4 }}>Monthly Finals</div>
           <div className="text-d sm" style={{ marginBottom: 12 }}>
             {state.finalsDate
-              ? <>Scheduled: <span className="text-am">{new Date(state.finalsDate).toLocaleString("en-GB", { day:"numeric", month:"short", hour:"2-digit", minute:"2-digit" })}</span></>
+              ? <>Scheduled: <span className="text-am">{new Date(state.finalsDate).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</span></>
               : `Finals — last day of ${fmtMonth(monthKey)}`}
           </div>
           <Countdown />
@@ -2487,7 +2677,7 @@ function RulesView({ state, setState, isAdmin, showToast }) {
   const [draft, setDraft] = useState(state.rules || DEFAULT_RULES);
 
   function save() {
-    setState(s=>({...s,rules:draft}));
+    setState(s => ({ ...s, rules: draft }));
     showToast("Rulebook saved");
     setEditing(false);
   }
@@ -2498,14 +2688,14 @@ function RulesView({ state, setState, isAdmin, showToast }) {
         <div className="card-header">
           <span className="card-title">Edit Rulebook</span>
           <div className="fac">
-            <button className="btn btn-g" onClick={()=>{setDraft(state.rules||DEFAULT_RULES);setEditing(false);}}>Cancel</button>
+            <button className="btn btn-g" onClick={() => { setDraft(state.rules || DEFAULT_RULES); setEditing(false); }}>Cancel</button>
             <button className="btn btn-p" onClick={save}>Save</button>
           </div>
         </div>
-        <div style={{padding:18}}>
+        <div style={{ padding: 18 }}>
           <div className="msg msg-w sm mb12">Supports basic markdown: # headings, **bold**, - lists, `code`, ---</div>
-          <textarea className="inp" rows={28} value={draft} onChange={e=>setDraft(e.target.value)}
-            style={{fontFamily:"var(--mono)",fontSize:12,lineHeight:1.7}}/>
+          <textarea className="inp" rows={28} value={draft} onChange={e => setDraft(e.target.value)}
+            style={{ fontFamily: "var(--mono)", fontSize: 12, lineHeight: 1.7 }} />
         </div>
       </div>
     </div>
@@ -2516,10 +2706,10 @@ function RulesView({ state, setState, isAdmin, showToast }) {
       <div className="card">
         <div className="card-header">
           <span className="card-title">Rulebook</span>
-          {isAdmin && <button className="btn btn-g btn-sm" onClick={()=>{setDraft(state.rules||DEFAULT_RULES);setEditing(true);}}>Edit</button>}
+          {isAdmin && <button className="btn btn-g btn-sm" onClick={() => { setDraft(state.rules || DEFAULT_RULES); setEditing(true); }}>Edit</button>}
         </div>
-        <div style={{padding:24}} className="md"
-          dangerouslySetInnerHTML={{__html:renderMd(state.rules||DEFAULT_RULES)}}/>
+        <div style={{ padding: 24 }} className="md"
+          dangerouslySetInnerHTML={{ __html: renderMd(state.rules || DEFAULT_RULES) }} />
       </div>
     </div>
   );
@@ -2528,18 +2718,18 @@ function RulesView({ state, setState, isAdmin, showToast }) {
 // ============================================================
 // ADMIN LOGIN
 // ============================================================
-function AdminLogin({onLogin}){
-  const[pw,setPw]=useState("");const[err,setErr]=useState("");
-  function go(){pw===CONFIG.ADMIN_PASSWORD?onLogin():(setErr("Incorrect password"),setPw(""));}
-  return(
+function AdminLogin({ onLogin }) {
+  const [pw, setPw] = useState(""); const [err, setErr] = useState("");
+  function go() { pw === CONFIG.ADMIN_PASSWORD ? onLogin() : (setErr("Incorrect password"), setPw("")); }
+  return (
     <div className="login-wrap">
       <div className="login-box">
         <div className="login-title">Admin Access</div>
         <div className="field"><label className="lbl">Password</label>
           <input className="inp" type="password" placeholder="Password…" value={pw}
-            onChange={e=>setPw(e.target.value)} onKeyDown={e=>e.key==="Enter"&&go()}/>
+            onChange={e => setPw(e.target.value)} onKeyDown={e => e.key === "Enter" && go()} />
         </div>
-        {err&&<div className="msg msg-e">{err}</div>}
+        {err && <div className="msg msg-e">{err}</div>}
         <button className="btn btn-p w-full mt16" onClick={go}>Login</button>
       </div>
     </div>
@@ -2549,62 +2739,62 @@ function AdminLogin({onLogin}){
 // ============================================================
 // ROOT
 // ============================================================
-export default function App(){
+export default function App() {
 
-  const[state,setState]=useState(SEED);
-  const[isAdmin,setIsAdmin]=useState(false);
-  const[tab,setTab]=useState("leaderboard");
-  const[adminTab,setAdminTab]=useState("onboard");
-  const[showLogin,setShowLogin]=useState(false);
-  const[toast,setToast]=useState(null);
-  const[selPlayer,setSelPlayer]=useState(null);
-  const[editPlayer,setEditPlayer]=useState(null);
+  const [state, setState] = useState(SEED);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [tab, setTab] = useState("leaderboard");
+  const [adminTab, setAdminTab] = useState("onboard");
+  const [showLogin, setShowLogin] = useState(false);
+  const [toast, setToast] = useState(null);
+  const [selPlayer, setSelPlayer] = useState(null);
+  const [editPlayer, setEditPlayer] = useState(null);
 
   // realtime + loading
-  const[loading,setLoading]=useState(true);
-  const[rtConnected,setRtConnected]=useState(false);
-  const subscriptionRef=useRef(null);
-  const isRemoteUpdate=useRef(false);
+  const [loading, setLoading] = useState(true);
+  const [rtConnected, setRtConnected] = useState(false);
+  const subscriptionRef = useRef(null);
+  const isRemoteUpdate = useRef(false);
 
   // ============================================================
   // LOAD STATE
   // ============================================================
-  useEffect(()=>{
+  useEffect(() => {
 
-    async function initState(){
-      try{
+    async function initState() {
+      try {
         const loaded = await loadState();
         setState(loaded);
         subscribeToStateChanges();
-      }catch(err){
-        console.error("Failed to initialize:",err);
-      }finally{
+      } catch (err) {
+        console.error("Failed to initialize:", err);
+      } finally {
         setLoading(false);
       }
     }
 
     initState();
 
-    return ()=>{
+    return () => {
       clearTimeout(reconnectTimer.current);
-      if(subscriptionRef.current){
+      if (subscriptionRef.current) {
         supabase.removeChannel(subscriptionRef.current);
       }
     };
 
-  },[]);
+  }, []);
 
   // Always keep a ref to latest state so saveState never captures stale closure
   const stateRef = useRef(state);
-  useEffect(()=>{ stateRef.current = state; }, [state]);
+  useEffect(() => { stateRef.current = state; }, [state]);
 
   // autosave — skip on initial load, skip when change came from realtime
   const isInitialLoad = useRef(true);
   const pendingSave = useRef(false);
-  useEffect(()=>{
-    if(!loading){
-      if(isInitialLoad.current){ isInitialLoad.current=false; return; }
-      if(isRemoteUpdate.current){ isRemoteUpdate.current=false; return; }
+  useEffect(() => {
+    if (!loading) {
+      if (isInitialLoad.current) { isInitialLoad.current = false; return; }
+      if (isRemoteUpdate.current) { isRemoteUpdate.current = false; return; }
       pendingSave.current = true;
       saveState(
         stateRef.current,
@@ -2618,16 +2808,16 @@ export default function App(){
         () => { pendingSave.current = false; }
       );
     }
-  },[state,loading]);
+  }, [state, loading]);
 
   // ============================================================
   // REALTIME SUBSCRIPTION
   // ============================================================
   const reconnectTimer = useRef(null);
 
-  function subscribeToStateChanges(){
+  function subscribeToStateChanges() {
     // Clean up any existing channel first
-    if(subscriptionRef.current){
+    if (subscriptionRef.current) {
       supabase.removeChannel(subscriptionRef.current);
       subscriptionRef.current = null;
     }
@@ -2636,33 +2826,33 @@ export default function App(){
       .channel('app_state_changes_' + Date.now())
       .on(
         'postgres_changes',
-        {event:'UPDATE',schema:'public',table:'app_state',filter:'id=eq.1'},
-        (payload)=>{
+        { event: 'UPDATE', schema: 'public', table: 'app_state', filter: 'id=eq.1' },
+        (payload) => {
           // Skip if we have a pending save in-flight (our own echo)
-          if(pendingSave.current) return;
-          isRemoteUpdate.current=true;
+          if (pendingSave.current) return;
+          isRemoteUpdate.current = true;
           setState(normaliseState(payload.new.state || {}));
         }
       )
       .on(
         'postgres_changes',
-        {event:'INSERT',schema:'public',table:'app_state',filter:'id=eq.1'},
-        (payload)=>{
-          if(pendingSave.current) return;
-          isRemoteUpdate.current=true;
+        { event: 'INSERT', schema: 'public', table: 'app_state', filter: 'id=eq.1' },
+        (payload) => {
+          if (pendingSave.current) return;
+          isRemoteUpdate.current = true;
           setState(normaliseState(payload.new.state || {}));
         }
       )
-      .subscribe((status)=>{
+      .subscribe((status) => {
         console.log('Realtime status:', status);
-        if(status==='SUBSCRIBED'){
+        if (status === 'SUBSCRIBED') {
           setRtConnected(true);
           clearTimeout(reconnectTimer.current);
         }
-        if(status==='CHANNEL_ERROR'||status==='CLOSED'){
+        if (status === 'CHANNEL_ERROR' || status === 'CLOSED') {
           setRtConnected(false);
           clearTimeout(reconnectTimer.current);
-          reconnectTimer.current = setTimeout(()=>subscribeToStateChanges(), 5000);
+          reconnectTimer.current = setTimeout(() => subscribeToStateChanges(), 5000);
         }
       });
 
@@ -2672,52 +2862,52 @@ export default function App(){
   // ============================================================
   // TOAST
   // ============================================================
-  const showToast = useCallback((msg,type="success")=>{
-    setToast({msg,type});
-    setTimeout(()=>setToast(null),3500);
-  },[]);
+  const showToast = useCallback((msg, type = "success") => {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 3500);
+  }, []);
 
   // ============================================================
   // NAV
   // ============================================================
-  const PUB = ["leaderboard","history","finals","rules"];
+  const PUB = ["leaderboard", "history", "finals", "rules"];
 
   const ADMIN_TABS = [
-    { id:"onboard", label:"Onboard" },
-    { id:"logGames", label:"Log Games" }
+    { id: "onboard", label: "Onboard" },
+    { id: "logGames", label: "Log Games" }
   ];
 
-  const[mobMenuOpen,setMobMenuOpen]=useState(false);
-  function navTo(t, aTab){
+  const [mobMenuOpen, setMobMenuOpen] = useState(false);
+  function navTo(t, aTab) {
     setTab(t);
-    if(aTab) setAdminTab(aTab);
+    if (aTab) setAdminTab(aTab);
     setMobMenuOpen(false);
   }
 
   // keep selected player synced with state updates
   const currentSelPlayer = selPlayer
-    ? state.players.find(p=>p.id===selPlayer.id) || selPlayer
+    ? state.players.find(p => p.id === selPlayer.id) || selPlayer
     : null;
 
   const currentEditPlayer = editPlayer
-    ? state.players.find(p=>p.id===editPlayer.id) || editPlayer
+    ? state.players.find(p => p.id === editPlayer.id) || editPlayer
     : null;
 
   // ============================================================
   // LOADING SCREEN
   // ============================================================
-  if(loading){
-    return(
+  if (loading) {
+    return (
       <div style={{
-        display:'flex',
-        alignItems:'center',
-        justifyContent:'center',
-        minHeight:'100vh',
-        color:'var(--dim)',
-        fontFamily:'var(--mono)'
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        minHeight: '100vh',
+        color: 'var(--dim)',
+        fontFamily: 'var(--mono)'
       }}>
-        <div style={{textAlign:'center'}}>
-          <div style={{fontSize:24,marginBottom:12}}>⚽</div>
+        <div style={{ textAlign: 'center' }}>
+          <div style={{ fontSize: 24, marginBottom: 12 }}>⚽</div>
           <div>Loading leaderboard...</div>
         </div>
       </div>
@@ -2727,7 +2917,7 @@ export default function App(){
   // ============================================================
   // APP
   // ============================================================
-  return(
+  return (
     <>
       <style>{CSS}</style>
 
@@ -2737,7 +2927,7 @@ export default function App(){
         {/* TOPBAR */}
         {/* ============================================================ */}
 
-        <div className="topbar" style={{position:"sticky",top:0,zIndex:100}}>
+        <div className="topbar" style={{ position: "sticky", top: 0, zIndex: 100 }}>
 
           <div className="brand">
             St. Marylebone <span className="brand-sub">Table Tracker</span>
@@ -2745,55 +2935,55 @@ export default function App(){
 
           {/* Desktop nav */}
           <nav className="nav">
-            {PUB.map(t=>(
-              <button key={t} className={`nav-btn ${tab===t?"active":""}`} onClick={()=>navTo(t)}>
+            {PUB.map(t => (
+              <button key={t} className={`nav-btn ${tab === t ? "active" : ""}`} onClick={() => navTo(t)}>
                 {t}
               </button>
             ))}
-            {isAdmin && ADMIN_TABS.map(t=>(
+            {isAdmin && ADMIN_TABS.map(t => (
               <button key={t.id}
-                className={`nav-btn ${tab==="admin"&&adminTab===t.id?"active":""}`}
-                onClick={()=>navTo("admin",t.id)}>
+                className={`nav-btn ${tab === "admin" && adminTab === t.id ? "active" : ""}`}
+                onClick={() => navTo("admin", t.id)}>
                 {t.label}
               </button>
             ))}
           </nav>
 
-          <div className="fac" style={{gap:8}}>
+          <div className="fac" style={{ gap: 8 }}>
             {/* Realtime connection dot — always visible in topbar */}
-            <div className="fac" style={{gap:5}} title={rtConnected?"Live — connected to database":"Connecting…"}>
-              <span className={`rt-dot ${rtConnected?"live":""}`}></span>
-              <span className="xs text-dd" style={{whiteSpace:"nowrap"}}>{rtConnected?"Live":"…"}</span>
+            <div className="fac" style={{ gap: 5 }} title={rtConnected ? "Live — connected to database" : "Connecting…"}>
+              <span className={`rt-dot ${rtConnected ? "live" : ""}`}></span>
+              <span className="xs text-dd" style={{ whiteSpace: "nowrap" }}>{rtConnected ? "Live" : "…"}</span>
             </div>
             {isAdmin ? (
               <>
                 <span className="admin-badge">Admin</span>
-                <button className="btn btn-g btn-sm" onClick={()=>{setIsAdmin(false);navTo("leaderboard");}}>
+                <button className="btn btn-g btn-sm" onClick={() => { setIsAdmin(false); navTo("leaderboard"); }}>
                   Logout
                 </button>
               </>
             ) : (
-              <button className="btn btn-g btn-sm" onClick={()=>setShowLogin(true)}>Admin</button>
+              <button className="btn btn-g btn-sm" onClick={() => setShowLogin(true)}>Admin</button>
             )}
             {/* Hamburger — mobile only */}
-            <button className={`ham-btn ${mobMenuOpen?"open":""}`} onClick={()=>setMobMenuOpen(o=>!o)} aria-label="Menu">
-              <span/><span/><span/>
+            <button className={`ham-btn ${mobMenuOpen ? "open" : ""}`} onClick={() => setMobMenuOpen(o => !o)} aria-label="Menu">
+              <span /><span /><span />
             </button>
           </div>
 
         </div>
 
         {/* Mobile nav dropdown */}
-        <div className={`mob-nav ${mobMenuOpen?"open":""}`}>
-          {PUB.map(t=>(
-            <button key={t} className={`nav-btn ${tab===t?"active":""}`} onClick={()=>navTo(t)}>
+        <div className={`mob-nav ${mobMenuOpen ? "open" : ""}`}>
+          {PUB.map(t => (
+            <button key={t} className={`nav-btn ${tab === t ? "active" : ""}`} onClick={() => navTo(t)}>
               {t}
             </button>
           ))}
-          {isAdmin && ADMIN_TABS.map(t=>(
+          {isAdmin && ADMIN_TABS.map(t => (
             <button key={t.id}
-              className={`nav-btn ${tab==="admin"&&adminTab===t.id?"active":""}`}
-              onClick={()=>navTo("admin",t.id)}>
+              className={`nav-btn ${tab === "admin" && adminTab === t.id ? "active" : ""}`}
+              onClick={() => navTo("admin", t.id)}>
               {t.label}
             </button>
           ))}
@@ -2806,18 +2996,18 @@ export default function App(){
 
         <div className="main">
 
-          {tab==="leaderboard" && (
+          {tab === "leaderboard" && (
             <LeaderboardView
               state={state}
               rtConnected={rtConnected}
-              onSelectPlayer={p=>{
+              onSelectPlayer={p => {
                 setSelPlayer(p);
                 setEditPlayer(null);
               }}
             />
           )}
 
-          {tab==="history" && (
+          {tab === "history" && (
             <HistoryView
               state={state}
               setState={setState}
@@ -2826,7 +3016,7 @@ export default function App(){
             />
           )}
 
-          {tab==="finals" && (
+          {tab === "finals" && (
             <FinalsView
               state={state}
               setState={setState}
@@ -2835,7 +3025,7 @@ export default function App(){
             />
           )}
 
-          {tab==="rules" && (
+          {tab === "rules" && (
             <RulesView
               state={state}
               setState={setState}
@@ -2845,14 +3035,14 @@ export default function App(){
           )}
 
           {/* ADMIN LOGIN */}
-          {tab==="admin" && !isAdmin && (
-            <AdminLogin onLogin={()=>setIsAdmin(true)} />
+          {tab === "admin" && !isAdmin && (
+            <AdminLogin onLogin={() => setIsAdmin(true)} />
           )}
 
           {/* ADMIN PANEL */}
-          {tab==="admin" && isAdmin && (()=>{
+          {tab === "admin" && isAdmin && (() => {
 
-            switch(adminTab){
+            switch (adminTab) {
 
               case "onboard":
                 return (
@@ -2874,7 +3064,7 @@ export default function App(){
 
               default:
                 return (
-                  <div className="card" style={{padding:24}}>
+                  <div className="card" style={{ padding: 24 }}>
                     <div className="text-d">
                       Admin page not found
                     </div>
@@ -2895,11 +3085,11 @@ export default function App(){
         {showLogin && !isAdmin && (
           <div
             className="overlay"
-            onClick={e=>e.target===e.currentTarget && setShowLogin(false)}
+            onClick={e => e.target === e.currentTarget && setShowLogin(false)}
           >
             <div className="modal">
               <AdminLogin
-                onLogin={()=>{
+                onLogin={() => {
                   setIsAdmin(true);
                   setShowLogin(false);
                   setTab("admin");
@@ -2919,9 +3109,9 @@ export default function App(){
           <PlayerProfile
             player={currentSelPlayer}
             state={state}
-            onClose={()=>setSelPlayer(null)}
+            onClose={() => setSelPlayer(null)}
             isAdmin={isAdmin}
-            onEdit={()=>{
+            onEdit={() => {
               setEditPlayer(currentSelPlayer);
               setSelPlayer(null);
             }}
@@ -2939,7 +3129,7 @@ export default function App(){
             state={state}
             setState={setState}
             showToast={showToast}
-            onClose={()=>setEditPlayer(null)}
+            onClose={() => setEditPlayer(null)}
           />
         )}
 
