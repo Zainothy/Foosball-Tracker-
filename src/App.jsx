@@ -556,11 +556,16 @@ function Pips({ used }) {
   )}</>;
 }
 function PosBadge({ pos }) {
-  if (!pos || pos === "none") return <span className="text-dd xs">—</span>;
-  if (pos === "attack") return <span className="pos-badge pos-atk">⚔ ATK</span>;
-  if (pos === "defense") return <span className="pos-badge pos-def">🛡 DEF</span>;
-  if (pos === "both") return <span className="pos-badge pos-both">⚡ FLEX</span>;
-  return null;
+  if (!pos || pos === "none" || (Array.isArray(pos) && pos.length === 0)) return <span className="text-dd xs">—</span>;
+  const positions = Array.isArray(pos) ? pos : [pos];
+  // Legacy "both" → show as flex
+  const badges = positions.map(p => {
+    if (p === "attack") return <span key="atk" className="pos-badge pos-atk">🗡 ATK</span>;
+    if (p === "defense") return <span key="def" className="pos-badge pos-def">🛡 DEF</span>;
+    if (p === "both" || p === "flex") return <span key="flex" className="pos-badge pos-both">⚡ FLEX</span>;
+    return null;
+  }).filter(Boolean);
+  return <div className="fac" style={{gap:3,flexWrap:"wrap"}}>{badges}</div>;
 }
 function Toast({ t }) {
   if (!t) return null;
@@ -662,7 +667,7 @@ function PlayerProfile({ player, state, onClose, isAdmin, onEdit }) {
         </div>
       </div>
 
-      <div className="grid-2 mb16">
+      <div className="grid-3 mb16">
         <div className="stat-box">
           <div className="stat-lbl">Win Rate</div>
           <div className="stat-val" style={{fontSize:20}}>
@@ -672,6 +677,10 @@ function PlayerProfile({ player, state, onClose, isAdmin, onEdit }) {
                 </span>
               : <span className="text-dd">—</span>}
           </div>
+        </div>
+        <div className="stat-box">
+          <div className="stat-lbl">Position</div>
+          <div style={{marginTop:8}}><PosBadge pos={player.position}/></div>
         </div>
         <div className="stat-box">
           <div className="stat-lbl">Placements this month</div>
@@ -711,7 +720,13 @@ function EditPlayerModal({ player, state, setState, showToast, onClose }) {
   const [name, setName] = useState(player.name);
   const [pts, setPts] = useState(String(player.pts||0));
   const [streak, setStreak] = useState(String(player.streak||0));
-  const [position, setPosition] = useState(player.position||"none");
+  const [positions, setPositions] = useState(() => {
+    const p = player.position;
+    if (!p || p === "none") return [];
+    if (p === "both") return ["attack","defense","flex"];
+    if (Array.isArray(p)) return p;
+    return [p];
+  });
   const [champMonth, setChampMonth] = useState("");
   const [champPartner, setChampPartner] = useState("");
   const [confirm, setConfirm] = useState(null);
@@ -724,7 +739,7 @@ function EditPlayerModal({ player, state, setState, showToast, onClose }) {
     setState(s => ({
       ...s,
       players: s.players.map(p => p.id===player.id
-        ? {...p, name:name.trim(), pts:newPts, streak:newStreak, position}
+        ? {...p, name:name.trim(), pts:newPts, streak:newStreak, position: positions.length === 0 ? "none" : positions}
         : p
       )
     }));
@@ -792,11 +807,17 @@ function EditPlayerModal({ player, state, setState, showToast, onClose }) {
             <input className="inp inp-edit" type="number" value={streak} onChange={e=>setStreak(e.target.value)}/></div>
         </div>
         <div className="field mt8"><label className="lbl">Position Preference</label>
-          <div className="fac" style={{gap:6,flexWrap:"wrap"}}>
-            {[["none","—"],["attack","⚔ Attack"],["defense","🛡 Defense"],["both","⚡ Flex (Both)"]].map(([v,l])=>(
-              <button key={v} className={`pill ${position===v?"on":""}`} onClick={()=>setPosition(v)}>{l}</button>
-            ))}
+          <div className="fac" style={{gap:6,flexWrap:"wrap",marginBottom:4}}>
+            {[["attack","🗡 Attack"],["defense","🛡 Defense"],["flex","⚡ Flex"]].map(([v,l])=>{
+              const on = positions.includes(v);
+              return (
+                <button key={v} className={`pill ${on?"on":""}`} onClick={()=>{
+                  setPositions(prev => prev.includes(v) ? prev.filter(x=>x!==v) : [...prev, v]);
+                }}>{l}</button>
+              );
+            })}
           </div>
+          <div className="xs text-dd" style={{marginTop:3}}>Select all that apply. Flex = comfortable in either role.</div>
         </div>
         <div className="msg msg-w sm">Manually editing pts/streak will diverge from game history. Use recalculate to re-sync.</div>
 
@@ -1849,28 +1870,34 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
     return (
       <div>
         <div className="xs text-dd" style={{ textAlign: "center", marginBottom: 5, letterSpacing: 2, textTransform: "uppercase" }}>{label}</div>
-        <div className="b-match" style={{ minWidth: 220 }}>
-          <div className={`b-side ${m.winner === "A" ? "win" : ""}`}>
-            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+        <div style={{ background: "var(--s2)", border: "1px solid var(--b2)", borderRadius: 8, overflow: "hidden", minWidth: 280 }}>
+          {/* Team A */}
+          <div style={{ padding: "10px 14px", borderBottom: "2px solid var(--b1)", background: m.winner === "A" ? "rgba(30,215,96,.08)" : "transparent", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
               {pA.map((pl, i) => (
-                <div key={i} className="fac" style={{ gap: 5 }}>
-                  <span>{pl.name}</span>
+                <div key={i} className="fac" style={{ gap: 6 }}>
+                  <span style={{ fontWeight: 600, fontSize: 13, color: m.winner === "A" ? "var(--green)" : "var(--text)" }}>{pl.name}</span>
                   <PosBadge pos={pl.pos} />
                 </div>
               ))}
             </div>
-            {done && <span className="disp" style={{ fontSize: 18 }}>{m.scoreA}</span>}
+            {done && <span className="disp text-am" style={{ fontSize: 26, marginLeft: 12 }}>{m.scoreA}</span>}
+            {m.winner === "A" && <span className="tag tag-w" style={{ marginLeft: 8 }}>WIN</span>}
           </div>
-          <div className={`b-side ${m.winner === "B" ? "win" : ""}`}>
-            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          {/* VS divider */}
+          <div style={{ textAlign: "center", padding: "4px 0", background: "var(--s3)", fontSize: 9, letterSpacing: 3, color: "var(--dimmer)", textTransform: "uppercase" }}>vs</div>
+          {/* Team B */}
+          <div style={{ padding: "10px 14px", background: m.winner === "B" ? "rgba(30,215,96,.08)" : "transparent", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
               {pB.map((pl, i) => (
-                <div key={i} className="fac" style={{ gap: 5 }}>
-                  <span>{pl.name}</span>
+                <div key={i} className="fac" style={{ gap: 6 }}>
+                  <span style={{ fontWeight: 600, fontSize: 13, color: m.winner === "B" ? "var(--green)" : "var(--text)" }}>{pl.name}</span>
                   <PosBadge pos={pl.pos} />
                 </div>
               ))}
             </div>
-            {done && <span className="disp" style={{ fontSize: 18 }}>{m.scoreB}</span>}
+            {done && <span className="disp text-am" style={{ fontSize: 26, marginLeft: 12 }}>{m.scoreB}</span>}
+            {m.winner === "B" && <span className="tag tag-w" style={{ marginLeft: 8 }}>WIN</span>}
           </div>
         </div>
         {!preview && isAdmin && !done && (
@@ -1893,17 +1920,22 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
   function DateEditor() {
     if (!isAdmin) return null;
     return (
-      <div style={{ marginTop: 10 }}>
+      <div style={{ marginTop: 10 }} onClick={e => e.stopPropagation()}>
         {editingDate ? (
           <div className="fac" style={{ justifyContent: "center", gap: 6, flexWrap: "wrap" }}>
-            <input className="inp" type="datetime-local" value={dateInput}
+            <input
+              className="inp"
+              type="datetime-local"
+              value={dateInput}
               onChange={e => setDateInput(e.target.value)}
-              style={{ width: 210, fontSize: 11 }} />
-            <button className="btn btn-p btn-sm" onClick={saveFinalsDate}>Save</button>
-            <button className="btn btn-g btn-sm" onClick={() => setEditingDate(false)}>Cancel</button>
+              onClick={e => e.stopPropagation()}
+              style={{ width: 210, fontSize: 11, colorScheme: "dark" }}
+            />
+            <button className="btn btn-p btn-sm" onClick={e => { e.stopPropagation(); saveFinalsDate(); }}>Save</button>
+            <button className="btn btn-g btn-sm" onClick={e => { e.stopPropagation(); setEditingDate(false); }}>Cancel</button>
           </div>
         ) : (
-          <button className="btn btn-g btn-sm" onClick={() => { setDateInput(state.finalsDate || ""); setEditingDate(true); }}>
+          <button className="btn btn-g btn-sm" onClick={e => { e.stopPropagation(); setDateInput(state.finalsDate || ""); setEditingDate(true); }}>
             {state.finalsDate ? "Edit Finals Date" : "Set Finals Date"}
           </button>
         )}
