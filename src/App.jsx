@@ -6,7 +6,7 @@ import { supabase } from './supabaseClient';
 // Changing mid-season only affects future games.
 // ============================================================
 const CONFIG = {
-  ADMIN_PASSWORD: "YoungHector123",   // CHANGE THIS before deploying
+  ADMIN_PASSWORD: "RankUp26",   // CHANGE THIS before deploying
 
   STARTING_MMR: 1000,           // hidden matchmaking rating
   STARTING_PTS: 0,              // visible leaderboard points
