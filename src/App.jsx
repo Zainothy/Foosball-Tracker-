@@ -1121,6 +1121,7 @@ function LeaderboardView({ state, setState, onSelectPlayer, rtConnected, isAdmin
   },[state.players]);
 
   return (
+    <>
     <div className="stack page-fade">
       {isAdmin && (
         <div style={{display:"flex",justifyContent:"flex-end"}}>
@@ -1193,7 +1194,6 @@ function LeaderboardView({ state, setState, onSelectPlayer, rtConnected, isAdmin
         </table>
         </div>
       </div>
-    </div>
     {showRecalcConfirm && (
       <ConfirmDialog
         title="Recalculate All Stats?"
@@ -1202,6 +1202,7 @@ function LeaderboardView({ state, setState, onSelectPlayer, rtConnected, isAdmin
         onCancel={()=>setShowRecalcConfirm(false)}
       />
     )}
+    </>
   );
 }
 
