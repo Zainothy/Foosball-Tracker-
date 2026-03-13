@@ -1194,6 +1194,7 @@ function LeaderboardView({ state, setState, onSelectPlayer, rtConnected, isAdmin
         </table>
         </div>
       </div>
+    </div>
     {showRecalcConfirm && (
       <ConfirmDialog
         title="Recalculate All Stats?"
