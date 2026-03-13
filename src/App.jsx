@@ -6,7 +6,7 @@ import { supabase } from './supabaseClient';
 // Changing mid-season only affects future games.
 // ============================================================
 const CONFIG = {
-  ADMIN_PASSWORD: "RankUp26",   // CHANGE THIS before deploying
+  ADMIN_PASSWORD: "YoungHector123",   // CHANGE THIS before deploying
 
   STARTING_MMR: 1000,           // hidden matchmaking rating
   STARTING_PTS: 0,              // visible leaderboard points
@@ -102,101 +102,123 @@ function avg(ids, players, key) {
   return found.reduce((s, p) => s + (p[key] || 0), 0) / found.length;
 }
 
-// Recalculate pts/mmr/streaks/wins/losses from scratch AND rewrite
-// ptsGain/ptsLoss/mmrGain/mmrLoss on every game record for full consistency.
+// Recalculate pts/mmr/streaks/wins/losses from scratch using per-player deltas.
 // Returns { players, games } — caller must update both.
-function replayGames(basePlayers, games, monthlyPlacements) {
+function replayGames(basePlayers, games) {
   let players = basePlayers.map(p => ({
-    ...p,
-    mmr: CONFIG.STARTING_MMR,
-    pts: CONFIG.STARTING_PTS,
+    ...p, mmr: CONFIG.STARTING_MMR, pts: CONFIG.STARTING_PTS,
     wins: 0, losses: 0, streak: 0,
   }));
-  // Track placement counts during replay
-  const placements = {};
   const sorted = [...games].sort((a, b) => new Date(a.date) - new Date(b.date));
   const updatedGames = sorted.map(g => {
     const winIds = g.winner === "A" ? g.sideA : g.sideB;
     const losIds = g.winner === "A" ? g.sideB : g.sideA;
     const ranked = [...players].sort((a,b)=>(b.pts||0)-(a.pts||0));
     const rankOf = id => { const i = ranked.findIndex(p=>p.id===id); return i === -1 ? ranked.length : i; };
-    const avgRank = ids => ids.reduce((s,id)=>s+rankOf(id),0)/ids.length;
-    const { gain, loss, eloScale, rankScale, winMult, lossMult, scoreMult } = calcDelta({
-      winnerScore: Math.max(g.scoreA, g.scoreB),
-      loserScore:  Math.min(g.scoreA, g.scoreB),
-      winnerAvgMMR:    avg(winIds, players, "mmr"),
-      loserAvgMMR:     avg(losIds, players, "mmr"),
-      winnerAvgStreak: avg(winIds, players, "streak"),
-      loserAvgStreak:  avg(losIds, players, "streak"),
-      winnerAvgRank:   avgRank(winIds),
-      loserAvgRank:    avgRank(losIds),
-    });
+    const oppAvgMMR  = ids => avg(ids, players, "mmr");
+    const oppAvgRank = ids => ids.reduce((s,id)=>s+rankOf(id),0)/ids.length;
+    const winnerScore = Math.max(g.scoreA, g.scoreB);
+    const loserScore  = Math.min(g.scoreA, g.scoreB);
+    const oppWinMMR  = oppAvgMMR(winIds);
+    const oppLosMMR  = oppAvgMMR(losIds);
+    const oppWinRank = oppAvgRank(winIds);
+    const oppLosRank = oppAvgRank(losIds);
 
-    // Recalc ignores placement gates — all historical games count toward pts
-    const allPids = [...winIds, ...losIds];
-    allPids.forEach(pid => { placements[pid] = (placements[pid]||0)+1; });
+    // Per-player deltas
+    const playerDeltas = {};
+    [...winIds, ...losIds].forEach(pid => {
+      const p = players.find(x => x.id === pid);
+      if (!p) return;
+      const isWinner = winIds.includes(pid);
+      const d = calcPlayerDelta({
+        winnerScore, loserScore,
+        playerMMR:    p.mmr,
+        playerRank:   rankOf(pid),
+        playerStreak: p.streak || 0,
+        oppAvgMMR:    isWinner ? oppLosMMR  : oppWinMMR,
+        oppAvgRank:   isWinner ? oppLosRank : oppWinRank,
+        isWinner,
+      });
+      playerDeltas[pid] = d;
+    });
 
     players = players.map(p => {
+      const d = playerDeltas[p.id];
+      if (!d) return p;
       const isWin = winIds.includes(p.id);
-      const isLos = losIds.includes(p.id);
-      if (!isWin && !isLos) return p;
       if (isWin) {
         const ns = (p.streak||0) >= 0 ? (p.streak||0)+1 : 1;
-        return { ...p, mmr: p.mmr+gain, pts: (p.pts||0)+gain, wins: p.wins+1, streak: ns };
+        return { ...p, mmr: p.mmr+d.gain, pts: (p.pts||0)+d.gain, wins: p.wins+1, streak: ns };
       }
       const ns = (p.streak||0) <= 0 ? (p.streak||0)-1 : -1;
-      return { ...p, mmr: Math.max(0,p.mmr-loss), pts: Math.max(0,(p.pts||0)-loss), losses: p.losses+1, streak: ns };
+      return { ...p, mmr: Math.max(0,p.mmr-d.loss), pts: Math.max(0,(p.pts||0)-d.loss), losses: p.losses+1, streak: ns };
     });
 
-    // Return game with recalculated deltas stamped on it
-    return { ...g, ptsGain: gain, ptsLoss: loss, mmrGain: gain, mmrLoss: loss, eloScale, rankScale, winMult, lossMult, scoreMult };
+    // Summary gain/loss for display (average of individual deltas)
+    const avgGain = Math.round(winIds.reduce((s,id)=>s+(playerDeltas[id]?.gain||0),0)/Math.max(winIds.length,1));
+    const avgLoss = Math.round(losIds.reduce((s,id)=>s+(playerDeltas[id]?.loss||0),0)/Math.max(losIds.length,1));
+
+    return { ...g, ptsGain: avgGain, ptsLoss: avgLoss, mmrGain: avgGain, mmrLoss: avgLoss, playerDeltas };
   });
 
   return { players, games: updatedGames };
 }
 
-// ── CORE DELTA FORMULA ───────────────────────────────────────
-// Three independent multipliers, all applied to base gain/loss:
+// ── CORE DELTA FORMULA (PER-PLAYER) ──────────────────────────
+// Each player receives their own individual gain/loss based on:
+//   1. SCORE DOMINANCE  — scoreMult shared (same game for everyone)
+//   2. MMR SURPRISE     — each player's MMR vs average opponent MMR
+//   3. RANK GAP         — each player's rank vs average opponent rank
+//   4. STREAK           — each player's own streak
 //
-// 1. SCORE DOMINANCE — how one-sided was the match?
-//    ratio = scoreDiff / winnerScore  (0 = tie, 1 = shutout)
-//    scoreMult = 1 + SCORE_WEIGHT * ratio^SCORE_EXP
-//    Range: 1.0 (10-9) → ~2.2 (10-0)
+// This means two players on the same winning team can receive
+// different gains if one is heavily favoured and the other is an underdog.
 //
-// 2. MMR/ELO SURPRISE — did the underdog win?
-//    eloScale = sigmoid of mmrGap → high when upset, low when expected
-//    Range: 0.1 (massive favourite wins) → 1.9 (massive underdog wins)
-//
-// 3. RANK GAP — beating a higher-ranked opponent = extra reward
-//    rankScale = 1 + RANK_WEIGHT * tanh(rankDiff / RANK_DIVISOR)
-//    Range: 0.6 (losing to lower) → 1.4 (beating much higher)
-//
-// 4. STREAK — exponential warm-up, hard plateau at cap
-//
-function calcDelta({ winnerScore, loserScore, winnerAvgMMR, loserAvgMMR,
-                     winnerAvgStreak, loserAvgStreak, winnerAvgRank, loserAvgRank }) {
-  // Score dominance
-  const scoreDiff = winnerScore - loserScore;
+function calcPlayerDelta({ winnerScore, loserScore, playerMMR, playerRank,
+                           playerStreak, oppAvgMMR, oppAvgRank, isWinner }) {
+  // 1. Score dominance (same for all players in the game)
+  const scoreDiff  = winnerScore - loserScore;
   const scoreRatio = scoreDiff / Math.max(winnerScore, 1);
-  const scoreMult = 1 + CONFIG.SCORE_WEIGHT * Math.pow(scoreRatio, CONFIG.SCORE_EXP);
+  const scoreMult  = 1 + CONFIG.SCORE_WEIGHT * Math.pow(scoreRatio, CONFIG.SCORE_EXP);
 
-  // MMR surprise (elo): high reward for underdog win, low for expected win
-  const mmrGap = winnerAvgMMR - loserAvgMMR;
+  // 2. MMR surprise: sigmoid of (myMMR - oppAvgMMR)
+  //    positive gap = favourite → low eloScale (smaller reward for expected win)
+  //    negative gap = underdog  → high eloScale (bigger reward for upset)
+  const mmrGap   = playerMMR - oppAvgMMR;
   const eloScale = 2 / (1 + Math.exp(mmrGap / CONFIG.ELO_DIVISOR));
-  // ^ ranges 0→2; = 1 at equal MMR, >1 when winner had lower MMR
 
-  // Rank gap: winner gains more if they ranked lower, lose less if ranked higher
-  const rankDiff = (loserAvgRank ?? 0) - (winnerAvgRank ?? 0);
-  // positive = winner was ranked lower (upset) = bonus gain
+  // 3. Rank gap vs opponents
+  const rankDiff  = isWinner
+    ? (oppAvgRank - playerRank)   // positive = I ranked lower = upset bonus
+    : (playerRank - oppAvgRank);  // positive = I ranked higher = punished more
   const rankScale = 1 + CONFIG.RANK_WEIGHT * Math.tanh(rankDiff / CONFIG.RANK_DIVISOR);
 
-  // Streak multipliers
-  const winMult  = streakMult(winnerAvgStreak);
-  const lossMult = streakMult(loserAvgStreak);
+  // 4. Streak
+  const mult = streakMult(playerStreak);
 
+  if (isWinner) {
+    const gain = Math.max(2, Math.round(CONFIG.BASE_GAIN * scoreMult * eloScale * rankScale * mult));
+    return { gain, loss: 0, scoreMult, eloScale, rankScale, streakMult: mult };
+  } else {
+    const loss = Math.max(1, Math.round(CONFIG.BASE_LOSS * scoreMult * (2 - eloScale) * (2 - rankScale) * mult));
+    return { gain: 0, loss, scoreMult, eloScale, rankScale, streakMult: mult };
+  }
+}
+
+// Legacy team-level wrapper used by GameDetail display (summary only, not for applying deltas)
+function calcDelta({ winnerScore, loserScore, winnerAvgMMR, loserAvgMMR,
+                     winnerAvgStreak, loserAvgStreak, winnerAvgRank, loserAvgRank }) {
+  const scoreDiff  = winnerScore - loserScore;
+  const scoreRatio = scoreDiff / Math.max(winnerScore, 1);
+  const scoreMult  = 1 + CONFIG.SCORE_WEIGHT * Math.pow(scoreRatio, CONFIG.SCORE_EXP);
+  const mmrGap     = winnerAvgMMR - loserAvgMMR;
+  const eloScale   = 2 / (1 + Math.exp(mmrGap / CONFIG.ELO_DIVISOR));
+  const rankDiff   = (loserAvgRank ?? 0) - (winnerAvgRank ?? 0);
+  const rankScale  = 1 + CONFIG.RANK_WEIGHT * Math.tanh(rankDiff / CONFIG.RANK_DIVISOR);
+  const winMult    = streakMult(winnerAvgStreak);
+  const lossMult   = streakMult(loserAvgStreak);
   const gain = Math.max(2, Math.round(CONFIG.BASE_GAIN * scoreMult * eloScale * rankScale * winMult));
   const loss = Math.max(1, Math.round(CONFIG.BASE_LOSS * scoreMult * (2 - eloScale) * (2 - rankScale) * lossMult));
-
   return { gain, loss, eloScale, rankScale, winMult, lossMult, scoreMult };
 }
 
@@ -269,26 +291,74 @@ function normaliseState(s) {
     finals: s.finals || {},
     rules: s.rules || DEFAULT_RULES,
     finalsDate: s.finalsDate || null,
+    _v: typeof s._v === 'number' ? s._v : 0,
   };
 }
 
-let _saveTimer = null;
-function saveState(s) {
-  clearTimeout(_saveTimer);
-  _saveTimer = setTimeout(async () => {
-    try {
-      const { error } = await supabase
-        .from('app_state')
-        .upsert({ id: 1, state: s, updated_at: new Date().toISOString() });
-      if (error) {
-        console.error('Failed to save to Supabase:', error);
-      } else {
-        console.log('✓ state saved to Supabase');
-      }
-    } catch (err) {
-      console.error('Supabase save error:', err);
+// Duplicate game check: same players + same score on same day
+function isDuplicateGame(candidate, existing) {
+  const day = candidate.date.slice(0,10);
+  const cSet = new Set([...candidate.sideA, ...candidate.sideB]);
+  return existing.some(g => {
+    if (g.date.slice(0,10) !== day) return false;
+    const gSet = new Set([...g.sideA, ...g.sideB]);
+    if (gSet.size !== cSet.size) return false;
+    for (const id of cSet) if (!gSet.has(id)) return false;
+    return g.scoreA === candidate.scoreA && g.scoreB === candidate.scoreB;
+  });
+}
+
+// ── SAVE QUEUE with version lock + exponential retry ─────────
+const _sq = { state: null, version: 0, retries: 0, timer: null, onConflict: null };
+
+function saveState(s, onConflict, onSuccess) {
+  clearTimeout(_sq.timer);
+  _sq.state = s;
+  _sq.version = typeof s._v === 'number' ? s._v : 0;
+  _sq.retries = 0;
+  _sq.onConflict = onConflict || null;
+  _sq.onSuccess = onSuccess || null;
+  _sq.timer = setTimeout(_flushSave, 600);
+}
+
+async function _flushSave() {
+  if (!_sq.state) return;
+  const { state: s, version } = _sq;
+  const nextV = version + 1;
+  try {
+    // Version-locked update: only succeeds if DB._v === version
+    const { data, error } = await supabase
+      .from('app_state')
+      .update({ state: { ...s, _v: nextV }, updated_at: new Date().toISOString() })
+      .eq('id', 1)
+      .select('id')
+      .single();
+
+    if (!error && data) {
+      console.log('✓ saved _v' + nextV);
+      const cb = _sq.onSuccess;
+      _sq.state = null; _sq.retries = 0; _sq.onSuccess = null;
+      if (cb) cb();
+      return;
     }
-  }, 800);
+    // Save failed — could be conflict or network
+    throw new Error(error?.message || 'upsert returned no data');
+  } catch (err) {
+    const MAX = 8;
+    if (_sq.retries < MAX) {
+      _sq.retries++;
+      const delay = Math.min(800 * Math.pow(1.6, _sq.retries), 25000);
+      console.warn(`Save retry ${_sq.retries}/${MAX} in ${Math.round(delay)}ms:`, err.message);
+      _sq.timer = setTimeout(_flushSave, delay);
+    } else {
+      console.error('Save failed after max retries — fetching remote to reconcile');
+      _sq.state = null; _sq.retries = 0;
+      try {
+        const { data: cur } = await supabase.from('app_state').select('state').eq('id',1).single();
+        if (cur?.state && _sq.onConflict) _sq.onConflict(normaliseState(cur.state));
+      } catch {}
+    }
+  }
 }
 
 // ============================================================
@@ -680,7 +750,9 @@ function ConfirmDialog({ title, msg, onConfirm, onCancel, danger=false }) {
 function PlayerProfile({ player, state, onClose, isAdmin, onEdit }) {
   const monthKey = getMonthKey();
   const placements = (state.monthlyPlacements[monthKey]||{})[player.id]||0;
-  const myGames = state.games.filter(g=>g.sideA.includes(player.id)||g.sideB.includes(player.id));
+  const myGames = [...state.games]
+    .filter(g=>g.sideA.includes(player.id)||g.sideB.includes(player.id))
+    .sort((a,b)=>new Date(b.date)-new Date(a.date));
   const rank = [...state.players].sort((a,b)=>(b.pts||0)-(a.pts||0)).findIndex(p=>p.id===player.id)+1;
   const champs = player.championships || [];
 
@@ -773,7 +845,13 @@ function PlayerProfile({ player, state, onClose, isAdmin, onEdit }) {
             {mates.length>0 && <span className="text-d sm">w/ {mates.join(" & ")}</span>}
             <span className="text-d sm">vs {opps.join(" & ")}</span>
             <span className="disp text-am" style={{fontSize:15}}>{myScore}–{oppScore}</span>
-            <span className={won?"text-g":"text-r"}>{won?`+${g.ptsGain}pts`:`−${g.ptsLoss}pts`}</span>
+            <span className={won?"text-g":"text-r"}>
+              {(() => {
+                const d = g.playerDeltas?.[player.id];
+                const delta = d ? (won ? d.gain : d.loss) : (won ? g.ptsGain : g.ptsLoss);
+                return `${won?"+":"−"}${delta}pts`;
+              })()}
+            </span>
             <span className="text-dd xs">{fmtDate(g.date)}</span>
           </div>
         );
@@ -847,7 +925,7 @@ function EditPlayerModal({ player, state, setState, showToast, onClose }) {
       title:"Recalculate from Games?",
       msg:`This will recalculate ${player.name}'s pts, mmr, wins, losses, and streak from the game log. Manual edits will be overwritten.`,
       onConfirm: () => {
-        const { players, games } = replayGames(state.players, state.games, state.monthlyPlacements);
+        const { players, games } = replayGames(state.players, state.games);
         setState(s => ({...s, players, games}));
         showToast("All stats recalculated from game log");
         setConfirm(null);
@@ -947,7 +1025,7 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
     const updatedGame = {...game, scoreA:nA, scoreB:nB, winner};
     const editedGames = state.games.map(g=>g.id===game.id ? updatedGame : g);
     const basePlayers = state.players.map(p=>({...p, mmr:CONFIG.STARTING_MMR, pts:CONFIG.STARTING_PTS, wins:0, losses:0, streak:0}));
-    const { players: newPlayers, games: newGames } = replayGames(basePlayers, editedGames, state.monthlyPlacements);
+    const { players: newPlayers, games: newGames } = replayGames(basePlayers, editedGames);
     const mergedPlayers = newPlayers.map(p => {
       const orig = state.players.find(x=>x.id===p.id);
       return {...p, name:orig?.name||p.name, championships:orig?.championships||[], position:orig?.position||p.position};
@@ -966,7 +1044,7 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
       onConfirm:()=>{
         const filteredGames = state.games.filter(g=>g.id!==game.id);
         const basePlayers = state.players.map(p=>({...p, mmr:CONFIG.STARTING_MMR, pts:CONFIG.STARTING_PTS, wins:0, losses:0, streak:0}));
-        const { players: newPlayers, games: newGames } = replayGames(basePlayers, filteredGames, state.monthlyPlacements);
+        const { players: newPlayers, games: newGames } = replayGames(basePlayers, filteredGames);
         const mergedPlayers = newPlayers.map(p => {
           const orig = state.players.find(x=>x.id===p.id);
           return {...p, name:orig?.name||p.name, championships:orig?.championships||[], position:orig?.position||p.position};
@@ -1069,7 +1147,7 @@ function LeaderboardView({ state, setState, onSelectPlayer, rtConnected, isAdmin
   const [showRecalcConfirm, setShowRecalcConfirm] = useState(false);
 
   function doRecalc() {
-    const { players, games } = replayGames(state.players, state.games, state.monthlyPlacements);
+    const { players, games } = replayGames(state.players, state.games);
     setState(s => ({ ...s, players, games }));
     showToast("All stats recalculated from game log");
     setShowRecalcConfirm(false);
@@ -1207,10 +1285,14 @@ function HistoryView({ state, setState, isAdmin, showToast }) {
             <div className="game-row" key={g.id} onClick={()=>setSelectedGameId(g.id)}>
               <div className="g-side">
                 {sAN.map((n,i)=><span key={i} className={g.winner==="A"?"g-name-w":"g-name-l"}>{n}</span>)}
-                <span className="xs text-dd">
-                  {g.winner==="A"
-                    ? <span className="text-g">+{g.ptsGain}pts</span>
-                    : <span className="text-r">−{g.ptsLoss}pts</span>}
+                <span className="xs text-dd" style={{display:"flex",flexDirection:"column",gap:1}}>
+                  {g.sideA.map(id=>{
+                    const d = g.playerDeltas?.[id];
+                    const delta = d ? (g.winner==="A"?d.gain:d.loss) : (g.winner==="A"?g.ptsGain:g.ptsLoss);
+                    return <span key={id} className={g.winner==="A"?"text-g":"text-r"}>
+                      {g.winner==="A"?"+":"-"}{delta} {pName(id,state.players).split(" ")[0]}
+                    </span>;
+                  })}
                 </span>
               </div>
               <div>
@@ -1219,10 +1301,14 @@ function HistoryView({ state, setState, isAdmin, showToast }) {
               </div>
               <div className="g-side right">
                 {sBN.map((n,i)=><span key={i} className={g.winner==="B"?"g-name-w":"g-name-l"}>{n}</span>)}
-                <span className="xs text-dd">
-                  {g.winner==="B"
-                    ? <span className="text-g">+{g.ptsGain}pts</span>
-                    : <span className="text-r">−{g.ptsLoss}pts</span>}
+                <span className="xs text-dd" style={{display:"flex",flexDirection:"column",gap:1}}>
+                  {g.sideB.map(id=>{
+                    const d = g.playerDeltas?.[id];
+                    const delta = d ? (g.winner==="B"?d.gain:d.loss) : (g.winner==="B"?g.ptsGain:g.ptsLoss);
+                    return <span key={id} className={g.winner==="B"?"text-g":"text-r"}>
+                      {g.winner==="B"?"+":"-"}{delta} {pName(id,state.players).split(" ")[0]}
+                    </span>;
+                  })}
                 </span>
               </div>
               <span className={`tag ${g.winner==="A"?"tag-w":"tag-b"}`}>
@@ -1491,12 +1577,13 @@ function OnboardView({ state, setState, showToast }) {
 // ============================================================
 // ADMIN: LOG GAMES
 // ============================================================
-const EMPTY_ROW = () => ({ id: crypto.randomUUID(), sideA: [], sideB: [], scoreA: "", scoreB: "" });
+const EMPTY_ROW = () => ({ id: crypto.randomUUID(), sideA: [], sideB: [], scoreA: "", scoreB: "", searchA: "", searchB: "" });
 
 function LogView({ state, setState, showToast }) {
   const [rows, setRows] = useState([EMPTY_ROW()]);
   const [errors, setErrors] = useState({});
   const [undoStack, setUndoStack] = useState([]);
+  const [confirm, setConfirm] = useState(null);
   const [templates, setTemplates] = useState(() => { 
     try { 
       return JSON.parse(localStorage.getItem("foosball_tpl") || "[]"); 
@@ -1527,12 +1614,14 @@ function LogView({ state, setState, showToast }) {
       r.map(row => {
         if (row.id !== rowId) return row;
         const key = side === "A" ? "sideA" : "sideB";
+        const searchKey = side === "A" ? "searchA" : "searchB";
         const other = side === "A" ? "sideB" : "sideA";
         const otherFiltered = row[other].filter(id => id !== pid);
 
         if (row[key].includes(pid)) return { ...row, [key]: row[key].filter(id => id !== pid) };
         if (row[key].length >= 2) return row;
-        return { ...row, [key]: [...row[key], pid], [other]: otherFiltered };
+        // Auto-clear search after selecting
+        return { ...row, [key]: [...row[key], pid], [other]: otherFiltered, [searchKey]: "" };
       })
     );
   }
@@ -1564,7 +1653,7 @@ function LogView({ state, setState, showToast }) {
   // ============================================================
   // SUBMIT ALL GAMES
   // ============================================================
-  function submitAll() {
+  function submitAll(skipDuplicateCheck = false) {
     const newErrors = {};
     const monthKey = getMonthKey() ?? "default";
     const placements = { ...((state.monthlyPlacements ?? {})[monthKey] ?? {}) };
@@ -1576,12 +1665,30 @@ function LogView({ state, setState, showToast }) {
       const sA = parseInt(row.scoreA, 10), sB = parseInt(row.scoreB, 10);
       if (isNaN(sA) || isNaN(sB) || sA < 0 || sB < 0) { newErrors[row.id] = "Invalid scores"; continue; }
       if (sA === sB) { newErrors[row.id] = "No draws allowed"; continue; }
-
-      // Placements are informational only — no lockout
     }
 
     setErrors(newErrors);
     if (Object.keys(newErrors).length) { showToast("Fix errors first", "error"); return; }
+
+    // Duplicate game check
+    if (!skipDuplicateCheck) {
+      const today = new Date().toISOString();
+      const duplicates = rows.filter(row => {
+        const sA = parseInt(row.scoreA,10), sB = parseInt(row.scoreB,10);
+        return isDuplicateGame({ sideA:row.sideA, sideB:row.sideB, scoreA:sA, scoreB:sB, date:today }, state.games);
+      });
+      if (duplicates.length > 0) {
+        const names = duplicates.map(r =>
+          [...r.sideA,...r.sideB].map(id=>pName(id,state.players)).join(', ')
+        ).join('; ');
+        setConfirm({
+          title: "Duplicate Match Detected",
+          msg: `A match with the same players and score was already logged today (${names}). Log anyway?`,
+          onConfirm: () => { setConfirm(null); submitAll(true); },
+        });
+        return;
+      }
+    }
 
     // Push undo snapshot
     const snapshot = { players: state.players, games: state.games, monthlyPlacements: state.monthlyPlacements };
@@ -1603,82 +1710,76 @@ function LogView({ state, setState, showToast }) {
       const rankOf = id => currentRanked.findIndex(p=>p.id===id);
       const avgRank = ids => ids.reduce((s,id)=>s+rankOf(id),0)/ids.length;
 
-      const { gain, loss, eloScale, rankScale, winMult, lossMult, scoreMult } = calcDelta({
-        winnerScore, loserScore,
-        winnerAvgMMR: avg(winnerIds, newPlayers, "mmr"),
-        loserAvgMMR:  avg(loserIds,  newPlayers, "mmr"),
-        winnerAvgStreak: avg(winnerIds, newPlayers, "streak"),
-        loserAvgStreak:  avg(loserIds,  newPlayers, "streak"),
-        winnerAvgRank: avgRank(winnerIds),
-        loserAvgRank:  avgRank(loserIds),
+      // Per-player deltas
+      const oppWinMMR  = avg(winnerIds, newPlayers, "mmr");
+      const oppLosMMR  = avg(loserIds,  newPlayers, "mmr");
+      const oppWinRank = avgRank(winnerIds);
+      const oppLosRank = avgRank(loserIds);
+      const allPids = [...winnerIds, ...loserIds];
+      const playerDeltas = {};
+      allPids.forEach(pid => {
+        const p = newPlayers.find(x=>x.id===pid);
+        if (!p) return;
+        const isWin = winnerIds.includes(pid);
+        playerDeltas[pid] = calcPlayerDelta({
+          winnerScore, loserScore,
+          playerMMR:    p.mmr,
+          playerRank:   rankOf(pid),
+          playerStreak: p.streak || 0,
+          oppAvgMMR:    isWin ? oppLosMMR  : oppWinMMR,
+          oppAvgRank:   isWin ? oppLosRank : oppWinRank,
+          isWinner: isWin,
+        });
       });
 
-      // Check placement status for each player before updating counts
-      const allPids = [...winnerIds, ...loserIds];
       const placementsBefore = { ...newPlacements[monthKey] };
 
       newPlayers = newPlayers.map(p => {
         const isWinner = winnerIds.includes(p.id);
         const isLoser  = loserIds.includes(p.id);
         if (!isWinner && !isLoser) return p;
-
+        const d = playerDeltas[p.id];
         const placedBefore = (placementsBefore[p.id] || 0) >= CONFIG.MAX_PLACEMENTS_PER_MONTH;
-        const thisIsLastPlacement = (placementsBefore[p.id] || 0) === CONFIG.MAX_PLACEMENTS_PER_MONTH - 1;
-
         if (isWinner) {
-          const ns = (p.streak || 0) >= 0 ? (p.streak || 0) + 1 : 1;
-          const newMmr = p.mmr + gain;
-          // During placements: MMR moves, pts hidden (stays 0 until revealed)
-          // After placements: pts move normally
-          const newPts = placedBefore ? (p.pts || 0) + gain : (p.pts || 0);
-          return { ...p, mmr: newMmr, pts: newPts, wins: p.wins + 1, streak: ns };
+          const ns = (p.streak||0) >= 0 ? (p.streak||0)+1 : 1;
+          const newPts = placedBefore ? (p.pts||0)+d.gain : (p.pts||0);
+          return { ...p, mmr: p.mmr+d.gain, pts: newPts, wins: p.wins+1, streak: ns };
         }
-        if (isLoser) {
-          const ns = (p.streak || 0) <= 0 ? (p.streak || 0) - 1 : -1;
-          const newMmr = Math.max(0, p.mmr - loss);
-          const newPts = placedBefore ? Math.max(0, (p.pts || 0) - loss) : (p.pts || 0);
-          return { ...p, mmr: newMmr, pts: newPts, losses: p.losses + 1, streak: ns };
-        }
-        return p;
+        const ns = (p.streak||0) <= 0 ? (p.streak||0)-1 : -1;
+        const newPts = placedBefore ? Math.max(0,(p.pts||0)-d.loss) : (p.pts||0);
+        return { ...p, mmr: Math.max(0,p.mmr-d.loss), pts: newPts, losses: p.losses+1, streak: ns };
       });
 
-      // Update placement counts and calibrate pts on completion
+      // Placements + calibration
       allPids.forEach(pid => {
         const before = placementsBefore[pid] || 0;
         newPlacements[monthKey][pid] = before + 1;
-        const justCompleted = before + 1 === CONFIG.MAX_PLACEMENTS_PER_MONTH;
-        if (justCompleted) {
-          // Calibrate: assign pts based on MMR standing relative to already-placed players
+        if (before + 1 === CONFIG.MAX_PLACEMENTS_PER_MONTH) {
           const thisPlayer = newPlayers.find(p => p.id === pid);
           if (thisPlayer) {
-            const placedPlayers = newPlayers.filter(p => {
-              const pCount = (newPlacements[monthKey][p.id] || 0);
-              return p.id !== pid && pCount >= CONFIG.MAX_PLACEMENTS_PER_MONTH;
-            });
-            // Find where this player's MMR sits among placed players and assign pts accordingly
-            const sortedByMmr = [...placedPlayers].sort((a,b)=>(b.mmr||0)-(a.mmr||0));
-            const insertRank = sortedByMmr.findIndex(p=>(p.mmr||0)<(thisPlayer.mmr||0));
-            const rank = insertRank === -1 ? sortedByMmr.length : insertRank;
-            // Pts = median of neighbours, or MMR-derived if no neighbours
-            let calibratedPts;
-            if (sortedByMmr.length === 0) {
-              calibratedPts = Math.round((thisPlayer.mmr - CONFIG.STARTING_MMR) * 0.5);
-            } else if (rank === 0) {
-              calibratedPts = Math.round((sortedByMmr[0].pts || 0) * 1.1 + 5);
-            } else if (rank >= sortedByMmr.length) {
-              calibratedPts = Math.max(0, Math.round((sortedByMmr[sortedByMmr.length-1].pts || 0) * 0.9 - 5));
-            } else {
-              calibratedPts = Math.round(((sortedByMmr[rank-1].pts||0) + (sortedByMmr[rank].pts||0)) / 2);
-            }
-            newPlayers = newPlayers.map(p => p.id === pid ? { ...p, pts: Math.max(0, calibratedPts) } : p);
+            const placed = newPlayers.filter(p => p.id!==pid && (newPlacements[monthKey][p.id]||0) >= CONFIG.MAX_PLACEMENTS_PER_MONTH);
+            const byMmr = [...placed].sort((a,b)=>(b.mmr||0)-(a.mmr||0));
+            const ins = byMmr.findIndex(p=>(p.mmr||0)<(thisPlayer.mmr||0));
+            const rk = ins===-1 ? byMmr.length : ins;
+            let cal;
+            if (!byMmr.length) cal = Math.round((thisPlayer.mmr-CONFIG.STARTING_MMR)*0.5);
+            else if (rk===0) cal = Math.round((byMmr[0].pts||0)*1.1+5);
+            else if (rk>=byMmr.length) cal = Math.max(0,Math.round((byMmr[byMmr.length-1].pts||0)*0.9-5));
+            else cal = Math.round(((byMmr[rk-1].pts||0)+(byMmr[rk].pts||0))/2);
+            newPlayers = newPlayers.map(p => p.id===pid ? {...p, pts: Math.max(0,cal)} : p);
           }
         }
       });
 
+      // Summary display values (avg of individual deltas)
+      const avgGain = Math.round(winnerIds.reduce((s,id)=>s+(playerDeltas[id]?.gain||0),0)/Math.max(winnerIds.length,1));
+      const avgLoss = Math.round(loserIds.reduce((s,id)=>s+(playerDeltas[id]?.loss||0),0)/Math.max(loserIds.length,1));
+
       newGames.push({
         id: crypto.randomUUID(), sideA: row.sideA, sideB: row.sideB,
-        winner, scoreA: sA, scoreB: sB, ptsGain: gain, ptsLoss: loss,
-        mmrGain: gain, mmrLoss: loss, eloScale, rankScale, winMult, lossMult, scoreMult,
+        winner, scoreA: sA, scoreB: sB,
+        ptsGain: avgGain, ptsLoss: avgLoss, mmrGain: avgGain, mmrLoss: avgLoss,
+        playerDeltas,
         date: new Date().toISOString(), monthKey
       });
     }
@@ -1734,83 +1835,157 @@ function LogView({ state, setState, showToast }) {
             if (canPreview) {
               const wIds = sA > sB ? row.sideA : row.sideB, lIds = sA > sB ? row.sideB : row.sideA;
               const currentRanked = [...state.players].sort((a,b)=>(b.pts||0)-(a.pts||0));
-              const rankOf = id => currentRanked.findIndex(p=>p.id===id);
-              const avgRank = ids => ids.reduce((s,id)=>s+rankOf(id),0)/ids.length;
-              prev = calcDelta({
-                winnerScore: Math.max(sA, sB), loserScore: Math.min(sA, sB),
-                winnerAvgMMR: avg(wIds, state.players, "mmr"), loserAvgMMR: avg(lIds, state.players, "mmr"),
-                winnerAvgStreak: avg(wIds, state.players, "streak"), loserAvgStreak: avg(lIds, state.players, "streak"),
-                winnerAvgRank: avgRank(wIds), loserAvgRank: avgRank(lIds),
+              const rankOf = id => { const i = currentRanked.findIndex(p=>p.id===id); return i===-1?currentRanked.length:i; };
+              const oppWinMMR = avg(wIds, state.players, "mmr"), oppLosMMR = avg(lIds, state.players, "mmr");
+              const oppWinRank = wIds.reduce((s,id)=>s+rankOf(id),0)/wIds.length;
+              const oppLosRank = lIds.reduce((s,id)=>s+rankOf(id),0)/lIds.length;
+              const perPlayer = {};
+              [...wIds,...lIds].forEach(pid => {
+                const p = state.players.find(x=>x.id===pid); if(!p) return;
+                const isW = wIds.includes(pid);
+                perPlayer[pid] = calcPlayerDelta({
+                  winnerScore: Math.max(sA,sB), loserScore: Math.min(sA,sB),
+                  playerMMR: p.mmr, playerRank: rankOf(pid), playerStreak: p.streak||0,
+                  oppAvgMMR: isW ? oppLosMMR : oppWinMMR,
+                  oppAvgRank: isW ? oppLosRank : oppWinRank,
+                  isWinner: isW,
+                });
               });
+              prev = { perPlayer, wIds, lIds };
             }
 
             return (
               <div key={row.id} style={{ marginBottom: 10, padding: 12, background: "var(--s2)", borderRadius: 6, border: "1px solid var(--b1)" }}>
                 <div className="fbc mb8">
-                  <span className="xs text-dd">Game {ri + 1}</span>
+                  <div style={{display:"flex",alignItems:"center",gap:8}}>
+                    <span className="xs text-dd">Game {ri + 1}</span>
+                    {(() => {
+                      const sA = parseInt(row.scoreA,10), sB = parseInt(row.scoreB,10);
+                      const playersOk = row.sideA.length===2 && row.sideB.length===2;
+                      const scoresOk = !isNaN(sA) && !isNaN(sB) && sA>=0 && sB>=0 && sA!==sB;
+                      const dupCheck = playersOk && scoresOk;
+                      if (!playersOk) return <span className="xs" style={{color:"var(--orange)"}}>● {4 - row.sideA.length - row.sideB.length} player{4-row.sideA.length-row.sideB.length!==1?"s":""} needed</span>;
+                      if (!scoresOk) return <span className="xs" style={{color:"var(--orange)"}}>● enter scores</span>;
+                      return <span className="xs text-g">✓ ready</span>;
+                    })()}
+                  </div>
                   {rows.length > 1 && <button className="btn btn-d btn-sm" onClick={() => setRows(r => r.filter(x => x.id !== row.id))}>Remove</button>}
                 </div>
 
                 <div className="log-game-grid" style={{ display: "grid", gridTemplateColumns: "1fr 96px 1fr", gap: 10, alignItems: "start" }}>
                   {/* Side A */}
                   <div>
-                    <div className="lbl" style={{ color: "var(--green)" }}>Side A</div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                      {[...state.players].sort((a, b) => (b.pts || 0) - (a.pts || 0)).map(p => {
-                        const onA = row.sideA.includes(p.id), onB = row.sideB.includes(p.id), full = !onA && row.sideA.length >= 2;
-                        return (
-                          <div key={p.id} className={`player-chip ${onA ? "sel-a" : ""} ${onB || full ? "disabled" : ""}`}
-                            onClick={() => !onB && !full ? togglePlayer(row.id, "A", p.id) : onA ? togglePlayer(row.id, "A", p.id) : null}>
-                            <span>{p.name}</span>
-                            <span className="xs text-dd">{p.pts || 0}pts</span>
-                          </div>
-                        );
-                      })}
+                    <div className="lbl" style={{ color: "var(--green)" }}>Side A {row.sideA.length}/2</div>
+                    {row.sideA.length > 0 && (
+                      <div style={{ display:"flex", gap:4, flexWrap:"wrap", marginBottom:5 }}>
+                        {row.sideA.map(id => (
+                          <span key={id} className="tag tag-w" style={{cursor:"pointer",fontSize:11}}
+                            onClick={() => togglePlayer(row.id,"A",id)}>
+                            {pName(id,state.players)} ×
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    <input
+                      className="inp" placeholder="Search…" value={row.searchA}
+                      onChange={e => setRows(r => r.map(x => x.id===row.id ? {...x, searchA: e.target.value} : x))}
+                      style={{marginBottom:4,fontSize:11,padding:"4px 7px"}}
+                    />
+                    <div style={{ display: "flex", flexDirection: "column", gap: 3, maxHeight:160, overflowY:"auto" }}>
+                      {[...state.players]
+                        .sort((a, b) => (b.pts || 0) - (a.pts || 0))
+                        .filter(p => !row.searchA || p.name.toLowerCase().includes(row.searchA.toLowerCase()))
+                        .map(p => {
+                          const onA = row.sideA.includes(p.id), onB = row.sideB.includes(p.id), full = !onA && row.sideA.length >= 2;
+                          if (onA) return null; // already shown above as tag
+                          return (
+                            <div key={p.id} className={`player-chip ${onB || full ? "disabled" : ""}`}
+                              onClick={() => !onB && !full ? togglePlayer(row.id, "A", p.id) : null}>
+                              <span>{p.name}</span>
+                              <span className="xs text-dd">{p.pts || 0}pts</span>
+                            </div>
+                          );
+                        })}
                     </div>
                   </div>
 
                   {/* Scores / Preview */}
                   <div style={{ display: "flex", flexDirection: "column", gap: 6, paddingTop: 16 }}>
-                    <div><div className="lbl">A</div>
+                    <div>
+                      <div className="lbl" style={{fontSize:9,lineHeight:1.3,color:"var(--green)",minHeight:22}}>
+                        {row.sideA.map(id=>pName(id,state.players)).join(" & ") || "A"}
+                      </div>
                       <input className="inp" type="number" min="0" placeholder="10" value={row.scoreA}
                         onChange={e => setRows(r => r.map(x => x.id === row.id ? { ...x, scoreA: e.target.value } : x))}
                         style={{ textAlign: "center", fontSize: 18, fontFamily: "var(--disp)", fontWeight: 800 }} />
                     </div>
-                    <div><div className="lbl">B</div>
+                    <div>
+                      <div className="lbl" style={{fontSize:9,lineHeight:1.3,color:"var(--blue)",minHeight:22}}>
+                        {row.sideB.map(id=>pName(id,state.players)).join(" & ") || "B"}
+                      </div>
                       <input className="inp" type="number" min="0" placeholder="7" value={row.scoreB}
                         onChange={e => setRows(r => r.map(x => x.id === row.id ? { ...x, scoreB: e.target.value } : x))}
                         style={{ textAlign: "center", fontSize: 18, fontFamily: "var(--disp)", fontWeight: 800 }} />
                     </div>
 
                     {prev && (
-                      <div style={{ background: "var(--s1)", borderRadius: 4, padding: "6px 8px", fontSize: 10, textAlign: "center", lineHeight: 1.7 }}>
-                        <div className="text-g">+{prev.gain}pts</div>
-                        <div className="text-r">-{prev.loss}pts</div>
-                        <div className="text-dd">elo {(prev.eloScale * 100).toFixed(0)}%</div>
-                        <div className="text-dd">rank ×{prev.rankScale?.toFixed(2)}</div>
+                      <div style={{ background: "var(--s1)", borderRadius: 4, padding: "6px 8px", fontSize: 10, lineHeight: 1.8 }}>
+                        {prev.wIds.map(id => {
+                          const d = prev.perPlayer[id];
+                          const n = state.players.find(p=>p.id===id)?.name?.split(" ")[0]||"?";
+                          return <div key={id} className="text-g">+{d?.gain??0} {n}</div>;
+                        })}
+                        {prev.lIds.map(id => {
+                          const d = prev.perPlayer[id];
+                          const n = state.players.find(p=>p.id===id)?.name?.split(" ")[0]||"?";
+                          return <div key={id} className="text-r">-{d?.loss??0} {n}</div>;
+                        })}
                       </div>
                     )}
                   </div>
 
                   {/* Side B */}
                   <div>
-                    <div className="lbl" style={{ color: "var(--blue)" }}>Side B</div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                      {[...state.players].sort((a, b) => (b.pts || 0) - (a.pts || 0)).map(p => {
-                        const onA = row.sideA.includes(p.id), onB = row.sideB.includes(p.id), full = !onB && row.sideB.length >= 2;
-                        return (
-                          <div key={p.id} className={`player-chip ${onB ? "sel-b" : ""} ${onA || full ? "disabled" : ""}`}
-                            onClick={() => !onA && !full ? togglePlayer(row.id, "B", p.id) : onB ? togglePlayer(row.id, "B", p.id) : null}>
-                            <span>{p.name}</span>
-                            <span className="xs text-dd">{p.pts || 0}pts</span>
-                          </div>
-                        );
-                      })}
+                    <div className="lbl" style={{ color: "var(--blue)" }}>Side B {row.sideB.length}/2</div>
+                    {row.sideB.length > 0 && (
+                      <div style={{ display:"flex", gap:4, flexWrap:"wrap", marginBottom:5 }}>
+                        {row.sideB.map(id => (
+                          <span key={id} className="tag tag-b" style={{cursor:"pointer",fontSize:11}}
+                            onClick={() => togglePlayer(row.id,"B",id)}>
+                            {pName(id,state.players)} ×
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    <input
+                      className="inp" placeholder="Search…" value={row.searchB}
+                      onChange={e => setRows(r => r.map(x => x.id===row.id ? {...x, searchB: e.target.value} : x))}
+                      style={{marginBottom:4,fontSize:11,padding:"4px 7px"}}
+                    />
+                    <div style={{ display: "flex", flexDirection: "column", gap: 3, maxHeight:160, overflowY:"auto" }}>
+                      {[...state.players]
+                        .sort((a, b) => (b.pts || 0) - (a.pts || 0))
+                        .filter(p => !row.searchB || p.name.toLowerCase().includes(row.searchB.toLowerCase()))
+                        .map(p => {
+                          const onA = row.sideA.includes(p.id), onB = row.sideB.includes(p.id), full = !onB && row.sideB.length >= 2;
+                          if (onB) return null;
+                          return (
+                            <div key={p.id} className={`player-chip ${onA || full ? "disabled" : ""}`}
+                              onClick={() => !onA && !full ? togglePlayer(row.id, "B", p.id) : null}>
+                              <span>{p.name}</span>
+                              <span className="xs text-dd">{p.pts || 0}pts</span>
+                            </div>
+                          );
+                        })}
                     </div>
                   </div>
                 </div>
 
-                {errors[row.id] && <div className="msg msg-e mt8">{errors[row.id]}</div>}
+                {errors[row.id] && (
+                  <div className="msg msg-e mt8" style={{fontWeight:600,fontSize:12}}>
+                    ⚠ {errors[row.id]}
+                  </div>
+                )}
               </div>
             );
           })}
@@ -1818,7 +1993,18 @@ function LogView({ state, setState, showToast }) {
           <button className="add-row" onClick={() => setRows(r => [...r, EMPTY_ROW()])}>+ Add Another Game</button>
 
           <div style={{ marginTop: 14, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-            <button className="btn btn-p" onClick={submitAll}>Submit All</button>
+{(() => {
+              const readyCount = rows.filter(row => {
+                const sA = parseInt(row.scoreA,10), sB = parseInt(row.scoreB,10);
+                return row.sideA.length===2 && row.sideB.length===2 && !isNaN(sA) && !isNaN(sB) && sA>=0 && sB>=0 && sA!==sB;
+              }).length;
+              return (
+                <button className="btn btn-p" onClick={submitAll} disabled={readyCount===0}
+                  style={{opacity:readyCount===0?0.4:1}}>
+                  Submit {readyCount}/{rows.length} Game{rows.length!==1?"s":""}
+                </button>
+              );
+            })()}
             <input className="inp" placeholder="Template name…" value={tplName} onChange={e => setTplName(e.target.value)} style={{ width: 150 }} />
             <button className="btn btn-g" onClick={saveTpl}>Save Template</button>
             {undoStack.length > 0 && <button className="btn btn-warn" onClick={undoLast}>↩ Undo Last Submit</button>}
@@ -1826,6 +2012,7 @@ function LogView({ state, setState, showToast }) {
         </div>
       </div>
     </div>
+    {confirm && <ConfirmDialog {...confirm} onCancel={()=>setConfirm(null)}/>}
   );
 }
 // ============================================================
@@ -2410,14 +2597,24 @@ export default function App(){
   useEffect(()=>{ stateRef.current = state; }, [state]);
 
   // autosave — skip on initial load, skip when change came from realtime
-  const lastSaveTime = useRef(0);
   const isInitialLoad = useRef(true);
+  const pendingSave = useRef(false);
   useEffect(()=>{
     if(!loading){
       if(isInitialLoad.current){ isInitialLoad.current=false; return; }
       if(isRemoteUpdate.current){ isRemoteUpdate.current=false; return; }
-      lastSaveTime.current = Date.now();
-      saveState(stateRef.current);
+      pendingSave.current = true;
+      saveState(
+        stateRef.current,
+        (remoteState) => {
+          // Conflict: pull remote and notify
+          isRemoteUpdate.current = true;
+          setState(remoteState);
+          pendingSave.current = false;
+          if (showToastRef.current) showToastRef.current("Sync conflict resolved — remote state applied", "warning");
+        },
+        () => { pendingSave.current = false; }
+      );
     }
   },[state,loading]);
 
@@ -2439,8 +2636,8 @@ export default function App(){
         'postgres_changes',
         {event:'UPDATE',schema:'public',table:'app_state',filter:'id=eq.1'},
         (payload)=>{
-          // Ignore echoes from our own saves (within 5s window)
-          if(Date.now() - lastSaveTime.current < 5000) return;
+          // Skip if we have a pending save in-flight (our own echo)
+          if(pendingSave.current) return;
           isRemoteUpdate.current=true;
           setState(normaliseState(payload.new.state || {}));
         }
@@ -2449,7 +2646,7 @@ export default function App(){
         'postgres_changes',
         {event:'INSERT',schema:'public',table:'app_state',filter:'id=eq.1'},
         (payload)=>{
-          if(Date.now() - lastSaveTime.current < 5000) return;
+          if(pendingSave.current) return;
           isRemoteUpdate.current=true;
           setState(normaliseState(payload.new.state || {}));
         }
