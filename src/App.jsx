@@ -1668,6 +1668,95 @@ function LogView({ state, setState, showToast }) {
   );
 }
 // ============================================================
+// FINALS DATE EDITOR (top-level so hooks are stable across re-renders)
+// ============================================================
+function FinalsDateEditor({ finalsDate, setState, showToast, isAdmin }) {
+  const [editing, setEditing] = useState(false);
+
+  const parsed = finalsDate ? new Date(finalsDate) : null;
+  const [dd,   setDd]   = useState(parsed ? String(parsed.getDate()).padStart(2,"0")        : "");
+  const [mm,   setMm]   = useState(parsed ? String(parsed.getMonth()+1).padStart(2,"0")     : "");
+  const [yyyy, setYyyy] = useState(parsed ? String(parsed.getFullYear())                    : "");
+  const [hh,   setHh]   = useState(parsed ? String(parsed.getHours()).padStart(2,"0")       : "18");
+  const [mn,   setMn]   = useState(parsed ? String(parsed.getMinutes()).padStart(2,"0")     : "00");
+
+  // Sync fields if finalsDate changes externally
+  useEffect(() => {
+    if (!finalsDate) { setDd(""); setMm(""); setYyyy(""); setHh("18"); setMn("00"); return; }
+    const p = new Date(finalsDate);
+    setDd(String(p.getDate()).padStart(2,"0"));
+    setMm(String(p.getMonth()+1).padStart(2,"0"));
+    setYyyy(String(p.getFullYear()));
+    setHh(String(p.getHours()).padStart(2,"0"));
+    setMn(String(p.getMinutes()).padStart(2,"0"));
+  }, [finalsDate]);
+
+  if (!isAdmin) return null;
+
+  function handleSave() {
+    if (!dd || !mm || !yyyy) {
+      setState(s => ({ ...s, finalsDate: null }));
+      showToast("Finals date cleared");
+      setEditing(false);
+      return;
+    }
+    const iso = new Date(
+      parseInt(yyyy), parseInt(mm)-1, parseInt(dd),
+      parseInt(hh)||0, parseInt(mn)||0
+    ).toISOString();
+    setState(s => ({ ...s, finalsDate: iso }));
+    showToast("Finals date saved");
+    setEditing(false);
+  }
+
+  if (!editing) {
+    return (
+      <div style={{ marginTop: 10 }}>
+        <button className="btn btn-g btn-sm" onClick={() => setEditing(true)}>
+          {finalsDate ? "Edit Finals Date" : "Set Finals Date"}
+        </button>
+      </div>
+    );
+  }
+
+  const fields = [
+    ["Day",  "DD",   dd,   setDd,   60, 1,    31  ],
+    ["Month","MM",   mm,   setMm,   60, 1,    12  ],
+    ["Year", "YYYY", yyyy, setYyyy, 80, 2025, 2099],
+    ["Hour", "HH",   hh,   setHh,   60, 0,    23  ],
+    ["Min",  "MM",   mn,   setMn,   60, 0,    59  ],
+  ];
+
+  return (
+    <div style={{ marginTop: 10 }}>
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+        <div className="fac" style={{ gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
+          {fields.map(([lbl, ph, val, set, w, min, max]) => (
+            <div key={lbl} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }}>
+              <span className="xs text-dd">{lbl}</span>
+              <input
+                className="inp"
+                type="number"
+                placeholder={ph}
+                min={min}
+                max={max}
+                value={val}
+                onChange={e => set(e.target.value)}
+                style={{ width: w, textAlign: "center", fontSize: 14 }}
+              />
+            </div>
+          ))}
+        </div>
+        <div className="fac" style={{ gap: 6 }}>
+          <button className="btn btn-p btn-sm" onClick={handleSave}>Save</button>
+          <button className="btn btn-g btn-sm" onClick={() => setEditing(false)}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
 // FINALS VIEW
 // ============================================================
 function FinalsView({ state, setState, isAdmin, showToast }) {
@@ -1675,16 +1764,6 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
   const monthKey = getMonthKey();
   const finals = (state.finals ?? {})[monthKey] ?? null;
   const ranked = [...(state.players ?? [])].sort((a, b) => (b.pts || 0) - (a.pts || 0));
-
-  // ── FINALS DATE (admin-settable) ──────────────────────────
-  const [editingDate, setEditingDate] = useState(false);
-  const [dateInput, setDateInput] = useState(state.finalsDate || "");
-
-  function saveFinalsDate() {
-    setState(s => ({ ...s, finalsDate: dateInput || null }));
-    showToast("Finals date saved");
-    setEditingDate(false);
-  }
 
   // ── COUNTDOWN ─────────────────────────────────────────────
   const [tick, setTick] = useState(0);
@@ -1917,56 +1996,6 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
   }
 
   // ── DATE EDITOR ───────────────────────────────────────────
-  function DateEditor() {
-    if (!isAdmin) return null;
-    const parsed = state.finalsDate ? new Date(state.finalsDate) : null;
-    const [dd, setDd] = useState(parsed ? String(parsed.getDate()).padStart(2,"0") : "");
-    const [mm, setMm] = useState(parsed ? String(parsed.getMonth()+1).padStart(2,"0") : "");
-    const [yyyy, setYyyy] = useState(parsed ? String(parsed.getFullYear()) : "");
-    const [hh, setHh] = useState(parsed ? String(parsed.getHours()).padStart(2,"0") : "18");
-    const [mn, setMn] = useState(parsed ? String(parsed.getMinutes()).padStart(2,"0") : "00");
-
-    function handleSave() {
-      if (!dd || !mm || !yyyy) {
-        setState(s => ({ ...s, finalsDate: null }));
-        showToast("Finals date cleared");
-        setEditingDate(false);
-        return;
-      }
-      const iso = new Date(parseInt(yyyy), parseInt(mm)-1, parseInt(dd), parseInt(hh)||0, parseInt(mn)||0).toISOString();
-      setState(s => ({ ...s, finalsDate: iso }));
-      showToast("Finals date saved");
-      setEditingDate(false);
-    }
-
-    return (
-      <div style={{ marginTop: 10 }}>
-        {editingDate ? (
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
-            <div className="fac" style={{ gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
-              {[["Day","DD",dd,setDd,60,1,31],["Month","MM",mm,setMm,60,1,12],["Year","YYYY",yyyy,setYyyy,80,2025,2099],["Hour","HH",hh,setHh,60,0,23],["Min","MM",mn,setMn,60,0,59]].map(([lbl,ph,val,set,w,min,max])=>(
-                <div key={lbl} style={{ display:"flex",flexDirection:"column",alignItems:"center",gap:3 }}>
-                  <span className="xs text-dd">{lbl}</span>
-                  <input className="inp" type="number" placeholder={ph} min={min} max={max}
-                    value={val} onChange={e=>set(e.target.value)}
-                    style={{ width:w, textAlign:"center", fontSize:14 }} />
-                </div>
-              ))}
-            </div>
-            <div className="fac" style={{ gap: 6 }}>
-              <button className="btn btn-p btn-sm" onClick={handleSave}>Save</button>
-              <button className="btn btn-g btn-sm" onClick={() => setEditingDate(false)}>Cancel</button>
-            </div>
-          </div>
-        ) : (
-          <button className="btn btn-g btn-sm" onClick={() => setEditingDate(true)}>
-            {state.finalsDate ? "Edit Finals Date" : "Set Finals Date"}
-          </button>
-        )}
-      </div>
-    );
-  }
-
   // ── NO FINALS YET ─────────────────────────────────────────
   if (!finals) {
     return (
@@ -1981,7 +2010,7 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
           <Countdown />
           {cdDiff < 864e5 && <div className="tag tag-l" style={{ marginBottom: 16, fontSize: 11, letterSpacing: 2 }}>🔥 Finals are today!</div>}
           {cdDiff >= 864e5 && cdDiff < 7 * 864e5 && <div className="tag tag-a" style={{ marginBottom: 16, fontSize: 11, letterSpacing: 2 }}>⚡ Finals this week</div>}
-          <DateEditor />
+          <FinalsDateEditor finalsDate={state.finalsDate} setState={setState} showToast={showToast} isAdmin={isAdmin} />
           <div className="mt12">
             {ranked.length >= 4
               ? isAdmin && <button className="btn btn-p mt8" onClick={initFinals}>Generate Bracket</button>
@@ -2047,7 +2076,7 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
         <div className="xs text-dd" style={{ marginBottom: 2, letterSpacing: 2, textTransform: "uppercase" }}>Finals Countdown</div>
         <Countdown compact={status === "complete"} />
         {status === "complete" && <div className="tag tag-w" style={{ marginTop: 4 }}>Complete</div>}
-        <DateEditor />
+        <FinalsDateEditor finalsDate={state.finalsDate} setState={setState} showToast={showToast} isAdmin={isAdmin} />
       </div>
 
       {status === "complete" && champ && (
