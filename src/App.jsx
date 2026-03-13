@@ -102,43 +102,85 @@ function avg(ids, players, key) {
   return found.reduce((s, p) => s + (p[key] || 0), 0) / found.length;
 }
 
-// Recalculate pts/mmr/streaks/wins/losses for all players from scratch using game log
-function replayGames(basePlayers, games) {
+// Recalculate pts/mmr/streaks/wins/losses from scratch AND rewrite
+// ptsGain/ptsLoss/mmrGain/mmrLoss on every game record for full consistency.
+// Returns { players, games } — caller must update both.
+function replayGames(basePlayers, games, monthlyPlacements) {
   let players = basePlayers.map(p => ({
-    ...p, mmr: CONFIG.STARTING_MMR, pts: CONFIG.STARTING_PTS,
+    ...p,
+    mmr: CONFIG.STARTING_MMR,
+    pts: CONFIG.STARTING_PTS,
     wins: 0, losses: 0, streak: 0,
   }));
+  // Track placement counts during replay
+  const placements = {};
   const sorted = [...games].sort((a, b) => new Date(a.date) - new Date(b.date));
-  for (const g of sorted) {
+  const updatedGames = sorted.map(g => {
     const winIds = g.winner === "A" ? g.sideA : g.sideB;
     const losIds = g.winner === "A" ? g.sideB : g.sideA;
-    // Compute rank positions at this point in time
     const ranked = [...players].sort((a,b)=>(b.pts||0)-(a.pts||0));
-    const rankOf = id => ranked.findIndex(p=>p.id===id);
+    const rankOf = id => { const i = ranked.findIndex(p=>p.id===id); return i === -1 ? ranked.length : i; };
     const avgRank = ids => ids.reduce((s,id)=>s+rankOf(id),0)/ids.length;
     const { gain, loss, eloScale, rankScale, winMult, lossMult, scoreMult } = calcDelta({
       winnerScore: Math.max(g.scoreA, g.scoreB),
-      loserScore: Math.min(g.scoreA, g.scoreB),
-      winnerAvgMMR: avg(winIds, players, "mmr"),
-      loserAvgMMR: avg(losIds, players, "mmr"),
+      loserScore:  Math.min(g.scoreA, g.scoreB),
+      winnerAvgMMR:    avg(winIds, players, "mmr"),
+      loserAvgMMR:     avg(losIds, players, "mmr"),
       winnerAvgStreak: avg(winIds, players, "streak"),
-      loserAvgStreak: avg(losIds, players, "streak"),
-      winnerAvgRank: avgRank(winIds),
-      loserAvgRank: avgRank(losIds),
+      loserAvgStreak:  avg(losIds, players, "streak"),
+      winnerAvgRank:   avgRank(winIds),
+      loserAvgRank:    avgRank(losIds),
     });
+
+    // Check placement status for each player before incrementing
+    const allPids = [...winIds, ...losIds];
+    const placedBefore = {};
+    allPids.forEach(pid => { placedBefore[pid] = (placements[pid] || 0) >= CONFIG.MAX_PLACEMENTS_PER_MONTH; });
+
     players = players.map(p => {
-      if (winIds.includes(p.id)) {
-        const ns = (p.streak || 0) >= 0 ? (p.streak || 0) + 1 : 1;
-        return { ...p, mmr: p.mmr + gain, pts: (p.pts || 0) + gain, wins: p.wins + 1, streak: ns };
+      const isWin = winIds.includes(p.id);
+      const isLos = losIds.includes(p.id);
+      if (!isWin && !isLos) return p;
+      const placed = placedBefore[p.id];
+      if (isWin) {
+        const ns = (p.streak||0) >= 0 ? (p.streak||0)+1 : 1;
+        return { ...p, mmr: p.mmr+gain, pts: placed ? (p.pts||0)+gain : (p.pts||0), wins: p.wins+1, streak: ns };
       }
-      if (losIds.includes(p.id)) {
-        const ns = (p.streak || 0) <= 0 ? (p.streak || 0) - 1 : -1;
-        return { ...p, mmr: Math.max(0, p.mmr - loss), pts: Math.max(0, (p.pts || 0) - loss), losses: p.losses + 1, streak: ns };
-      }
-      return p;
+      const ns = (p.streak||0) <= 0 ? (p.streak||0)-1 : -1;
+      return { ...p, mmr: Math.max(0,p.mmr-loss), pts: placed ? Math.max(0,(p.pts||0)-loss) : (p.pts||0), losses: p.losses+1, streak: ns };
     });
-  }
-  return players;
+
+    // Increment placements and calibrate pts on completion
+    allPids.forEach(pid => {
+      const before = placements[pid] || 0;
+      placements[pid] = before + 1;
+      if (before + 1 === CONFIG.MAX_PLACEMENTS_PER_MONTH) {
+        const thisPlayer = players.find(p => p.id === pid);
+        if (thisPlayer) {
+          const placedPlayers = players.filter(p => p.id !== pid && (placements[p.id]||0) >= CONFIG.MAX_PLACEMENTS_PER_MONTH);
+          const sortedByMmr = [...placedPlayers].sort((a,b)=>(b.mmr||0)-(a.mmr||0));
+          const insertRank = sortedByMmr.findIndex(p=>(p.mmr||0)<(thisPlayer.mmr||0));
+          const rank = insertRank === -1 ? sortedByMmr.length : insertRank;
+          let calibratedPts;
+          if (sortedByMmr.length === 0) {
+            calibratedPts = Math.round((thisPlayer.mmr - CONFIG.STARTING_MMR) * 0.5);
+          } else if (rank === 0) {
+            calibratedPts = Math.round((sortedByMmr[0].pts||0) * 1.1 + 5);
+          } else if (rank >= sortedByMmr.length) {
+            calibratedPts = Math.max(0, Math.round((sortedByMmr[sortedByMmr.length-1].pts||0) * 0.9 - 5));
+          } else {
+            calibratedPts = Math.round(((sortedByMmr[rank-1].pts||0)+(sortedByMmr[rank].pts||0))/2);
+          }
+          players = players.map(p => p.id===pid ? {...p, pts: Math.max(0, calibratedPts)} : p);
+        }
+      }
+    });
+
+    // Return game with recalculated deltas stamped on it
+    return { ...g, ptsGain: gain, ptsLoss: loss, mmrGain: gain, mmrLoss: loss, eloScale, rankScale, winMult, lossMult, scoreMult };
+  });
+
+  return { players, games: updatedGames };
 }
 
 // ── CORE DELTA FORMULA ───────────────────────────────────────
@@ -701,7 +743,14 @@ function PlayerProfile({ player, state, onClose, isAdmin, onEdit }) {
       </div>
 
       <div className="grid-3 mb16">
-        <div className="stat-box"><div className="stat-lbl">Points</div><div className="stat-val am">{player.pts||0}</div></div>
+        <div className="stat-box">
+          <div className="stat-lbl">Points</div>
+          <div className="stat-val am">
+            {placements >= CONFIG.MAX_PLACEMENTS_PER_MONTH
+              ? (player.pts||0)
+              : <span className="text-dd" title="Complete placements to reveal points">?</span>}
+          </div>
+        </div>
         <div className="stat-box">
           <div className="stat-lbl">Record</div>
           <div className="stat-val" style={{fontSize:20}}>
@@ -752,7 +801,7 @@ function PlayerProfile({ player, state, onClose, isAdmin, onEdit }) {
             {mates.length>0 && <span className="text-d sm">w/ {mates.join(" & ")}</span>}
             <span className="text-d sm">vs {opps.join(" & ")}</span>
             <span className="disp text-am" style={{fontSize:15}}>{myScore}–{oppScore}</span>
-            <span className={won?"text-g":"text-r"}>{won?`+${g.ptsGain}`:`-${g.ptsLoss}`}</span>
+            <span className={won?"text-g":"text-r"}>{won?`+${g.ptsGain}pts`:`−${g.ptsLoss}pts`}</span>
             <span className="text-dd xs">{fmtDate(g.date)}</span>
           </div>
         );
@@ -826,9 +875,9 @@ function EditPlayerModal({ player, state, setState, showToast, onClose }) {
       title:"Recalculate from Games?",
       msg:`This will recalculate ${player.name}'s pts, mmr, wins, losses, and streak from the game log. Manual edits will be overwritten.`,
       onConfirm: () => {
-        const recalced = replayGames(state.players, state.games);
-        setState(s => ({...s, players: recalced}));
-        showToast("All players recalculated from game log");
+        const { players, games } = replayGames(state.players, state.games, state.monthlyPlacements);
+        setState(s => ({...s, players, games}));
+        showToast("All stats recalculated from game log");
         setConfirm(null);
         onClose();
       }
@@ -924,15 +973,14 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
     if (nA===nB) { showToast("No draws","error"); return; }
     // Update game record, then replay all games to recalculate stats
     const updatedGame = {...game, scoreA:nA, scoreB:nB, winner};
-    const newGames = state.games.map(g=>g.id===game.id ? updatedGame : g);
-    const newPlayers = replayGames(
-      state.players.map(p=>({...p, mmr:CONFIG.STARTING_MMR, pts:CONFIG.STARTING_PTS, wins:0, losses:0, streak:0})),
-      newGames
-    ).map((p,_,arr) => {
+    const editedGames = state.games.map(g=>g.id===game.id ? updatedGame : g);
+    const basePlayers = state.players.map(p=>({...p, mmr:CONFIG.STARTING_MMR, pts:CONFIG.STARTING_PTS, wins:0, losses:0, streak:0}));
+    const { players: newPlayers, games: newGames } = replayGames(basePlayers, editedGames, state.monthlyPlacements);
+    const mergedPlayers = newPlayers.map(p => {
       const orig = state.players.find(x=>x.id===p.id);
-      return {...p, name:orig?.name||p.name, championships:orig?.championships||[]};
+      return {...p, name:orig?.name||p.name, championships:orig?.championships||[], position:orig?.position||p.position};
     });
-    setState(s=>({...s, games:newGames, players:newPlayers}));
+    setState(s=>({...s, games:newGames, players:mergedPlayers}));
     showToast("Game updated & stats recalculated");
     setEditing(false);
     onClose();
@@ -944,15 +992,14 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
       msg:"This will permanently remove the game and recalculate all affected stats.",
       danger:true,
       onConfirm:()=>{
-        const newGames = state.games.filter(g=>g.id!==game.id);
-        const newPlayers = replayGames(
-          state.players.map(p=>({...p, mmr:CONFIG.STARTING_MMR, pts:CONFIG.STARTING_PTS, wins:0, losses:0, streak:0})),
-          newGames
-        ).map(p => {
+        const filteredGames = state.games.filter(g=>g.id!==game.id);
+        const basePlayers = state.players.map(p=>({...p, mmr:CONFIG.STARTING_MMR, pts:CONFIG.STARTING_PTS, wins:0, losses:0, streak:0}));
+        const { players: newPlayers, games: newGames } = replayGames(basePlayers, filteredGames, state.monthlyPlacements);
+        const mergedPlayers = newPlayers.map(p => {
           const orig = state.players.find(x=>x.id===p.id);
-          return {...p, name:orig?.name||p.name, championships:orig?.championships||[]};
+          return {...p, name:orig?.name||p.name, championships:orig?.championships||[], position:orig?.position||p.position};
         });
-        setState(s=>({...s, games:newGames, players:newPlayers}));
+        setState(s=>({...s, games:newGames, players:mergedPlayers}));
         showToast("Game deleted & stats recalculated");
         setConfirm(null);
         onClose();
@@ -1047,6 +1094,14 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
 function LeaderboardView({ state, setState, onSelectPlayer, rtConnected, isAdmin, showToast }) {
   const monthKey = getMonthKey();
   const ranked = [...(state.players ?? [])].sort((a,b)=>(b.pts||0)-(a.pts||0));
+  const [showRecalcConfirm, setShowRecalcConfirm] = useState(false);
+
+  function doRecalc() {
+    const { players, games } = replayGames(state.players, state.games, state.monthlyPlacements);
+    setState(s => ({ ...s, players, games }));
+    showToast("All stats recalculated from game log");
+    setShowRecalcConfirm(false);
+  }
   const monthGames = (state.games ?? []).filter(g=>g.monthKey===monthKey);
 
   const prevSnapshot = useRef({});
@@ -1067,6 +1122,13 @@ function LeaderboardView({ state, setState, onSelectPlayer, rtConnected, isAdmin
 
   return (
     <div className="stack page-fade">
+      {isAdmin && (
+        <div style={{display:"flex",justifyContent:"flex-end"}}>
+          <button className="btn btn-warn" style={{gap:6}} onClick={()=>setShowRecalcConfirm(true)}>
+            ↺ Recalculate All Stats
+          </button>
+        </div>
+      )}
       <div className="grid-3">
         <div className="stat-box"><div className="stat-lbl">Players</div><div className="stat-val am">{(state.players??[]).length}</div></div>
         <div className="stat-box"><div className="stat-lbl">Games This Month</div><div className="stat-val">{monthGames.length}</div></div>
@@ -1076,13 +1138,6 @@ function LeaderboardView({ state, setState, onSelectPlayer, rtConnected, isAdmin
         <div className="card-header">
           <span className="card-title">Rankings — {fmtMonth(monthKey)}</span>
           <div className="fac" style={{gap:8}}>
-            {isAdmin && (
-              <button className="btn btn-g btn-sm" onClick={()=>{
-                const recalced = replayGames(state.players, state.games);
-                setState(s=>({...s, players:recalced}));
-                showToast("Leaderboard recalculated from game log");
-              }}>↺ Recalc</button>
-            )}
             <span className={`rt-dot ${rtConnected?"live":""}`} title={rtConnected?"Live":"Connecting…"}/>
             <span className="xs text-dd">{rtConnected?"Live":"…"}</span>
           </div>
@@ -1139,6 +1194,14 @@ function LeaderboardView({ state, setState, onSelectPlayer, rtConnected, isAdmin
         </div>
       </div>
     </div>
+    {showRecalcConfirm && (
+      <ConfirmDialog
+        title="Recalculate All Stats?"
+        msg="This will replay every game in history and rewrite all player points, MMR, streaks, wins, losses, and the pts shown in match history. This cannot be undone (but you can undo via the undo button after logging games)."
+        onConfirm={doRecalc}
+        onCancel={()=>setShowRecalcConfirm(false)}
+      />
+    )}
   );
 }
 
@@ -1171,7 +1234,9 @@ function HistoryView({ state, setState, isAdmin, showToast }) {
               <div className="g-side">
                 {sAN.map((n,i)=><span key={i} className={g.winner==="A"?"g-name-w":"g-name-l"}>{n}</span>)}
                 <span className="xs text-dd">
-                  {g.winner==="A"?<span className="text-g">+{g.ptsGain}pts</span>:<span className="text-r">-{g.ptsLoss}pts</span>}
+                  {g.winner==="A"
+                    ? <span className="text-g">+{g.ptsGain}pts</span>
+                    : <span className="text-r">−{g.ptsLoss}pts</span>}
                 </span>
               </div>
               <div>
@@ -1181,7 +1246,9 @@ function HistoryView({ state, setState, isAdmin, showToast }) {
               <div className="g-side right">
                 {sBN.map((n,i)=><span key={i} className={g.winner==="B"?"g-name-w":"g-name-l"}>{n}</span>)}
                 <span className="xs text-dd">
-                  {g.winner==="B"?<span className="text-g">+{g.ptsGain}pts</span>:<span className="text-r">-{g.ptsLoss}pts</span>}
+                  {g.winner==="B"
+                    ? <span className="text-g">+{g.ptsGain}pts</span>
+                    : <span className="text-r">−{g.ptsLoss}pts</span>}
                 </span>
               </div>
               <span className={`tag ${g.winner==="A"?"tag-w":"tag-b"}`}>
