@@ -132,48 +132,20 @@ function replayGames(basePlayers, games, monthlyPlacements) {
       loserAvgRank:    avgRank(losIds),
     });
 
-    // Check placement status for each player before incrementing
+    // Recalc ignores placement gates — all historical games count toward pts
     const allPids = [...winIds, ...losIds];
-    const placedBefore = {};
-    allPids.forEach(pid => { placedBefore[pid] = (placements[pid] || 0) >= CONFIG.MAX_PLACEMENTS_PER_MONTH; });
+    allPids.forEach(pid => { placements[pid] = (placements[pid]||0)+1; });
 
     players = players.map(p => {
       const isWin = winIds.includes(p.id);
       const isLos = losIds.includes(p.id);
       if (!isWin && !isLos) return p;
-      const placed = placedBefore[p.id];
       if (isWin) {
         const ns = (p.streak||0) >= 0 ? (p.streak||0)+1 : 1;
-        return { ...p, mmr: p.mmr+gain, pts: placed ? (p.pts||0)+gain : (p.pts||0), wins: p.wins+1, streak: ns };
+        return { ...p, mmr: p.mmr+gain, pts: (p.pts||0)+gain, wins: p.wins+1, streak: ns };
       }
       const ns = (p.streak||0) <= 0 ? (p.streak||0)-1 : -1;
-      return { ...p, mmr: Math.max(0,p.mmr-loss), pts: placed ? Math.max(0,(p.pts||0)-loss) : (p.pts||0), losses: p.losses+1, streak: ns };
-    });
-
-    // Increment placements and calibrate pts on completion
-    allPids.forEach(pid => {
-      const before = placements[pid] || 0;
-      placements[pid] = before + 1;
-      if (before + 1 === CONFIG.MAX_PLACEMENTS_PER_MONTH) {
-        const thisPlayer = players.find(p => p.id === pid);
-        if (thisPlayer) {
-          const placedPlayers = players.filter(p => p.id !== pid && (placements[p.id]||0) >= CONFIG.MAX_PLACEMENTS_PER_MONTH);
-          const sortedByMmr = [...placedPlayers].sort((a,b)=>(b.mmr||0)-(a.mmr||0));
-          const insertRank = sortedByMmr.findIndex(p=>(p.mmr||0)<(thisPlayer.mmr||0));
-          const rank = insertRank === -1 ? sortedByMmr.length : insertRank;
-          let calibratedPts;
-          if (sortedByMmr.length === 0) {
-            calibratedPts = Math.round((thisPlayer.mmr - CONFIG.STARTING_MMR) * 0.5);
-          } else if (rank === 0) {
-            calibratedPts = Math.round((sortedByMmr[0].pts||0) * 1.1 + 5);
-          } else if (rank >= sortedByMmr.length) {
-            calibratedPts = Math.max(0, Math.round((sortedByMmr[sortedByMmr.length-1].pts||0) * 0.9 - 5));
-          } else {
-            calibratedPts = Math.round(((sortedByMmr[rank-1].pts||0)+(sortedByMmr[rank].pts||0))/2);
-          }
-          players = players.map(p => p.id===pid ? {...p, pts: Math.max(0, calibratedPts)} : p);
-        }
-      }
+      return { ...p, mmr: Math.max(0,p.mmr-loss), pts: Math.max(0,(p.pts||0)-loss), losses: p.losses+1, streak: ns };
     });
 
     // Return game with recalculated deltas stamped on it
