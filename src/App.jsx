@@ -11,22 +11,29 @@ const CONFIG = {
   STARTING_MMR: 1000,           // hidden matchmaking rating
   STARTING_PTS: 0,              // visible leaderboard points
 
-  // Gains — elo-scaled by hidden MMR gap
-  BASE_GAIN: 12,
-  SCORE_BONUS_RATE: 0.025,      // +2.5% per goal diff
-  ELO_DIVISOR: 300,             // curve steepness (lower = sharper)
+  // Base deltas — before all modifiers
+  BASE_GAIN: 18,
+  BASE_LOSS: 10,
 
-  // Losses — independent, pts-gap driven
-  BASE_LOSS: 5,
-  SCORE_LOSS_RATE: 0.04,        // +4% per goal diff — blowouts sting
-  PTS_LOSS_DIVISOR: 120,        // 120pt gap meaningfully shifts loss
+  // Score dominance: scoreDiff / winnerScore gives 0→1 ratio
+  // Multiplier: 1 + SCORE_WEIGHT * ratio^SCORE_EXP
+  SCORE_WEIGHT: 1.2,            // max ~2.2× at perfect shutout
+  SCORE_EXP: 1.4,               // curve shape — >1 = punishes blowouts more
 
-  // Streak multiplier: min(1 + streak^EXP * COEFF, CAP)
-  STREAK_EXP: 1.6,
-  STREAK_COEFF: 0.07,
-  STREAK_CAP: 2.5,              // never more than 2.5× gain/loss
+  // MMR (elo) gap: sigmoid. Upset win (low MMR beats high) = high reward.
+  // Expected win (high MMR beats low) = low reward.
+  ELO_DIVISOR: 250,             // steepness — lower = sharper curve
 
-  MAX_PLACEMENTS_PER_MONTH: 4,  // per player per calendar month
+  // Rank gap: beating someone ranked much higher = bonus
+  RANK_WEIGHT: 0.4,             // 0 = ignore rank, 1 = double at max gap
+  RANK_DIVISOR: 5,              // rank diff normaliser (field of ~10)
+
+  // Streak: exponential scale with sigmoid cap
+  // mult = 1 + tanh(streak / STREAK_SCALE) * (CAP - 1)
+  STREAK_SCALE: 3,              // streak of 3 = ~halfway to cap
+  STREAK_CAP: 2.2,              // absolute max multiplier
+
+  MAX_PLACEMENTS_PER_MONTH: 5,  // per player per calendar month
 };
 
 // ============================================================
@@ -80,15 +87,21 @@ At the end of each month, the top 4 players enter a bracket:
 // ============================================================
 // MMR / POINTS ENGINE
 // ============================================================
+
+// Streak multiplier: tanh curve — grows fast early, plateaus hard at cap.
+// streak=1→~1.3, streak=3→~1.9, streak=6→~2.15, streak=10→~2.2
 function streakMult(streak) {
   const s = Math.max(0, Math.abs(streak));
-  return Math.min(1 + Math.pow(s, CONFIG.STREAK_EXP) * CONFIG.STREAK_COEFF, CONFIG.STREAK_CAP);
+  const t = Math.tanh(s / CONFIG.STREAK_SCALE);
+  return 1 + t * (CONFIG.STREAK_CAP - 1);
 }
+
 function avg(ids, players, key) {
   const found = ids.map(id => players.find(p => p.id === id)).filter(Boolean);
   if (!found.length) return key === "mmr" ? CONFIG.STARTING_MMR : 0;
   return found.reduce((s, p) => s + (p[key] || 0), 0) / found.length;
 }
+
 // Recalculate pts/mmr/streaks/wins/losses for all players from scratch using game log
 function replayGames(basePlayers, games) {
   let players = basePlayers.map(p => ({
@@ -99,15 +112,19 @@ function replayGames(basePlayers, games) {
   for (const g of sorted) {
     const winIds = g.winner === "A" ? g.sideA : g.sideB;
     const losIds = g.winner === "A" ? g.sideB : g.sideA;
-    const { gain, loss } = calcDelta({
+    // Compute rank positions at this point in time
+    const ranked = [...players].sort((a,b)=>(b.pts||0)-(a.pts||0));
+    const rankOf = id => ranked.findIndex(p=>p.id===id);
+    const avgRank = ids => ids.reduce((s,id)=>s+rankOf(id),0)/ids.length;
+    const { gain, loss, eloScale, rankScale, winMult, lossMult, scoreMult } = calcDelta({
       winnerScore: Math.max(g.scoreA, g.scoreB),
       loserScore: Math.min(g.scoreA, g.scoreB),
       winnerAvgMMR: avg(winIds, players, "mmr"),
       loserAvgMMR: avg(losIds, players, "mmr"),
       winnerAvgStreak: avg(winIds, players, "streak"),
       loserAvgStreak: avg(losIds, players, "streak"),
-      winnerAvgPts: avg(winIds, players, "pts"),
-      loserAvgPts: avg(losIds, players, "pts"),
+      winnerAvgRank: avgRank(winIds),
+      loserAvgRank: avgRank(losIds),
     });
     players = players.map(p => {
       if (winIds.includes(p.id)) {
@@ -124,17 +141,49 @@ function replayGames(basePlayers, games) {
   return players;
 }
 
-function calcDelta({ winnerScore, loserScore, winnerAvgMMR, loserAvgMMR, winnerAvgStreak, loserAvgStreak, winnerAvgPts, loserAvgPts }) {
-  const scoreDiff = Math.abs(winnerScore - loserScore);
+// ── CORE DELTA FORMULA ───────────────────────────────────────
+// Three independent multipliers, all applied to base gain/loss:
+//
+// 1. SCORE DOMINANCE — how one-sided was the match?
+//    ratio = scoreDiff / winnerScore  (0 = tie, 1 = shutout)
+//    scoreMult = 1 + SCORE_WEIGHT * ratio^SCORE_EXP
+//    Range: 1.0 (10-9) → ~2.2 (10-0)
+//
+// 2. MMR/ELO SURPRISE — did the underdog win?
+//    eloScale = sigmoid of mmrGap → high when upset, low when expected
+//    Range: 0.1 (massive favourite wins) → 1.9 (massive underdog wins)
+//
+// 3. RANK GAP — beating a higher-ranked opponent = extra reward
+//    rankScale = 1 + RANK_WEIGHT * tanh(rankDiff / RANK_DIVISOR)
+//    Range: 0.6 (losing to lower) → 1.4 (beating much higher)
+//
+// 4. STREAK — exponential warm-up, hard plateau at cap
+//
+function calcDelta({ winnerScore, loserScore, winnerAvgMMR, loserAvgMMR,
+                     winnerAvgStreak, loserAvgStreak, winnerAvgRank, loserAvgRank }) {
+  // Score dominance
+  const scoreDiff = winnerScore - loserScore;
+  const scoreRatio = scoreDiff / Math.max(winnerScore, 1);
+  const scoreMult = 1 + CONFIG.SCORE_WEIGHT * Math.pow(scoreRatio, CONFIG.SCORE_EXP);
+
+  // MMR surprise (elo): high reward for underdog win, low for expected win
   const mmrGap = winnerAvgMMR - loserAvgMMR;
-  const eloScale = 1 / (1 + Math.exp(mmrGap / CONFIG.ELO_DIVISOR));
-  const winMult = streakMult(winnerAvgStreak);
-  const gain = Math.max(1, Math.round(CONFIG.BASE_GAIN * (1 + scoreDiff * CONFIG.SCORE_BONUS_RATE) * eloScale * winMult));
-  const ptsDelta = (loserAvgPts || 0) - (winnerAvgPts || 0);
-  const ptsFactor = 1 / (1 + Math.exp(-ptsDelta / CONFIG.PTS_LOSS_DIVISOR));
+  const eloScale = 2 / (1 + Math.exp(mmrGap / CONFIG.ELO_DIVISOR));
+  // ^ ranges 0→2; = 1 at equal MMR, >1 when winner had lower MMR
+
+  // Rank gap: winner gains more if they ranked lower, lose less if ranked higher
+  const rankDiff = (loserAvgRank ?? 0) - (winnerAvgRank ?? 0);
+  // positive = winner was ranked lower (upset) = bonus gain
+  const rankScale = 1 + CONFIG.RANK_WEIGHT * Math.tanh(rankDiff / CONFIG.RANK_DIVISOR);
+
+  // Streak multipliers
+  const winMult  = streakMult(winnerAvgStreak);
   const lossMult = streakMult(loserAvgStreak);
-  const loss = Math.max(1, Math.round(CONFIG.BASE_LOSS * (1 + scoreDiff * CONFIG.SCORE_LOSS_RATE) * ptsFactor * lossMult));
-  return { gain, loss, eloScale, ptsFactor, winMult, lossMult };
+
+  const gain = Math.max(2, Math.round(CONFIG.BASE_GAIN * scoreMult * eloScale * rankScale * winMult));
+  const loss = Math.max(1, Math.round(CONFIG.BASE_LOSS * scoreMult * (2 - eloScale) * (2 - rankScale) * lossMult));
+
+  return { gain, loss, eloScale, rankScale, winMult, lossMult, scoreMult };
 }
 
 function getMonthKey() {
@@ -970,7 +1019,7 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
         {!editing && game.eloScale!=null && (
           <div style={{background:"var(--s2)",borderRadius:6,padding:"8px 12px",fontSize:11,color:"var(--dimmer)",display:"flex",gap:16,flexWrap:"wrap"}}>
             <span>Elo scale: <span className="text-am">{(game.eloScale*100).toFixed(0)}%</span></span>
-            <span>Pts factor: <span className="text-am">{(game.ptsFactor*100).toFixed(0)}%</span></span>
+            <span>Rank scale: <span className="text-am">{game.rankScale?.toFixed(2) ?? "—"}</span></span>
             <span>Win streak ×: <span className="text-am">{game.winMult?.toFixed(2)}</span></span>
             <span>Loss streak ×: <span className="text-am">{game.lossMult?.toFixed(2)}</span></span>
           </div>
@@ -995,7 +1044,7 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
 // ============================================================
 // LEADERBOARD VIEW
 // ============================================================
-function LeaderboardView({ state, onSelectPlayer, rtConnected }) {
+function LeaderboardView({ state, setState, onSelectPlayer, rtConnected, isAdmin, showToast }) {
   const monthKey = getMonthKey();
   const ranked = [...(state.players ?? [])].sort((a,b)=>(b.pts||0)-(a.pts||0));
   const monthGames = (state.games ?? []).filter(g=>g.monthKey===monthKey);
@@ -1026,7 +1075,14 @@ function LeaderboardView({ state, onSelectPlayer, rtConnected }) {
       <div className="card">
         <div className="card-header">
           <span className="card-title">Rankings — {fmtMonth(monthKey)}</span>
-          <div className="fac" style={{gap:6}}>
+          <div className="fac" style={{gap:8}}>
+            {isAdmin && (
+              <button className="btn btn-g btn-sm" onClick={()=>{
+                const recalced = replayGames(state.players, state.games);
+                setState(s=>({...s, players:recalced}));
+                showToast("Leaderboard recalculated from game log");
+              }}>↺ Recalc</button>
+            )}
             <span className={`rt-dot ${rtConnected?"live":""}`} title={rtConnected?"Live":"Connecting…"}/>
             <span className="xs text-dd">{rtConnected?"Live":"…"}</span>
           </div>
@@ -1044,17 +1100,24 @@ function LeaderboardView({ state, onSelectPlayer, rtConnected }) {
               const anim=animMap[p.id]||"";
               return (
                 <tr key={p.id} className={`lb-row ${anim}`} style={{animationDelay:`${i*28}ms`}} onClick={()=>onSelectPlayer(p)}>
-                  <td><span className={`rk ${i===0?"r1":i===1?"r2":i===2?"r3":""}`}>
-                    {i===0?"①":i===1?"②":i===2?"③":`#${i+1}`}
+                  <td><span className={`rk ${placements >= CONFIG.MAX_PLACEMENTS_PER_MONTH ? (i===0?"r1":i===1?"r2":i===2?"r3":"") : ""}`}
+                    style={placements < CONFIG.MAX_PLACEMENTS_PER_MONTH ? {color:"var(--dimmer)"} : {}}>
+                    {placements >= CONFIG.MAX_PLACEMENTS_PER_MONTH
+                      ? (i===0?"①":i===1?"②":i===2?"③":`#${i+1}`)
+                      : "?"}
                   </span></td>
                   <td>
                     <span className="bold">{p.name}</span>
                     {(p.championships||[]).length>0&&<span style={{marginLeft:6,fontSize:13}}>🏆</span>}
                   </td>
                   <td>
-                    <span className="bold" style={{fontSize:14}}>{p.pts||0}</span>
-                    {anim==="rank-up"&&<span className="xs text-g" style={{marginLeft:5}}>▲</span>}
-                    {anim==="rank-down"&&<span className="xs text-r" style={{marginLeft:5}}>▼</span>}
+                    {placements >= CONFIG.MAX_PLACEMENTS_PER_MONTH
+                      ? <><span className="bold" style={{fontSize:14}}>{p.pts||0}</span>
+                          {anim==="rank-up"&&<span className="xs text-g" style={{marginLeft:5}}>▲</span>}
+                          {anim==="rank-down"&&<span className="xs text-r" style={{marginLeft:5}}>▼</span>}
+                        </>
+                      : <span className="bold text-dd" style={{fontSize:14}} title="Complete placements to reveal ranking">?</span>
+                    }
                   </td>
                   <td><span className="text-g bold">{p.wins}</span></td>
                   <td><span className="text-r bold">{p.losses}</span></td>
@@ -1494,33 +1557,87 @@ function LogView({ state, setState, showToast }) {
       const loserIds = winner === "A" ? row.sideB : row.sideA;
       const winnerScore = Math.max(sA, sB), loserScore = Math.min(sA, sB);
 
-      const { gain, loss, eloScale, ptsFactor, winMult, lossMult } = calcDelta({
+      // Rank positions before this game
+      const currentRanked = [...newPlayers].sort((a,b)=>(b.pts||0)-(a.pts||0));
+      const rankOf = id => currentRanked.findIndex(p=>p.id===id);
+      const avgRank = ids => ids.reduce((s,id)=>s+rankOf(id),0)/ids.length;
+
+      const { gain, loss, eloScale, rankScale, winMult, lossMult, scoreMult } = calcDelta({
         winnerScore, loserScore,
-        winnerAvgMMR: avg(winnerIds, newPlayers, "mmr"), loserAvgMMR: avg(loserIds, newPlayers, "mmr"),
-        winnerAvgStreak: avg(winnerIds, newPlayers, "streak"), loserAvgStreak: avg(loserIds, newPlayers, "streak"),
-        winnerAvgPts: avg(winnerIds, newPlayers, "pts"), loserAvgPts: avg(loserIds, newPlayers, "pts"),
+        winnerAvgMMR: avg(winnerIds, newPlayers, "mmr"),
+        loserAvgMMR:  avg(loserIds,  newPlayers, "mmr"),
+        winnerAvgStreak: avg(winnerIds, newPlayers, "streak"),
+        loserAvgStreak:  avg(loserIds,  newPlayers, "streak"),
+        winnerAvgRank: avgRank(winnerIds),
+        loserAvgRank:  avgRank(loserIds),
       });
 
+      // Check placement status for each player before updating counts
+      const allPids = [...winnerIds, ...loserIds];
+      const placementsBefore = { ...newPlacements[monthKey] };
+
       newPlayers = newPlayers.map(p => {
-        if (winnerIds.includes(p.id)) {
+        const isWinner = winnerIds.includes(p.id);
+        const isLoser  = loserIds.includes(p.id);
+        if (!isWinner && !isLoser) return p;
+
+        const placedBefore = (placementsBefore[p.id] || 0) >= CONFIG.MAX_PLACEMENTS_PER_MONTH;
+        const thisIsLastPlacement = (placementsBefore[p.id] || 0) === CONFIG.MAX_PLACEMENTS_PER_MONTH - 1;
+
+        if (isWinner) {
           const ns = (p.streak || 0) >= 0 ? (p.streak || 0) + 1 : 1;
-          return { ...p, mmr: p.mmr + gain, pts: (p.pts || 0) + gain, wins: p.wins + 1, streak: ns };
+          const newMmr = p.mmr + gain;
+          // During placements: MMR moves, pts hidden (stays 0 until revealed)
+          // After placements: pts move normally
+          const newPts = placedBefore ? (p.pts || 0) + gain : (p.pts || 0);
+          return { ...p, mmr: newMmr, pts: newPts, wins: p.wins + 1, streak: ns };
         }
-        if (loserIds.includes(p.id)) {
+        if (isLoser) {
           const ns = (p.streak || 0) <= 0 ? (p.streak || 0) - 1 : -1;
-          return { ...p, mmr: Math.max(0, p.mmr - loss), pts: Math.max(0, (p.pts || 0) - loss), losses: p.losses + 1, streak: ns };
+          const newMmr = Math.max(0, p.mmr - loss);
+          const newPts = placedBefore ? Math.max(0, (p.pts || 0) - loss) : (p.pts || 0);
+          return { ...p, mmr: newMmr, pts: newPts, losses: p.losses + 1, streak: ns };
         }
         return p;
       });
 
-      [...winnerIds, ...loserIds].forEach(pid => {
-        newPlacements[monthKey][pid] = (newPlacements[monthKey][pid] || 0) + 1;
+      // Update placement counts and calibrate pts on completion
+      allPids.forEach(pid => {
+        const before = placementsBefore[pid] || 0;
+        newPlacements[monthKey][pid] = before + 1;
+        const justCompleted = before + 1 === CONFIG.MAX_PLACEMENTS_PER_MONTH;
+        if (justCompleted) {
+          // Calibrate: assign pts based on MMR standing relative to already-placed players
+          const thisPlayer = newPlayers.find(p => p.id === pid);
+          if (thisPlayer) {
+            const placedPlayers = newPlayers.filter(p => {
+              const pCount = (newPlacements[monthKey][p.id] || 0);
+              return p.id !== pid && pCount >= CONFIG.MAX_PLACEMENTS_PER_MONTH;
+            });
+            // Find where this player's MMR sits among placed players and assign pts accordingly
+            const sortedByMmr = [...placedPlayers].sort((a,b)=>(b.mmr||0)-(a.mmr||0));
+            const insertRank = sortedByMmr.findIndex(p=>(p.mmr||0)<(thisPlayer.mmr||0));
+            const rank = insertRank === -1 ? sortedByMmr.length : insertRank;
+            // Pts = median of neighbours, or MMR-derived if no neighbours
+            let calibratedPts;
+            if (sortedByMmr.length === 0) {
+              calibratedPts = Math.round((thisPlayer.mmr - CONFIG.STARTING_MMR) * 0.5);
+            } else if (rank === 0) {
+              calibratedPts = Math.round((sortedByMmr[0].pts || 0) * 1.1 + 5);
+            } else if (rank >= sortedByMmr.length) {
+              calibratedPts = Math.max(0, Math.round((sortedByMmr[sortedByMmr.length-1].pts || 0) * 0.9 - 5));
+            } else {
+              calibratedPts = Math.round(((sortedByMmr[rank-1].pts||0) + (sortedByMmr[rank].pts||0)) / 2);
+            }
+            newPlayers = newPlayers.map(p => p.id === pid ? { ...p, pts: Math.max(0, calibratedPts) } : p);
+          }
+        }
       });
 
       newGames.push({
         id: crypto.randomUUID(), sideA: row.sideA, sideB: row.sideB,
         winner, scoreA: sA, scoreB: sB, ptsGain: gain, ptsLoss: loss,
-        mmrGain: gain, mmrLoss: loss, eloScale, ptsFactor, winMult, lossMult,
+        mmrGain: gain, mmrLoss: loss, eloScale, rankScale, winMult, lossMult, scoreMult,
         date: new Date().toISOString(), monthKey
       });
     }
@@ -1575,11 +1692,14 @@ function LogView({ state, setState, showToast }) {
             let prev = null;
             if (canPreview) {
               const wIds = sA > sB ? row.sideA : row.sideB, lIds = sA > sB ? row.sideB : row.sideA;
+              const currentRanked = [...state.players].sort((a,b)=>(b.pts||0)-(a.pts||0));
+              const rankOf = id => currentRanked.findIndex(p=>p.id===id);
+              const avgRank = ids => ids.reduce((s,id)=>s+rankOf(id),0)/ids.length;
               prev = calcDelta({
                 winnerScore: Math.max(sA, sB), loserScore: Math.min(sA, sB),
                 winnerAvgMMR: avg(wIds, state.players, "mmr"), loserAvgMMR: avg(lIds, state.players, "mmr"),
                 winnerAvgStreak: avg(wIds, state.players, "streak"), loserAvgStreak: avg(lIds, state.players, "streak"),
-                winnerAvgPts: avg(wIds, state.players, "pts"), loserAvgPts: avg(lIds, state.players, "pts"),
+                winnerAvgRank: avgRank(wIds), loserAvgRank: avgRank(lIds),
               });
             }
 
@@ -1626,7 +1746,7 @@ function LogView({ state, setState, showToast }) {
                         <div className="text-g">+{prev.gain}pts</div>
                         <div className="text-r">-{prev.loss}pts</div>
                         <div className="text-dd">elo {(prev.eloScale * 100).toFixed(0)}%</div>
-                        <div className="text-dd">pts Δ {(prev.ptsFactor * 100).toFixed(0)}%</div>
+                        <div className="text-dd">rank ×{prev.rankScale?.toFixed(2)}</div>
                       </div>
                     )}
                   </div>
