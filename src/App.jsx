@@ -205,6 +205,7 @@ function normaliseState(s) {
     monthlyPlacements: s.monthlyPlacements || {},
     finals: s.finals || {},
     rules: s.rules || DEFAULT_RULES,
+    finalsDate: s.finalsDate || null,
   };
 }
 
@@ -388,6 +389,17 @@ const CSS = `
   .player-chip.sel-b{background:rgba(91,155,213,.10);border-color:var(--blue);color:var(--blue)}
   .player-chip.disabled{opacity:.3;cursor:not-allowed}
 
+  /* ── POSITION BADGES ─────────────────────────────────────── */
+  .pos-badge{display:inline-flex;align-items:center;gap:3px;font-size:9px;font-weight:700;letter-spacing:1px;text-transform:uppercase;padding:2px 6px;border-radius:3px;border:1px solid}
+  .pos-atk{background:rgba(224,82,82,.12);color:var(--red);border-color:rgba(224,82,82,.3)}
+  .pos-def{background:rgba(91,155,213,.12);color:var(--blue);border-color:rgba(91,155,213,.3)}
+  .pos-both{background:rgba(155,127,232,.12);color:var(--purple);border-color:rgba(155,127,232,.3)}
+
+  /* ── PLACEMENT STATUS ────────────────────────────────────── */
+  .placement-badge{display:inline-flex;align-items:center;gap:4px;font-size:9px;font-weight:700;letter-spacing:1px;text-transform:uppercase;padding:2px 7px;border-radius:3px}
+  .placement-done{background:rgba(30,215,96,.12);color:var(--green);border:1px solid rgba(30,215,96,.3)}
+  .placement-pending{background:rgba(240,160,80,.10);color:var(--orange);border:1px solid rgba(240,160,80,.3)}
+
   /* ── BRACKET ─────────────────────────────────────────────── */
   .bracket{padding:20px;display:flex;gap:28px;align-items:center;justify-content:center;overflow-x:auto;-webkit-overflow-scrolling:touch}
   .b-col{display:flex;flex-direction:column;gap:28px;align-items:center}
@@ -543,6 +555,13 @@ function Pips({ used }) {
     <span key={i} className={`pip ${i<used?"pip-u":"pip-f"}`}/>
   )}</>;
 }
+function PosBadge({ pos }) {
+  if (!pos || pos === "none") return <span className="text-dd xs">—</span>;
+  if (pos === "attack") return <span className="pos-badge pos-atk">⚔ ATK</span>;
+  if (pos === "defense") return <span className="pos-badge pos-def">🛡 DEF</span>;
+  if (pos === "both") return <span className="pos-badge pos-both">⚡ FLEX</span>;
+  return null;
+}
 function Toast({ t }) {
   if (!t) return null;
   return <div className={`toast ${t.type||"info"}`}>{t.msg}</div>;
@@ -692,6 +711,7 @@ function EditPlayerModal({ player, state, setState, showToast, onClose }) {
   const [name, setName] = useState(player.name);
   const [pts, setPts] = useState(String(player.pts||0));
   const [streak, setStreak] = useState(String(player.streak||0));
+  const [position, setPosition] = useState(player.position||"none");
   const [champMonth, setChampMonth] = useState("");
   const [champPartner, setChampPartner] = useState("");
   const [confirm, setConfirm] = useState(null);
@@ -704,7 +724,7 @@ function EditPlayerModal({ player, state, setState, showToast, onClose }) {
     setState(s => ({
       ...s,
       players: s.players.map(p => p.id===player.id
-        ? {...p, name:name.trim(), pts:newPts, streak:newStreak}
+        ? {...p, name:name.trim(), pts:newPts, streak:newStreak, position}
         : p
       )
     }));
@@ -770,6 +790,13 @@ function EditPlayerModal({ player, state, setState, showToast, onClose }) {
             <input className="inp inp-edit" type="number" value={pts} onChange={e=>setPts(e.target.value)}/></div>
           <div className="field"><label className="lbl">Streak (+win / -loss)</label>
             <input className="inp inp-edit" type="number" value={streak} onChange={e=>setStreak(e.target.value)}/></div>
+        </div>
+        <div className="field mt8"><label className="lbl">Position Preference</label>
+          <div className="fac" style={{gap:6,flexWrap:"wrap"}}>
+            {[["none","—"],["attack","⚔ Attack"],["defense","🛡 Defense"],["both","⚡ Flex (Both)"]].map(([v,l])=>(
+              <button key={v} className={`pill ${position===v?"on":""}`} onClick={()=>setPosition(v)}>{l}</button>
+            ))}
+          </div>
         </div>
         <div className="msg msg-w sm">Manually editing pts/streak will diverge from game history. Use recalculate to re-sync.</div>
 
@@ -986,7 +1013,7 @@ function LeaderboardView({ state, onSelectPlayer, rtConnected }) {
         <div className="tbl-wrap">
         <table className="tbl">
           <thead>
-            <tr><th>#</th><th>Player</th><th>Points</th><th>W</th><th>L</th><th>Win%</th><th>Streak</th><th>Placements</th></tr>
+            <tr><th>#</th><th>Player</th><th>Points</th><th>W</th><th>L</th><th>Win%</th><th>Streak</th><th>Position</th><th>Placements</th></tr>
           </thead>
           <tbody>
             {ranked.map((p,i)=>{
@@ -1012,11 +1039,17 @@ function LeaderboardView({ state, onSelectPlayer, rtConnected }) {
                   <td><span className="text-r bold">{p.losses}</span></td>
                   <td><span className={pct>=50?"text-g":"text-d"}>{total?`${pct}%`:"—"}</span></td>
                   <td><StreakBadge streak={p.streak} showMult /></td>
-                  <td><Pips used={placements}/></td>
+                  <td><PosBadge pos={p.position}/></td>
+                  <td>
+                    {(state.monthlyPlacements[monthKey]||{})[p.id] >= CONFIG.MAX_PLACEMENTS_PER_MONTH
+                      ? <span className="placement-badge placement-done">✓ Placed</span>
+                      : <span className="placement-badge placement-pending"><Pips used={placements}/> {CONFIG.MAX_PLACEMENTS_PER_MONTH - placements} left</span>
+                    }
+                  </td>
                 </tr>
               );
             })}
-            {ranked.length===0&&<tr><td colSpan={8} style={{textAlign:"center",padding:32,color:"var(--dimmer)"}}>No players yet</td></tr>}
+            {ranked.length===0&&<tr><td colSpan={9} style={{textAlign:"center",padding:32,color:"var(--dimmer)"}}>No players yet</td></tr>}
           </tbody>
         </table>
         </div>
@@ -1419,11 +1452,7 @@ function LogView({ state, setState, showToast }) {
       if (isNaN(sA) || isNaN(sB) || sA < 0 || sB < 0) { newErrors[row.id] = "Invalid scores"; continue; }
       if (sA === sB) { newErrors[row.id] = "No draws allowed"; continue; }
 
-      for (const pid of [...row.sideA, ...row.sideB]) {
-        if ((placements[pid] || 0) >= (CONFIG.MAX_PLACEMENTS_PER_MONTH ?? Infinity)) {
-          newErrors[row.id] = `${pName(pid, state.players)} has no placements left`; break;
-        }
-      }
+      // Placements are informational only — no lockout
     }
 
     setErrors(newErrors);
@@ -1623,27 +1652,35 @@ function LogView({ state, setState, showToast }) {
 function FinalsView({ state, setState, isAdmin, showToast }) {
 
   const monthKey = getMonthKey();
-
   const finals = (state.finals ?? {})[monthKey] ?? null;
+  const ranked = [...(state.players ?? [])].sort((a, b) => (b.pts || 0) - (a.pts || 0));
 
-  const ranked = [...(state.players ?? [])]
-    .sort((a, b) => (b.pts || 0) - (a.pts || 0));
+  // ── FINALS DATE (admin-settable) ──────────────────────────
+  const [editingDate, setEditingDate] = useState(false);
+  const [dateInput, setDateInput] = useState(state.finalsDate || "");
 
-  // ============================================================
-  // FINALS DATE + COUNTDOWN
-  // ============================================================
+  function saveFinalsDate() {
+    setState(s => ({ ...s, finalsDate: dateInput || null }));
+    showToast("Finals date saved");
+    setEditingDate(false);
+  }
 
-  // Live ticking countdown
+  // ── COUNTDOWN ─────────────────────────────────────────────
   const [tick, setTick] = useState(0);
-  useEffect(()=>{
-    const id = setInterval(()=>setTick(t=>t+1), 1000);
-    return ()=>clearInterval(id);
-  },[]);
+  useEffect(() => {
+    const id = setInterval(() => setTick(t => t + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
 
   function getCountdown() {
-    const n = new Date();
-    const fd = new Date(n.getFullYear(), n.getMonth() + 1, 0, 23, 59, 59);
-    const diff = Math.max(0, fd - n);
+    let target;
+    if (state.finalsDate) {
+      target = new Date(state.finalsDate);
+    } else {
+      const n = new Date();
+      target = new Date(n.getFullYear(), n.getMonth() + 1, 0, 23, 59, 59);
+    }
+    const diff = Math.max(0, target - new Date());
     return {
       days:  Math.floor(diff / 864e5),
       hours: Math.floor((diff / 36e5) % 24),
@@ -1654,122 +1691,100 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
   }
 
   const { days: cdDays, hours: cdHours, mins: cdMins, secs: cdSecs, diff: cdDiff } = getCountdown();
-
-  // Urgency: orange < 7 days, red < 24 h
   const cdColour = cdDiff < 864e5 ? "var(--red)" : cdDiff < 7 * 864e5 ? "var(--orange)" : "var(--amber)";
 
-  // Countdown display component — reused in both places
   function Countdown({ compact }) {
+    const pad = n => String(n).padStart(2, "0");
     if (compact) return (
-      <span style={{color:cdColour,fontFamily:"var(--disp)",fontWeight:800}}>
+      <span style={{ color: cdColour, fontFamily: "var(--disp)", fontWeight: 800 }}>
         {cdDays}d {cdHours}h {cdMins}m
       </span>
     );
-    const pad = n => String(n).padStart(2,'0');
     return (
-      <div style={{textAlign:"center"}}>
+      <div style={{ textAlign: "center" }}>
         <div className="cd-wrap">
           {cdDays > 0 && <>
-            <div className="cd-unit">
-              <div className="cd-num" style={{color:cdColour}}>{pad(cdDays)}</div>
-              <div className="cd-lbl">Days</div>
-            </div>
+            <div className="cd-unit"><div className="cd-num" style={{ color: cdColour }}>{pad(cdDays)}</div><div className="cd-lbl">Days</div></div>
             <div className="cd-sep">:</div>
           </>}
-          <div className="cd-unit">
-            <div className="cd-num" style={{color:cdColour}}>{pad(cdHours)}</div>
-            <div className="cd-lbl">Hours</div>
-          </div>
+          <div className="cd-unit"><div className="cd-num" style={{ color: cdColour }}>{pad(cdHours)}</div><div className="cd-lbl">Hours</div></div>
           <div className="cd-sep">:</div>
-          <div className="cd-unit">
-            <div className="cd-num" style={{color:cdColour}}>{pad(cdMins)}</div>
-            <div className="cd-lbl">Mins</div>
-          </div>
+          <div className="cd-unit"><div className="cd-num" style={{ color: cdColour }}>{pad(cdMins)}</div><div className="cd-lbl">Mins</div></div>
           <div className="cd-sep">:</div>
-          <div className="cd-unit">
-            <div className="cd-num" style={{color:cdColour}}>{pad(cdSecs)}</div>
-            <div className="cd-lbl">Secs</div>
-          </div>
+          <div className="cd-unit"><div className="cd-num" style={{ color: cdColour }}>{pad(cdSecs)}</div><div className="cd-lbl">Secs</div></div>
         </div>
       </div>
     );
   }
 
-  // legacy string kept for any remaining inline uses
-  const countdown = `${cdDays}d ${cdHours}h ${cdMins}m`;
+  // ── BRACKET SEEDING ───────────────────────────────────────
+  // Build balanced 2v2 teams from top N players respecting position:
+  // Each team needs 1 attacker + 1 defender if possible, else flex fills gaps.
+  function buildTeam(pool) {
+    const atk = pool.find(p => p.position === "attack" || p.position === "both");
+    const def = pool.find(p => (p.position === "defense" || p.position === "both") && p.id !== atk?.id);
+    if (atk && def) return [atk.id, def.id];
+    // Fallback: just take first two
+    return pool.slice(0, 2).map(p => p.id);
+  }
 
-  // ============================================================
-  // PREVIEW BRACKET (if finals not created)
-  // ============================================================
+  // Upper bracket: top 4 players split into 2 teams
+  // Lower bracket: players 5-8 split into 2 teams
+  function buildBracket(playerPool) {
+    if (playerPool.length < 4) return null;
+    const top4 = playerPool.slice(0, 4);
+    // Seed 1+4 vs 2+3 for balance
+    const teamA = [top4[0].id, top4[3].id];
+    const teamB = [top4[1].id, top4[2].id];
+    return { teamA, teamB };
+  }
 
-  const previewBracket =
-    ranked.length >= 4
-      ? {
-          semi1: {
-            sideA: [ranked[0].id],
-            sideB: [ranked[1].id]
-          },
-          semi2: {
-            sideA: [ranked[2].id],
-            sideB: [ranked[3].id]
-          }
-        }
-      : null;
+  const upperPool = ranked.slice(0, 4);
+  const lowerPool = ranked.slice(4, 8);
 
-  // ============================================================
-  // CREATE FINALS
-  // ============================================================
+  const previewUpper = upperPool.length >= 4 ? buildBracket(upperPool) : null;
+  const previewLower = lowerPool.length >= 4 ? buildBracket(lowerPool) : null;
 
+  // ── INIT FINALS ───────────────────────────────────────────
   function initFinals() {
+    if (ranked.length < 4) { showToast("Need at least 4 players", "error"); return; }
 
-    if (ranked.length < 4) {
-      showToast("Need at least 4 players", "error");
-      return;
-    }
+    const upper = buildBracket(upperPool);
+    const lower = lowerPool.length >= 4 ? buildBracket(lowerPool) : null;
 
     const bracket = {
-      semi1: { sideA: [ranked[0].id], sideB: [ranked[1].id], winner: null, scoreA: null, scoreB: null },
-      semi2: { sideA: [ranked[2].id], sideB: [ranked[3].id], winner: null, scoreA: null, scoreB: null },
+      upper: { sideA: upper.teamA, sideB: upper.teamB, winner: null, scoreA: null, scoreB: null },
+      lower: lower ? { sideA: lower.teamA, sideB: lower.teamB, winner: null, scoreA: null, scoreB: null } : null,
       final: { sideA: null, sideB: null, winner: null, scoreA: null, scoreB: null },
       champion: null
     };
 
     setState(s => ({
       ...s,
-      finals: {
-        ...(s.finals ?? {}),
-        [monthKey]: { bracket, status: "semis" }
-      }
+      finals: { ...(s.finals ?? {}), [monthKey]: { bracket, status: "semis" } }
     }));
-
     showToast("Bracket generated!");
   }
 
-  // ============================================================
-  // RECORD MATCH RESULT
-  // ============================================================
-
+  // ── RECORD RESULT ─────────────────────────────────────────
   function recordResult(match, winnerSide, sA, sB) {
-
     setState(s => {
-
       const f = { ...(s.finals?.[monthKey] ?? {}) };
-      const b = { ...(f.bracket ?? {}) };
+      const b = { ...f.bracket };
 
       b[match] = { ...b[match], winner: winnerSide, scoreA: sA, scoreB: sB };
 
-      if (match === "semi1" || match === "semi2") {
-
-        const s1w = b.semi1.winner
-          ? (b.semi1.winner === "A" ? b.semi1.sideA : b.semi1.sideB)
-          : null;
-
-        const s2w = b.semi2.winner
-          ? (b.semi2.winner === "A" ? b.semi2.sideA : b.semi2.sideB)
-          : null;
-
-        if (s1w && s2w) {
-          b.final = { sideA: s1w, sideB: s2w, winner: null, scoreA: null, scoreB: null };
+      // After both semis done, set up grand final
+      if (match === "upper" || match === "lower") {
+        const uw = b.upper?.winner ? (b.upper.winner === "A" ? b.upper.sideA : b.upper.sideB) : null;
+        const lw = b.lower?.winner ? (b.lower.winner === "A" ? b.lower.sideA : b.lower.sideB) : null;
+        const needsBoth = !!b.lower;
+        if (uw && (!needsBoth || lw)) {
+          b.final = {
+            sideA: uw,
+            sideB: lw || uw, // if no lower bracket, upper winner plays themselves (shouldn't happen)
+            winner: null, scoreA: null, scoreB: null
+          };
           f.status = "final";
         }
       }
@@ -1780,289 +1795,238 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
       }
 
       f.bracket = b;
-
       return { ...s, finals: { ...s.finals, [monthKey]: f } };
-
     });
-
     showToast("Result recorded");
   }
 
-  // ============================================================
-  // AWARD CHAMPIONSHIP
-  // ============================================================
-
+  // ── AWARD CHAMPIONSHIP ────────────────────────────────────
   function awardChampionship() {
-
     if (!finals?.bracket?.champion) return;
-
     const champIds = finals.bracket.champion;
-
     const champNames = champIds.map(id => pName(id, state.players));
-
     setState(s => ({
       ...s,
       players: s.players.map(p => {
-
         if (!champIds.includes(p.id)) return p;
-
         const partner = champNames.find(n => n !== p.name) || null;
-
         const already = (p.championships || []).some(c => c.month === monthKey);
-
         if (already) return p;
-
-        return {
-          ...p,
-          championships: [
-            ...(p.championships || []),
-            { month: monthKey, partner }
-          ]
-        };
-
+        return { ...p, championships: [...(p.championships || []), { month: monthKey, partner }] };
       })
     }));
-
     showToast("Championships awarded to " + champNames.join(" & ") + " 🏆");
   }
 
-  // ============================================================
-  // BRACKET MATCH COMPONENT
-  // ============================================================
-
-  function BMatch({ matchKey, label, preview }) {
-
+  // ── BRACKET MATCH COMPONENT ───────────────────────────────
+  function BMatch({ matchKey, label, overrideSideA, overrideSideB, preview }) {
     const [sA, setSA] = useState("");
     const [sBv, setSBv] = useState("");
 
     const m = preview
-      ? previewBracket?.[matchKey]
+      ? { sideA: overrideSideA, sideB: overrideSideB }
       : finals?.bracket?.[matchKey];
 
-    if (!m || !m.sideA) {
-
+    if (!m || !m.sideA || !m.sideB) {
       return (
         <div>
-          <div className="xs text-dd" style={{ textAlign: "center", marginBottom: 5, letterSpacing: 2, textTransform: "uppercase" }}>
-            {label}
-          </div>
-          <div className="b-match" style={{ padding: 18, textAlign: "center", color: "var(--dimmer)", fontSize: 12 }}>
-            TBD
-          </div>
+          <div className="xs text-dd" style={{ textAlign: "center", marginBottom: 5, letterSpacing: 2, textTransform: "uppercase" }}>{label}</div>
+          <div className="b-match" style={{ padding: 18, textAlign: "center", color: "var(--dimmer)", fontSize: 12 }}>TBD</div>
         </div>
       );
     }
 
-    const pA = m.sideA.map(id => pName(id, state.players));
-    const pB = m.sideB.map(id => pName(id, state.players));
-
+    const pA = m.sideA.map(id => {
+      const pl = state.players.find(p => p.id === id);
+      return pl ? { name: pl.name, pos: pl.position } : { name: "?", pos: null };
+    });
+    const pB = m.sideB.map(id => {
+      const pl = state.players.find(p => p.id === id);
+      return pl ? { name: pl.name, pos: pl.position } : { name: "?", pos: null };
+    });
     const done = !!m.winner;
 
     return (
       <div>
-
-        <div className="xs text-dd" style={{ textAlign: "center", marginBottom: 5, letterSpacing: 2, textTransform: "uppercase" }}>
-          {label}
-        </div>
-
-        <div className="b-match">
+        <div className="xs text-dd" style={{ textAlign: "center", marginBottom: 5, letterSpacing: 2, textTransform: "uppercase" }}>{label}</div>
+        <div className="b-match" style={{ minWidth: 220 }}>
           <div className={`b-side ${m.winner === "A" ? "win" : ""}`}>
-            <span>{pA.join(" & ")}</span>
-            {done && <span>{m.scoreA}</span>}
+            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+              {pA.map((pl, i) => (
+                <div key={i} className="fac" style={{ gap: 5 }}>
+                  <span>{pl.name}</span>
+                  <PosBadge pos={pl.pos} />
+                </div>
+              ))}
+            </div>
+            {done && <span className="disp" style={{ fontSize: 18 }}>{m.scoreA}</span>}
           </div>
-
           <div className={`b-side ${m.winner === "B" ? "win" : ""}`}>
-            <span>{pB.join(" & ")}</span>
-            {done && <span>{m.scoreB}</span>}
+            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+              {pB.map((pl, i) => (
+                <div key={i} className="fac" style={{ gap: 5 }}>
+                  <span>{pl.name}</span>
+                  <PosBadge pos={pl.pos} />
+                </div>
+              ))}
+            </div>
+            {done && <span className="disp" style={{ fontSize: 18 }}>{m.scoreB}</span>}
           </div>
         </div>
-
         {!preview && isAdmin && !done && (
           <div style={{ display: "flex", gap: 5, alignItems: "center", justifyContent: "center", marginTop: 7 }}>
             <input className="inp" type="number" min="0" placeholder="A" value={sA} onChange={e => setSA(e.target.value)} style={{ width: 50, textAlign: "center" }} />
             <span className="text-dd">–</span>
             <input className="inp" type="number" min="0" placeholder="B" value={sBv} onChange={e => setSBv(e.target.value)} style={{ width: 50, textAlign: "center" }} />
-
-            <button
-              className="btn btn-p btn-sm"
-              onClick={() => {
-                const nA = parseInt(sA);
-                const nB = parseInt(sBv);
-                if (isNaN(nA) || isNaN(nB) || nA === nB) return;
-                recordResult(matchKey, nA > nB ? "A" : "B", nA, nB);
-              }}
-            >
-              Set
-            </button>
+            <button className="btn btn-p btn-sm" onClick={() => {
+              const nA = parseInt(sA), nB = parseInt(sBv);
+              if (isNaN(nA) || isNaN(nB) || nA === nB) return;
+              recordResult(matchKey, nA > nB ? "A" : "B", nA, nB);
+            }}>Set</button>
           </div>
         )}
-
       </div>
     );
   }
 
-  // ============================================================
-  // NO FINALS YET SCREEN
-  // ============================================================
-
-  if (!finals) {
-
+  // ── DATE EDITOR ───────────────────────────────────────────
+  function DateEditor() {
+    if (!isAdmin) return null;
     return (
+      <div style={{ marginTop: 10 }}>
+        {editingDate ? (
+          <div className="fac" style={{ justifyContent: "center", gap: 6, flexWrap: "wrap" }}>
+            <input className="inp" type="datetime-local" value={dateInput}
+              onChange={e => setDateInput(e.target.value)}
+              style={{ width: 210, fontSize: 11 }} />
+            <button className="btn btn-p btn-sm" onClick={saveFinalsDate}>Save</button>
+            <button className="btn btn-g btn-sm" onClick={() => setEditingDate(false)}>Cancel</button>
+          </div>
+        ) : (
+          <button className="btn btn-g btn-sm" onClick={() => { setDateInput(state.finalsDate || ""); setEditingDate(true); }}>
+            {state.finalsDate ? "Edit Finals Date" : "Set Finals Date"}
+          </button>
+        )}
+      </div>
+    );
+  }
 
+  // ── NO FINALS YET ─────────────────────────────────────────
+  if (!finals) {
+    return (
       <div className="stack page-fade">
-
         <div className="card" style={{ padding: 32, textAlign: "center" }}>
           <div className="disp text-am" style={{ fontSize: 36, letterSpacing: 2, marginBottom: 4 }}>Monthly Finals</div>
-          <div className="text-d sm" style={{ marginBottom: 8 }}>Finals — last day of {fmtMonth(monthKey)}</div>
-
+          <div className="text-d sm" style={{ marginBottom: 12 }}>
+            {state.finalsDate
+              ? <>Scheduled: <span className="text-am">{new Date(state.finalsDate).toLocaleString("en-GB", { day:"numeric", month:"short", hour:"2-digit", minute:"2-digit" })}</span></>
+              : `Finals — last day of ${fmtMonth(monthKey)}`}
+          </div>
           <Countdown />
-
-          {cdDiff < 864e5 && (
-            <div className="tag tag-l" style={{ marginBottom: 16, fontSize: 11, letterSpacing: 2 }}>
-              🔥 Finals are today!
-            </div>
-          )}
-          {cdDiff >= 864e5 && cdDiff < 7*864e5 && (
-            <div className="tag tag-a" style={{ marginBottom: 16, fontSize: 11, letterSpacing: 2 }}>
-              ⚡ Finals this week
-            </div>
-          )}
-
-          <div className="mt12" style={{ marginBottom: 6 }}>
+          {cdDiff < 864e5 && <div className="tag tag-l" style={{ marginBottom: 16, fontSize: 11, letterSpacing: 2 }}>🔥 Finals are today!</div>}
+          {cdDiff >= 864e5 && cdDiff < 7 * 864e5 && <div className="tag tag-a" style={{ marginBottom: 16, fontSize: 11, letterSpacing: 2 }}>⚡ Finals this week</div>}
+          <DateEditor />
+          <div className="mt12">
             {ranked.length >= 4
-              ? isAdmin && (
-                <button className="btn btn-p" onClick={initFinals}>
-                  Generate Bracket
-                </button>
-              )
-              : (
-                <div className="msg msg-e" style={{ display: "inline-block" }}>
-                  Need at least 4 players
-                </div>
-              )}
+              ? isAdmin && <button className="btn btn-p mt8" onClick={initFinals}>Generate Bracket</button>
+              : <div className="msg msg-e" style={{ display: "inline-block" }}>Need at least 4 players</div>}
           </div>
         </div>
 
-        {previewBracket && (
-
+        {(previewUpper || previewLower) && (
           <div className="card">
-
             <div className="card-header">
               <span className="card-title">Preview — If Finals Happened Today</span>
               <span className="tag tag-a">LIVE RANKINGS</span>
             </div>
-
-            <div className="bracket">
-              <div className="b-col">
-                <BMatch matchKey="semi1" label="Semi 1" preview />
-                <BMatch matchKey="semi2" label="Semi 2" preview />
-              </div>
-
-              <div className="b-conn">→</div>
-
-              <div className="b-col">
-                <BMatch matchKey="final" label="Final" preview />
-              </div>
+            <div style={{ padding: 20 }}>
+              {previewUpper && (
+                <>
+                  <div className="xs text-dd" style={{ letterSpacing: 2, textTransform: "uppercase", marginBottom: 10 }}>Upper Bracket — Top 4</div>
+                  <div className="bracket" style={{ justifyContent: "flex-start", padding: 0, marginBottom: 20 }}>
+                    <BMatch matchKey="upper" label="Upper Final" overrideSideA={previewUpper.teamA} overrideSideB={previewUpper.teamB} preview />
+                  </div>
+                </>
+              )}
+              {previewLower && (
+                <>
+                  <div className="xs text-dd" style={{ letterSpacing: 2, textTransform: "uppercase", marginBottom: 10 }}>Lower Bracket — Ranks 5–8</div>
+                  <div className="bracket" style={{ justifyContent: "flex-start", padding: 0 }}>
+                    <BMatch matchKey="lower" label="Lower Final" overrideSideA={previewLower.teamA} overrideSideB={previewLower.teamB} preview />
+                  </div>
+                </>
+              )}
             </div>
-
           </div>
-
         )}
-
       </div>
-
     );
   }
 
-  // ============================================================
-  // NORMAL FINALS VIEW
-  // ============================================================
-
+  // ── NORMAL FINALS VIEW ────────────────────────────────────
   const { bracket, status } = finals;
-
   const champ = bracket?.champion?.map(id => pName(id, state.players));
 
   return (
-
     <div className="stack page-fade">
 
       <div className="card" style={{ textAlign: "center", padding: "16px 20px" }}>
-        <div className="xs text-dd" style={{ marginBottom: 2, letterSpacing: 2, textTransform:"uppercase" }}>Finals Countdown</div>
+        <div className="xs text-dd" style={{ marginBottom: 2, letterSpacing: 2, textTransform: "uppercase" }}>Finals Countdown</div>
         <Countdown compact={status === "complete"} />
-        {status === "complete" && <div className="tag tag-w" style={{marginTop:4}}>Complete</div>}
+        {status === "complete" && <div className="tag tag-w" style={{ marginTop: 4 }}>Complete</div>}
+        <DateEditor />
       </div>
 
       {status === "complete" && champ && (
-
         <div style={{ textAlign: "center", padding: 28, background: "var(--amber-g)", border: "1px solid var(--amber-d)", borderRadius: 8 }}>
-          <div className="xs text-am" style={{ letterSpacing: 3, textTransform: "uppercase", marginBottom: 6 }}>
-            Monthly Champion
-          </div>
-
-          <div className="disp text-am" style={{ fontSize: 38 }}>
-            🏆 {champ.join(" & ")}
-          </div>
-
+          <div className="xs text-am" style={{ letterSpacing: 3, textTransform: "uppercase", marginBottom: 6 }}>Monthly Champions</div>
+          <div className="disp text-am" style={{ fontSize: 38 }}>🏆 {champ.join(" & ")}</div>
           {isAdmin && (
-            <button className="btn btn-p btn-sm mt12" onClick={awardChampionship}>
-              Award Championship to Profiles
-            </button>
+            <button className="btn btn-p btn-sm mt12" onClick={awardChampionship}>Award Championship to Profiles</button>
           )}
-
         </div>
-
       )}
 
       <div className="card">
-
         <div className="card-header">
           <span className="card-title">Bracket — {fmtMonth(monthKey)}</span>
-          <span className={`tag ${status === "complete" ? "tag-w" : "tag-a"}`}>
-            {status.toUpperCase()}
-          </span>
+          <span className={`tag ${status === "complete" ? "tag-w" : "tag-a"}`}>{status.toUpperCase()}</span>
         </div>
-
-        <div className="bracket">
-
-          <div className="b-col">
-            <BMatch matchKey="semi1" label="Semi 1" />
-            <BMatch matchKey="semi2" label="Semi 2" />
+        <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 24 }}>
+          <div>
+            <div className="xs text-dd" style={{ letterSpacing: 2, textTransform: "uppercase", marginBottom: 10 }}>Upper Bracket</div>
+            <div className="bracket" style={{ justifyContent: "flex-start", padding: 0 }}>
+              <BMatch matchKey="upper" label="Upper Final" />
+              {(status === "final" || status === "complete") && (
+                <>
+                  <div className="b-conn">→</div>
+                  <BMatch matchKey="final" label="Grand Final" />
+                </>
+              )}
+            </div>
           </div>
-
-          <div className="b-conn">→</div>
-
-          <div className="b-col">
-            <BMatch matchKey="final" label="Final" />
-          </div>
-
+          {bracket.lower && (
+            <div>
+              <div className="xs text-dd" style={{ letterSpacing: 2, textTransform: "uppercase", marginBottom: 10 }}>Lower Bracket</div>
+              <div className="bracket" style={{ justifyContent: "flex-start", padding: 0 }}>
+                <BMatch matchKey="lower" label="Lower Final" />
+              </div>
+            </div>
+          )}
         </div>
-
         {isAdmin && (
           <div style={{ padding: "10px 18px", borderTop: "1px solid var(--b1)" }}>
-            <button
-              className="btn btn-d btn-sm"
-              onClick={() => {
-                setState(s => {
-                  const f = { ...s.finals };
-                  delete f[monthKey];
-                  return { ...s, finals: f };
-                });
-                showToast("Finals reset");
-              }}
-            >
-              Reset Bracket
-            </button>
+            <button className="btn btn-d btn-sm" onClick={() => {
+              setState(s => { const f = { ...s.finals }; delete f[monthKey]; return { ...s, finals: f }; });
+              showToast("Finals reset");
+            }}>Reset Bracket</button>
           </div>
         )}
-
       </div>
-
     </div>
-
   );
 
 }
-
 // ============================================================
 // RULEBOOK VIEW
 // ============================================================
