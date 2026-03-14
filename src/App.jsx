@@ -13,7 +13,7 @@ const CONFIG = {
 
   // Base deltas — before all modifiers
   BASE_GAIN: 18,
-  BASE_LOSS: 10,
+  BASE_LOSS: 11,                 // slightly above base — losses proportionally meaningful
 
   // Score dominance: scoreDiff / winnerScore gives 0→1 ratio
   // Multiplier: 1 + SCORE_WEIGHT * ratio^SCORE_EXP
@@ -37,6 +37,10 @@ const CONFIG = {
   STREAK_QUALITY_DECAY: 0.88,   // per-game decay if opponent eloScale < 1.1
   STREAK_DECAY_THRESHOLD: 1.05, // eloScale below this = "easy" opponent
   STREAK_WINDOW: 8,             // rolling quality window (games)
+
+  // Loss harshness scalar — multiplied into every loss, >1 = harsher
+  // 1.15 means losses are ~15% larger across the board after other factors
+  LOSS_HARSHNESS: 1.05,
 
   MAX_PLACEMENTS_PER_MONTH: 5,  // per player per calendar month
 };
@@ -122,6 +126,20 @@ function avg(ids, players, key) {
   return found.reduce((s, p) => s + (p[key] || 0), 0) / found.length;
 }
 
+// Recompute monthlyPlacements from game list (used after delete/edit)
+function computePlacements(games) {
+  const placements = {};
+  for (const g of games) {
+    const mk = g.monthKey || g.date?.slice(0,7)?.replace('-','') || '';
+    if (!mk) continue;
+    if (!placements[mk]) placements[mk] = {};
+    for (const pid of [...g.sideA, ...g.sideB]) {
+      placements[mk][pid] = (placements[mk][pid] || 0) + 1;
+    }
+  }
+  return placements;
+}
+
 // Recalculate pts/mmr/streaks/wins/losses from scratch using per-player deltas.
 // Returns { players, games } — caller must update both.
 function replayGames(basePlayers, games) {
@@ -175,11 +193,17 @@ function replayGames(basePlayers, games) {
       return { ...p, mmr: Math.max(0,p.mmr-d.loss), pts: Math.max(0,(p.pts||0)-d.loss), losses: p.losses+1, streak: ns, streakPower: 0 };
     });
 
-    // Summary gain/loss for display (average of individual deltas)
+    // Flat per-player gain/loss maps — persisted, not stripped by slimState
+    const perPlayerGains  = {};
+    const perPlayerLosses = {};
+    winIds.forEach(id => { if (playerDeltas[id]) perPlayerGains[id]  = playerDeltas[id].gain; });
+    losIds.forEach(id => { if (playerDeltas[id]) perPlayerLosses[id] = playerDeltas[id].loss; });
+
+    // Summary averages for legacy display fallback
     const avgGain = Math.round(winIds.reduce((s,id)=>s+(playerDeltas[id]?.gain||0),0)/Math.max(winIds.length,1));
     const avgLoss = Math.round(losIds.reduce((s,id)=>s+(playerDeltas[id]?.loss||0),0)/Math.max(losIds.length,1));
 
-    return { ...g, ptsGain: avgGain, ptsLoss: avgLoss, mmrGain: avgGain, mmrLoss: avgLoss, playerDeltas };
+    return { ...g, ptsGain: avgGain, ptsLoss: avgLoss, mmrGain: avgGain, mmrLoss: avgLoss, perPlayerGains, perPlayerLosses };
   });
 
   return { players, games: updatedGames };
@@ -222,7 +246,16 @@ function calcPlayerDelta({ winnerScore, loserScore, playerMMR, playerRank,
     const gain = Math.max(2, Math.round(CONFIG.BASE_GAIN * scoreMult * eloScale * rankScale * mult));
     return { gain, loss: 0, scoreMult, eloScale, rankScale, streakMultVal: mult, qualityScore };
   } else {
-    const loss = Math.max(1, Math.round(CONFIG.BASE_LOSS * scoreMult * (2 - eloScale) * (2 - rankScale) * mult));
+    // Loss is harsher for:
+    //   - high scoreMult (blowout defeat)
+    //   - low eloScale  (expected win that didn't happen — higher MMR player lost)
+    //   - high rankScale (higher-ranked player lost to lower-ranked)
+    //   - active loss streak (streakMult > 1)
+    // LOSS_HARSHNESS nudges the base up slightly without doubling anything
+    const lossRankPunish = (2 - rankScale); // > 1 when higher-ranked lost to lower
+    const loss = Math.max(1, Math.round(
+      CONFIG.BASE_LOSS * scoreMult * (2 - eloScale) * lossRankPunish * mult * CONFIG.LOSS_HARSHNESS
+    ));
     return { gain: 0, loss, scoreMult, eloScale, rankScale, streakMultVal: mult, qualityScore };
   }
 }
@@ -240,7 +273,7 @@ function calcDelta({ winnerScore, loserScore, winnerAvgMMR, loserAvgMMR,
   const winMult    = streakMult(winnerAvgStreakPower ?? 0, true);
   const lossMult   = streakMult(loserAvgStreakPower ?? 0, false);
   const gain = Math.max(2, Math.round(CONFIG.BASE_GAIN * scoreMult * eloScale * rankScale * winMult));
-  const loss = Math.max(1, Math.round(CONFIG.BASE_LOSS * scoreMult * (2 - eloScale) * (2 - rankScale) * lossMult));
+  const loss = Math.max(1, Math.round(CONFIG.BASE_LOSS * scoreMult * (2 - eloScale) * (2 - rankScale) * lossMult * CONFIG.LOSS_HARSHNESS));
   return { gain, loss, eloScale, rankScale, winMult, lossMult, scoreMult };
 }
 
@@ -583,15 +616,17 @@ const CSS = `
   .tag-p{background:rgba(155,127,232,.12);color:var(--purple)}
 
   /* ── GAME ROWS ───────────────────────────────────────────── */
-  .game-row{padding:11px 18px;border-bottom:1px solid var(--b1);display:grid;grid-template-columns:1fr auto 1fr auto;gap:10px;align-items:center;font-size:12px;cursor:pointer;transition:background .1s}
-  .game-row:hover{background:var(--s2)}
+  .game-row{padding:10px 18px;border-bottom:1px solid var(--b1);display:grid;grid-template-columns:1fr 72px 1fr;gap:8px;align-items:center;font-size:12px;cursor:pointer;transition:background .1s;position:relative}
+  .game-row:hover{background:rgba(255,255,255,.025)}
+  .game-row:active{background:var(--s2)}
   .game-row:last-child{border-bottom:none}
-  .g-side{display:flex;flex-direction:column;gap:2px}
+  .g-side{display:flex;flex-direction:column;gap:3px}
   .g-side.right{text-align:right;align-items:flex-end}
-  .g-score{font-family:var(--disp);font-size:21px;font-weight:800;color:var(--amber);text-align:center;min-width:56px}
-  .g-date{font-size:10px;color:var(--dimmer);text-align:center}
-  .g-name-w{color:var(--text);font-weight:600}
-  .g-name-l{color:var(--dim)}
+  .g-score{font-family:var(--disp);font-size:22px;font-weight:800;color:var(--amber);text-align:center;line-height:1}
+  .g-date{font-size:10px;color:var(--dimmer);text-align:center;margin-top:2px}
+  .g-name-w{color:var(--text);font-weight:700;font-size:12px}
+  .g-name-l{color:var(--dim);font-size:12px}
+  .g-delta{font-size:10px;letter-spacing:.3px;margin-top:1px}
 
   /* ── LOG GAME SPECIFIC ───────────────────────────────────── */
   .add-row{display:flex;align-items:center;justify-content:center;gap:6px;background:none;border:1px dashed var(--b2);color:var(--dim);font-family:var(--mono);font-size:11px;padding:8px;border-radius:4px;cursor:pointer;letter-spacing:1px;text-transform:uppercase;transition:all .15s;width:100%;margin-top:8px}
@@ -939,8 +974,9 @@ function PlayerProfile({ player, state, onClose, isAdmin, onEdit }) {
             <span className="disp text-am" style={{fontSize:15}}>{myScore}–{oppScore}</span>
             <span className={won?"text-g":"text-r"}>
               {(() => {
-                const d = g.playerDeltas?.[player.id];
-                const delta = d ? (won ? d.gain : d.loss) : (won ? g.ptsGain : g.ptsLoss);
+                const delta = won
+                  ? (g.perPlayerGains?.[player.id] ?? g.playerDeltas?.[player.id]?.gain ?? g.ptsGain)
+                  : (g.perPlayerLosses?.[player.id] ?? g.playerDeltas?.[player.id]?.loss ?? g.ptsLoss);
                 return `${won?"+":"−"}${delta}pts`;
               })()}
             </span>
@@ -1122,7 +1158,8 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
       const orig = state.players.find(x=>x.id===p.id);
       return {...p, name:orig?.name||p.name, championships:orig?.championships||[], position:orig?.position||p.position};
     });
-    setState(s=>({...s, games:newGames, players:mergedPlayers}));
+    const newPlacements = computePlacements(newGames);
+    setState(s=>({...s, games:newGames, players:mergedPlayers, monthlyPlacements:newPlacements}));
     showToast("Game updated & stats recalculated");
     setEditing(false);
     onClose();
@@ -1141,7 +1178,8 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
           const orig = state.players.find(x=>x.id===p.id);
           return {...p, name:orig?.name||p.name, championships:orig?.championships||[], position:orig?.position||p.position};
         });
-        setState(s=>({...s, games:newGames, players:mergedPlayers}));
+        const newPlacements = computePlacements(newGames);
+        setState(s=>({...s, games:newGames, players:mergedPlayers, monthlyPlacements:newPlacements}));
         showToast("Game deleted & stats recalculated");
         setConfirm(null);
         onClose();
@@ -1240,7 +1278,8 @@ function LeaderboardView({ state, setState, onSelectPlayer, rtConnected, isAdmin
 
   function doRecalc() {
     const { players, games } = replayGames(state.players, state.games);
-    setState(s => ({ ...s, players, games }));
+    const monthlyPlacements = computePlacements(games);
+    setState(s => ({ ...s, players, games, monthlyPlacements }));
     showToast("All stats recalculated from game log");
     setShowRecalcConfirm(false);
   }
@@ -1396,39 +1435,59 @@ function HistoryView({ state, setState, isAdmin, showToast }) {
   function GameRow({ g }) {
     const sAN = g.sideA.map(id=>pName(id,state.players));
     const sBN = g.sideB.map(id=>pName(id,state.players));
+    const winnerSide = g.winner;
     return (
       <div className="game-row" onClick={()=>setSelectedGameId(g.id)}>
+        {/* Side A */}
         <div className="g-side">
-          {sAN.map((n,i)=><span key={i} className={g.winner==="A"?"g-name-w":"g-name-l"}>{n}</span>)}
-          <span className="xs text-dd" style={{display:"flex",flexDirection:"column",gap:1}}>
+          {sAN.map((n,i)=>(
+            <span key={i} className={winnerSide==="A"?"g-name-w":"g-name-l"}>
+              {winnerSide==="A" && <span style={{color:"var(--green)",marginRight:3,fontSize:9}}>▲</span>}{n}
+            </span>
+          ))}
+          <div className="g-delta" style={{display:"flex",flexDirection:"column",gap:1}}>
             {g.sideA.map(id=>{
-              const d=g.playerDeltas?.[id];
-              const delta=d?(g.winner==="A"?d.gain:d.loss):(g.winner==="A"?g.ptsGain:g.ptsLoss);
-              return <span key={id} className={g.winner==="A"?"text-g":"text-r"}>{g.winner==="A"?"+":"-"}{delta} {pName(id,state.players).split(" ")[0]}</span>;
+              const delta = winnerSide==="A"
+                ? (g.perPlayerGains?.[id] ?? g.playerDeltas?.[id]?.gain ?? g.ptsGain)
+                : (g.perPlayerLosses?.[id] ?? g.playerDeltas?.[id]?.loss ?? g.ptsLoss);
+              return <span key={id} className={winnerSide==="A"?"text-g":"text-r"}>{winnerSide==="A"?"+":"−"}{delta} {pName(id,state.players).split(" ")[0]}</span>;
             })}
-          </span>
+          </div>
         </div>
-        <div>
+        {/* Score */}
+        <div style={{textAlign:"center"}}>
           <div className="g-score">{g.scoreA}–{g.scoreB}</div>
           <div className="g-date">{new Date(g.date).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})}</div>
         </div>
+        {/* Side B */}
         <div className="g-side right">
-          {sBN.map((n,i)=><span key={i} className={g.winner==="B"?"g-name-w":"g-name-l"}>{n}</span>)}
-          <span className="xs text-dd" style={{display:"flex",flexDirection:"column",gap:1}}>
+          {sBN.map((n,i)=>(
+            <span key={i} className={winnerSide==="B"?"g-name-w":"g-name-l"}>
+              {n}{winnerSide==="B" && <span style={{color:"var(--green)",marginLeft:3,fontSize:9}}>▲</span>}
+            </span>
+          ))}
+          <div className="g-delta" style={{display:"flex",flexDirection:"column",gap:1,alignItems:"flex-end"}}>
             {g.sideB.map(id=>{
-              const d=g.playerDeltas?.[id];
-              const delta=d?(g.winner==="B"?d.gain:d.loss):(g.winner==="B"?g.ptsGain:g.ptsLoss);
-              return <span key={id} className={g.winner==="B"?"text-g":"text-r"}>{g.winner==="B"?"+":"-"}{delta} {pName(id,state.players).split(" ")[0]}</span>;
+              const delta = winnerSide==="B"
+                ? (g.perPlayerGains?.[id] ?? g.playerDeltas?.[id]?.gain ?? g.ptsGain)
+                : (g.perPlayerLosses?.[id] ?? g.playerDeltas?.[id]?.loss ?? g.ptsLoss);
+              return <span key={id} className={winnerSide==="B"?"text-g":"text-r"}>{winnerSide==="B"?"+":"−"}{delta} {pName(id,state.players).split(" ")[0]}</span>;
             })}
-          </span>
+          </div>
         </div>
-        <span className={`tag ${g.winner==="A"?"tag-w":"tag-b"}`}>{g.winner==="A"?sAN[0]:sBN[0]} won</span>
       </div>
     );
   }
 
   return (
     <div className="stack page-fade">
+      {selectedGameId && (() => {
+        const selectedGame = state.games.find(g => g.id === selectedGameId);
+        return selectedGame ? (
+          <GameDetail game={selectedGame} state={state} setState={setState}
+            isAdmin={isAdmin} showToast={showToast} onClose={()=>setSelectedGameId(null)}/>
+        ) : null;
+      })()}
       <div className="card">
         <div className="card-header">
           <span className="card-title">Match History ({allGames.length})</span>
@@ -1471,13 +1530,6 @@ function HistoryView({ state, setState, isAdmin, showToast }) {
           </div>
         ))}
       </div>
-      {selectedGameId && (() => {
-        const selectedGame = state.games.find(g => g.id === selectedGameId);
-        return selectedGame ? (
-          <GameDetail game={selectedGame} state={state} setState={setState}
-            isAdmin={isAdmin} showToast={showToast} onClose={()=>setSelectedGameId(null)}/>
-        ) : null;
-      })()}
     </div>
   );
 }
@@ -2036,7 +2088,12 @@ function LogView({ state, setState, showToast }) {
         }
       });
 
-      // Summary display values (avg of individual deltas)
+      // Flat per-player maps — survive slimState, enable individual history display
+      const perPlayerGains  = {};
+      const perPlayerLosses = {};
+      winnerIds.forEach(id => { if (playerDeltas[id]) perPlayerGains[id]  = playerDeltas[id].gain; });
+      loserIds.forEach(id  => { if (playerDeltas[id]) perPlayerLosses[id] = playerDeltas[id].loss; });
+
       const avgGain = Math.round(winnerIds.reduce((s,id)=>s+(playerDeltas[id]?.gain||0),0)/Math.max(winnerIds.length,1));
       const avgLoss = Math.round(loserIds.reduce((s,id)=>s+(playerDeltas[id]?.loss||0),0)/Math.max(loserIds.length,1));
 
@@ -2044,7 +2101,7 @@ function LogView({ state, setState, showToast }) {
         id: crypto.randomUUID(), sideA: row.sideA, sideB: row.sideB,
         winner, scoreA: sA, scoreB: sB,
         ptsGain: avgGain, ptsLoss: avgLoss, mmrGain: avgGain, mmrLoss: avgLoss,
-        playerDeltas,
+        perPlayerGains, perPlayerLosses,
         date: new Date().toISOString(), monthKey
       });
     }
