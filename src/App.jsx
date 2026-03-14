@@ -1300,18 +1300,18 @@ function LeaderboardView({ state, setState, onSelectPlayer, rtConnected, isAdmin
             <tr><th>#</th><th>Player</th><th>Points</th><th>W</th><th>L</th><th>Win%</th><th>Streak</th><th>Position</th><th>Placements</th></tr>
           </thead>
           <tbody>
-            {ranked.map((p,i)=>{
+            {(()=>{ let placedCount=0; return ranked.map((p,i)=>{
               const placements=(state.monthlyPlacements[monthKey]||{})[p.id]||0;
+              const isPlaced=placements>=CONFIG.MAX_PLACEMENTS_PER_MONTH;
+              const rankNum=isPlaced?++placedCount:null;
               const total=p.wins+p.losses;
               const pct=total?Math.round(p.wins/total*100):0;
               const anim=animMap[p.id]||"";
               return (
-                <tr key={p.id} className={`lb-row ${anim}`} style={{animationDelay:`${i*28}ms`}} onClick={()=>onSelectPlayer(p)}>
-                  <td><span className={`rk ${placements >= CONFIG.MAX_PLACEMENTS_PER_MONTH ? (i===0?"r1":i===1?"r2":i===2?"r3":"") : ""}`}
-                    style={placements < CONFIG.MAX_PLACEMENTS_PER_MONTH ? {color:"var(--dimmer)"} : {}}>
-                    {placements >= CONFIG.MAX_PLACEMENTS_PER_MONTH
-                      ? (i===0?"①":i===1?"②":i===2?"③":`#${i+1}`)
-                      : "?"}
+                <tr key={p.id} className={`lb-row ${anim}`} style={{animationDelay:`${i*28}ms`,opacity:isPlaced?1:0.6}} onClick={()=>onSelectPlayer(p)}>
+                  <td><span className={`rk ${isPlaced?(rankNum===1?"r1":rankNum===2?"r2":rankNum===3?"r3":""):""}`}
+                    style={!isPlaced?{color:"var(--dimmer)"}:{}}>
+                    {isPlaced?(rankNum===1?"①":rankNum===2?"②":rankNum===3?"③":`#${rankNum}`):"?"}
                   </span></td>
                   <td>
                     <span className="bold">{p.name}</span>
@@ -1339,7 +1339,7 @@ function LeaderboardView({ state, setState, onSelectPlayer, rtConnected, isAdmin
                   </td>
                 </tr>
               );
-            })}
+            });})()}
             {ranked.length===0&&<tr><td colSpan={9} style={{textAlign:"center",padding:32,color:"var(--dimmer)"}}>
               No players yet — ask an admin to onboard players
             </td></tr>}
@@ -2445,37 +2445,30 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
     );
   }
 
-  // ── BRACKET SEEDING ───────────────────────────────────────
-  // Build balanced 2v2 teams from top N players respecting position:
-  // Each team needs 1 attacker + 1 defender if possible, else flex fills gaps.
-  function buildTeam(pool) {
-    const atk = pool.find(p => p.position === "attack" || p.position === "both");
-    const def = pool.find(p => (p.position === "defense" || p.position === "both") && p.id !== atk?.id);
-    if (atk && def) return [atk.id, def.id];
-    // Fallback: just take first two
-    return pool.slice(0, 2).map(p => p.id);
+  // ── BRACKET SEEDING — position-aware ─────────────────────
+  // Scores all 3 splits: (1) position balance, (2) MMR balance, (3) standard seeding tiebreak
+  function buildBracket(pool) {
+    if (pool.length < 4) return null;
+    const [p0,p1,p2,p3] = pool;
+    const roles = pos => { const s=new Set(); [].concat(pos||[]).forEach(p=>{if(p==="attack")s.add("atk");if(p==="defense")s.add("def");if(p==="both"||p==="flex"){s.add("atk");s.add("def");}}); return s; };
+    const posScore = (a,b) => { const ra=roles(a.position),rb=roles(b.position); if(!ra.size&&!rb.size)return 1; if(!ra.size||!rb.size)return 1; return(ra.has("atk")||rb.has("atk"))&&(ra.has("def")||rb.has("def"))?2:0; };
+    const splits = [{a:[p0,p1],b:[p2,p3]},{a:[p0,p2],b:[p1,p3]},{a:[p0,p3],b:[p1,p2]}];
+    const score = ({a,b}) => [posScore(a[0],a[1])+posScore(b[0],b[1]), -Math.abs(((a[0].mmr||1000)+(a[1].mmr||1000))/2-((b[0].mmr||1000)+(b[1].mmr||1000))/2)];
+    const best = splits.reduce((acc,s)=>{ const[ap,am]=score(acc),[bp,bm]=score(s); return bp>ap||(bp===ap&&bm>am)?s:acc; });
+    return { teamA:[best.a[0].id,best.a[1].id], teamB:[best.b[0].id,best.b[1].id] };
   }
 
-  // Upper bracket: top 4 players split into 2 teams
-  // Lower bracket: players 5-8 split into 2 teams
-  function buildBracket(playerPool) {
-    if (playerPool.length < 4) return null;
-    const top4 = playerPool.slice(0, 4);
-    // Seed 1+4 vs 2+3 for balance
-    const teamA = [top4[0].id, top4[3].id];
-    const teamB = [top4[1].id, top4[2].id];
-    return { teamA, teamB };
-  }
-
-  const upperPool = ranked.slice(0, 4);
-  const lowerPool = ranked.slice(4, 8);
+  // Only placed players can be in the bracket
+  const placedRanked = ranked.filter(p=>(state.monthlyPlacements[monthKey]||{})[p.id]>=CONFIG.MAX_PLACEMENTS_PER_MONTH);
+  const upperPool = placedRanked.slice(0, 4);
+  const lowerPool = placedRanked.slice(4, 8);
 
   const previewUpper = upperPool.length >= 4 ? buildBracket(upperPool) : null;
   const previewLower = lowerPool.length >= 4 ? buildBracket(lowerPool) : null;
 
   // ── INIT FINALS ───────────────────────────────────────────
   function initFinals() {
-    if (ranked.length < 4) { showToast("Need at least 4 players", "error"); return; }
+    if (placedRanked.length < 4) { showToast("Need at least 4 placed players", "error"); return; }
 
     const upper = buildBracket(upperPool);
     const lower = lowerPool.length >= 4 ? buildBracket(lowerPool) : null;
@@ -2651,14 +2644,14 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
           {cdDiff >= 864e5 && cdDiff < 7 * 864e5 && <div className="tag tag-a" style={{ marginBottom: 16, fontSize: 11, letterSpacing: 2 }}>⚡ Finals this week</div>}
           <FinalsDateEditor finalsDate={state.finalsDate} setState={setState} showToast={showToast} isAdmin={isAdmin} />
           <div className="mt12">
-            {ranked.length >= 4
+            {placedRanked.length >= 4
               ? isAdmin && (
                   <div style={{marginTop:12}}>
-                    <div className="xs text-dd" style={{marginBottom:6}}>Top 4 players by points will be seeded into the bracket.</div>
+                    <div className="xs text-dd" style={{marginBottom:6}}>Top 4 placed players by points will be seeded into the bracket.</div>
                     <button className="btn btn-p" onClick={initFinals}>⚡ Generate Bracket</button>
                   </div>
                 )
-              : <div className="msg msg-e" style={{ display: "inline-block" }}>Need at least 4 players</div>}
+              : <div className="msg msg-e" style={{ display: "inline-block" }}>Need at least 4 placed players</div>}
           </div>
         </div>
 
