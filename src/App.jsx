@@ -870,9 +870,12 @@ function PlayerProfile({ player, state, onClose, isAdmin, onEdit }) {
           <div className="prof-name">{player.name}</div>
           <div className="prof-sub">Rank #{rank} · {player.pts||0} pts</div>
         </div>
-        {isAdmin && !champs.length && (
-          <button className="btn btn-g btn-sm" onClick={onEdit}>Edit Profile</button>
-        )}
+        <div className="fac" style={{gap:6}}>
+          {isAdmin && !champs.length && (
+            <button className="btn btn-g btn-sm" onClick={onEdit}>Edit</button>
+          )}
+          <button className="btn btn-g btn-sm" onClick={onClose} style={{fontSize:14,padding:"3px 9px"}}>×</button>
+        </div>
       </div>
 
       <div className="grid-3 mb16">
@@ -1264,8 +1267,8 @@ function LeaderboardView({ state, setState, onSelectPlayer, rtConnected, isAdmin
     <div className="stack page-fade">
       {isAdmin && (
         <div style={{display:"flex",justifyContent:"flex-end"}}>
-          <button className="btn btn-warn" style={{gap:6}} onClick={()=>setShowRecalcConfirm(true)}>
-            ↺ Recalculate All Stats
+          <button className="btn btn-g btn-sm" style={{gap:6}} onClick={()=>setShowRecalcConfirm(true)}>
+            ↺ Recalc
           </button>
         </div>
       )}
@@ -1337,7 +1340,9 @@ function LeaderboardView({ state, setState, onSelectPlayer, rtConnected, isAdmin
                 </tr>
               );
             })}
-            {ranked.length===0&&<tr><td colSpan={9} style={{textAlign:"center",padding:32,color:"var(--dimmer)"}}>No players yet</td></tr>}
+            {ranked.length===0&&<tr><td colSpan={9} style={{textAlign:"center",padding:32,color:"var(--dimmer)"}}>
+              No players yet — ask an admin to onboard players
+            </td></tr>}
           </tbody>
         </table>
         </div>
@@ -1768,6 +1773,9 @@ function TeamBalancer({ players }) {
         )}
       </div>
       <div style={{padding:14}}>
+        <div className="xs text-dd" style={{marginBottom:10,lineHeight:1.6}}>
+          Select 4 players to see all possible fair matchups ranked by MMR balance.
+        </div>
         <div className="lbl">{selected.length}/4 players selected</div>
         {selected.length > 0 && (
           <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:10}}>
@@ -2066,7 +2074,6 @@ function LogView({ state, setState, showToast }) {
   return (
     <>
     <div className="stack page-fade">
-      <TeamBalancer players={state.players}/>
       {templates.length > 0 && (
         <div className="card">
           <div className="card-header"><span className="card-title">Templates</span></div>
@@ -2338,7 +2345,7 @@ function FinalsDateEditor({ finalsDate, setState, showToast, isAdmin }) {
   const fields = [
     ["Day",  "DD",   dd,   setDd,   60, 1,    31  ],
     ["Month","MM",   mm,   setMm,   60, 1,    12  ],
-    ["Year", "YYYY", yyyy, setYyyy, 80, 2025, 2099],
+    ["Year", "YYYY", yyyy, setYyyy, 80, 2026, 2099],
     ["Hour", "HH",   hh,   setHh,   60, 0,    23  ],
     ["Min",  "MM",   mn,   setMn,   60, 0,    59  ],
   ];
@@ -2364,7 +2371,12 @@ function FinalsDateEditor({ finalsDate, setState, showToast, isAdmin }) {
           ))}
         </div>
         <div className="fac" style={{ gap: 6 }}>
-          <button className="btn btn-p btn-sm" onClick={handleSave}>Save</button>
+          <button className="btn btn-p btn-sm" onClick={handleSave}>Save Date</button>
+          <button className="btn btn-d btn-sm" onClick={() => {
+            setState(s => ({ ...s, finalsDate: null }));
+            showToast("Finals date cleared");
+            setEditing(false);
+          }}>Clear</button>
           <button className="btn btn-g btn-sm" onClick={() => setEditing(false)}>Cancel</button>
         </div>
       </div>
@@ -2490,15 +2502,20 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
 
       b[match] = { ...b[match], winner: winnerSide, scoreA: sA, scoreB: sB };
 
-      // After both semis done, set up grand final
       if (match === "upper" || match === "lower") {
-        const uw = b.upper?.winner ? (b.upper.winner === "A" ? b.upper.sideA : b.upper.sideB) : null;
-        const lw = b.lower?.winner ? (b.lower.winner === "A" ? b.lower.sideA : b.lower.sideB) : null;
-        const needsBoth = !!b.lower;
-        if (uw && (!needsBoth || lw)) {
+        const upperWinner = b.upper?.winner
+          ? (b.upper.winner === "A" ? b.upper.sideA : b.upper.sideB) : null;
+        const lowerWinner = b.lower?.winner
+          ? (b.lower.winner === "A" ? b.lower.sideA : b.lower.sideB) : null;
+        const hasLower = !!b.lower;
+
+        // Grand final only opens once all semis are resolved
+        const semisComplete = upperWinner && (!hasLower || lowerWinner);
+
+        if (semisComplete) {
           b.final = {
-            sideA: uw,
-            sideB: lw || uw, // if no lower bracket, upper winner plays themselves (shouldn't happen)
+            sideA: upperWinner,
+            sideB: hasLower ? lowerWinner : null, // null sideB = only upper bracket final
             winner: null, scoreA: null, scoreB: null
           };
           f.status = "final";
@@ -2543,7 +2560,7 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
       ? { sideA: overrideSideA, sideB: overrideSideB }
       : finals?.bracket?.[matchKey];
 
-    if (!m || !m.sideA || !m.sideB) {
+    if (!m || !m.sideA) {
       return (
         <div>
           <div className="xs text-dd" style={{ textAlign: "center", marginBottom: 5, letterSpacing: 2, textTransform: "uppercase" }}>{label}</div>
@@ -2551,12 +2568,14 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
         </div>
       );
     }
+    // sideB can be null for upper-only finals — show pending
+    const sideBReady = m.sideB && m.sideB.length > 0;
 
     const pA = m.sideA.map(id => {
       const pl = state.players.find(p => p.id === id);
       return pl ? { name: pl.name, pos: pl.position } : { name: "?", pos: null };
     });
-    const pB = m.sideB.map(id => {
+    const pB = (m.sideB || []).map(id => {
       const pl = state.players.find(p => p.id === id);
       return pl ? { name: pl.name, pos: pl.position } : { name: "?", pos: null };
     });
@@ -2583,14 +2602,18 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
           <div style={{ textAlign: "center", padding: "4px 0", background: "var(--s3)", fontSize: 9, letterSpacing: 3, color: "var(--dimmer)", textTransform: "uppercase" }}>vs</div>
           {/* Team B */}
           <div style={{ padding: "10px 14px", background: m.winner === "B" ? "rgba(30,215,96,.08)" : "transparent", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              {pB.map((pl, i) => (
-                <div key={i} className="fac" style={{ gap: 6 }}>
-                  <span style={{ fontWeight: 600, fontSize: 13, color: m.winner === "B" ? "var(--green)" : "var(--text)" }}>{pl.name}</span>
-                  <PosBadge pos={pl.pos} />
-                </div>
-              ))}
-            </div>
+            {sideBReady ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                {pB.map((pl, i) => (
+                  <div key={i} className="fac" style={{ gap: 6 }}>
+                    <span style={{ fontWeight: 600, fontSize: 13, color: m.winner === "B" ? "var(--green)" : "var(--text)" }}>{pl.name}</span>
+                    <PosBadge pos={pl.pos} />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <span className="text-dd xs" style={{fontStyle:"italic"}}>Awaiting lower bracket…</span>
+            )}
             {done && <span className="disp text-am" style={{ fontSize: 26, marginLeft: 12 }}>{m.scoreB}</span>}
             {m.winner === "B" && <span className="tag tag-w" style={{ marginLeft: 8 }}>WIN</span>}
           </div>
@@ -2629,7 +2652,12 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
           <FinalsDateEditor finalsDate={state.finalsDate} setState={setState} showToast={showToast} isAdmin={isAdmin} />
           <div className="mt12">
             {ranked.length >= 4
-              ? isAdmin && <button className="btn btn-p mt8" onClick={initFinals}>Generate Bracket</button>
+              ? isAdmin && (
+                  <div style={{marginTop:12}}>
+                    <div className="xs text-dd" style={{marginBottom:6}}>Top 4 players by points will be seeded into the bracket.</div>
+                    <button className="btn btn-p" onClick={initFinals}>⚡ Generate Bracket</button>
+                  </div>
+                )
               : <div className="msg msg-e" style={{ display: "inline-block" }}>Need at least 4 players</div>}
           </div>
         </div>
@@ -2989,14 +3017,14 @@ export default function App(){
   // ============================================================
   const showToast = useCallback((msg,type="success")=>{
     setToast({msg,type});
-    setTimeout(()=>setToast(null),3500);
+    setTimeout(()=>setToast(null),4500);
   },[]);
   showToastRef.current = showToast;
 
   // ============================================================
   // NAV
   // ============================================================
-  const PUB = ["leaderboard","history","finals","rules"];
+  const PUB = ["leaderboard","history","teams","finals","rules"];
 
   const ADMIN_TABS = [
     { id:"onboard", label:"Onboard" },
@@ -3156,6 +3184,18 @@ export default function App(){
               isAdmin={isAdmin}
               showToast={showToast}
             />
+          )}
+
+          {tab==="teams" && (
+            <div className="stack page-fade">
+              <div className="card">
+                <div className="card-header">
+                  <span className="card-title">Team Generator</span>
+                  <span className="xs text-dd">MMR-balanced matchups</span>
+                </div>
+              </div>
+              <TeamBalancer players={state.players}/>
+            </div>
           )}
 
           {tab==="finals" && (
