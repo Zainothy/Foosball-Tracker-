@@ -2859,6 +2859,7 @@ export default function App(){
   const[rtConnected,setRtConnected]=useState(false);
   const subscriptionRef=useRef(null);
   const isRemoteUpdate=useRef(false);
+  const lastSavedVersion=useRef(-1); // tracks _v we last wrote, to suppress our own echo
 
   // ============================================================
   // LOAD STATE
@@ -2904,7 +2905,7 @@ export default function App(){
     if (ms) syncStatusTimer.current = setTimeout(() => setSyncStatus('idle'), ms);
   }
 
-  // autosave — skip on initial load, skip realtime changes, skip _v stamp-back
+  // autosave — skip on initial load, skip when change came from realtime
   const isInitialLoad = useRef(true);
   const pendingSave = useRef(false);
   const skipNextSave = useRef(false);
@@ -2926,8 +2927,10 @@ export default function App(){
           if (showToastRef.current) showToastRef.current("Sync conflict — remote state applied", "warning");
         },
         (newV) => {
-          // Success — stamp the new version onto state so next save has correct _v
+          // Success — record what we saved so echo suppression works,
+          // then stamp _v back without triggering another save.
           pendingSave.current = false;
+          lastSavedVersion.current = newV;
           setSyncFor('saved');
           skipNextSave.current = true;
           setState(s => s._v === newV ? s : { ...s, _v: newV });
@@ -2946,14 +2949,14 @@ export default function App(){
     const incoming = normaliseState(payload.new?.state || {});
     const incomingV = incoming._v ?? 0;
     const currentV  = stateRef.current?._v ?? 0;
-    const pendingV  = _sq.pendingVersion;
 
-    // Ignore if this is the echo of our own pending write
-    if (pendingV !== null && incomingV === pendingV) {
+    // Ignore our own echo — pendingVersion is cleared before echo arrives,
+    // so we use lastSavedVersion which persists after the save completes.
+    if (incomingV === lastSavedVersion.current) {
       console.log('Ignoring own echo _v' + incomingV);
       return;
     }
-    // Ignore if we already have this version or newer
+    // Ignore stale or same version
     if (incomingV <= currentV && !pendingSave.current) {
       console.log('Ignoring stale incoming _v' + incomingV + ' (have ' + currentV + ')');
       return;
