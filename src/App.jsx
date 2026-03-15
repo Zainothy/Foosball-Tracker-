@@ -732,17 +732,31 @@ const CSS = `
   @keyframes rtPulse{0%{box-shadow:0 0 0 0 rgba(94,201,138,.55)}70%{box-shadow:0 0 0 7px rgba(94,201,138,0)}100%{box-shadow:0 0 0 0 rgba(94,201,138,0)}}
 
   /* ── LEADERBOARD ANIMATIONS ──────────────────────────────── */
-  .lb-row{transition:background .1s}
-  .lb-row.rank-up{animation:rankUp .75s ease forwards}
-  .lb-row.rank-down{animation:rankDown .75s ease forwards}
-  .lb-row.pts-changed{animation:ptsFlash .85s ease}
-  @keyframes rankUp{0%{background:rgba(94,201,138,.18)}100%{background:transparent}}
-  @keyframes rankDown{0%{background:rgba(224,100,100,.15)}100%{background:transparent}}
-  @keyframes ptsFlash{0%,100%{background:transparent}30%{background:rgba(94,201,138,.08)}}
+  /* Stagger entrance — only applies when no rank/pts animation is active */
+  @keyframes rowIn{from{opacity:0;transform:translateX(-8px)}to{opacity:1;transform:translateX(0)}}
+  .lb-row{animation:rowIn .3s ease both;transition:background .15s}
 
-  /* Stagger entrance for leaderboard rows */
-  @keyframes rowIn{from{opacity:0;transform:translateX(-6px)}to{opacity:1;transform:translateX(0)}}
-  .lb-row{animation:rowIn .25s ease both}
+  /* Rank change + pts flash — more vivid against new dark bg */
+  @keyframes rankUp{
+    0%{background:rgba(88,200,130,.32);box-shadow:inset 0 0 0 1px rgba(88,200,130,.4)}
+    60%{background:rgba(88,200,130,.12);box-shadow:none}
+    100%{background:transparent}
+  }
+  @keyframes rankDown{
+    0%{background:rgba(224,100,100,.28);box-shadow:inset 0 0 0 1px rgba(224,100,100,.35)}
+    60%{background:rgba(224,100,100,.10);box-shadow:none}
+    100%{background:transparent}
+  }
+  @keyframes ptsFlash{
+    0%{background:transparent}
+    25%{background:rgba(88,200,130,.18)}
+    75%{background:rgba(88,200,130,.08)}
+    100%{background:transparent}
+  }
+  /* Override rowIn when rank/pts animation is active */
+  .lb-row.rank-up{animation:rankUp .9s ease forwards}
+  .lb-row.rank-down{animation:rankDown .9s ease forwards}
+  .lb-row.pts-changed{animation:ptsFlash 1s ease}
 
   /* ── PAGE FADE ───────────────────────────────────────────── */
   .page-fade{animation:pageFade .18s ease both}
