@@ -3328,61 +3328,450 @@ export default function App(){
           <div
             className="overlay"
             onClick={e=>e.target===e.currentTarget && setShowLogin(false)}
-          >
-            <div className="modal">
-              <AdminLogin
-                onLogin={()=>{
-                  setIsAdmin(true);
-                  setShowLogin(false);
-                  setTab("admin");
-                  setAdminTab("onboard");
-                }}
-              />
-            </div>
-          </div>
-        )}
+import { useState, useEffect, useCallback, useRef } from "react";
+import { createPortal } from "react-dom";
+import { supabase } from './supabaseClient';
 
+// ============================================================
+// CONFIGURATION — tune these before your season starts.
+// Changing mid-season only affects future games.
+// ============================================================
+const CONFIG = {
+  ADMIN_PASSWORD: "RankUp26",   // CHANGE THIS before deploying
 
-        {/* ============================================================ */}
-        {/* PLAYER PROFILE */}
-        {/* ============================================================ */}
+  STARTING_MMR: 1000,           // hidden matchmaking rating
+  STARTING_PTS: 0,              // visible leaderboard points
 
-        {currentSelPlayer && !editPlayer && (
-          <PlayerProfile
-            player={currentSelPlayer}
-            state={state}
-            onClose={()=>setSelPlayer(null)}
-            isAdmin={isAdmin}
-            onEdit={()=>{
-              setEditPlayer(currentSelPlayer);
-              setSelPlayer(null);
-            }}
-          />
-        )}
+  // Base deltas — before all modifiers
+  BASE_GAIN: 18,
+  BASE_LOSS: 11,                 // slightly above base — losses proportionally meaningful
 
+  // Score dominance: scoreDiff / winnerScore gives 0→1 ratio
+  // Multiplier: 1 + SCORE_WEIGHT * ratio^SCORE_EXP
+  SCORE_WEIGHT: 1.2,            // max ~2.2× at perfect shutout
+  SCORE_EXP: 1.4,               // curve shape — >1 = punishes blowouts more
 
-        {/* ============================================================ */}
-        {/* EDIT PLAYER */}
-        {/* ============================================================ */}
+  // MMR (elo) gap: sigmoid. Upset win (low MMR beats high) = high reward.
+  // Expected win (high MMR beats low) = low reward.
+  ELO_DIVISOR: 250,             // steepness — lower = sharper curve
 
-        {currentEditPlayer && (
-          <EditPlayerModal
-            player={currentEditPlayer}
-            state={state}
-            setState={setState}
-            showToast={showToast}
-            onClose={()=>setEditPlayer(null)}
-          />
-        )}
+  // Rank gap: beating someone ranked much higher = bonus
+  RANK_WEIGHT: 0.4,             // 0 = ignore rank, 1 = double at max gap
+  RANK_DIVISOR: 5,              // rank diff normaliser (field of ~10)
 
+  // ── STREAK SYSTEM (quality-weighted, convergence-safe) ────
+  // Streak power accumulates quality (eloScale * rankScale) per win,
+  // resets to 0 on loss. Prevents unclosable gaps from weak-opponent farming.
+  STREAK_POWER_SCALE: 4.0,      // tanh half-point (higher = slower ramp)
+  STREAK_WIN_MAX: 0.45,         // max bonus for win streak (+45% = 1.45x cap)
+  STREAK_LOSS_MAX: 0.35,        // max amplifier for loss streak (1.35x cap)
+  STREAK_QUALITY_DECAY: 0.88,   // per-game decay if opponent eloScale < 1.1
+  STREAK_DECAY_THRESHOLD: 1.05, // eloScale below this = "easy" opponent
+  STREAK_WINDOW: 8,             // rolling quality window (games)
 
-        {/* ============================================================ */}
-        {/* TOAST */}
-        {/* ============================================================ */}
+  // Loss harshness scalar — multiplied into every loss, >1 = harsher
+  // 1.15 means losses are ~15% larger across the board after other factors
+  LOSS_HARSHNESS: 1.05,
 
-        <Toast t={toast} />
+  MAX_PLACEMENTS_PER_MONTH: 5,  // per player per calendar month
+};
 
-      </div>
-    </>
-  );
+// ============================================================
+// DEFAULT RULEBOOK (markdown)
+// ============================================================
+const DEFAULT_RULES = `# Rulebook
+
+## Overview
+This is the official ranked table football leaderboard. Games are logged by admins and affect your points and hidden MMR.
+
+## Players & Teams
+- All players are ranked individually.
+- Teams are formed per game — you can play with anyone.
+- Each player has **${CONFIG.MAX_PLACEMENTS_PER_MONTH} placement games** per calendar month.
+
+## Scoring
+- A standard game is played to **10 goals**.
+- No draws — there must be a winner.
+- Score is logged by an admin immediately after the game.
+- A 9-9 outcome **must** be resolved in *deuce* 
+### Deuce: 
+- Players continue until one team leads by 2 goals (e.g. 11-9, 12-10).
+## Gameplay Nuances: 
+- The ball may not be blown during play. Dead balls must be resolved through a new serve. 
+- Unsportsmanlike conduct (e.g. intentional stalling, disrespect) may lead to penalties or disqualification at the admin's discretion. 
+- Pinches slamming the ball against the side wallls of the table are not allowed, as they damage the table springs. **Note:** Inwards passes between players are valid, this foul only applies when the ball is slammed against side walls. \
+- No spins. 
+- Intentional stalling (e.g. holding the ball without playing, excessively delaying serves) is not allowed and may be penalized by admins.
+
+## Points
+- **Points** are your visible leaderboard score. Everyone starts at 0.
+- Points gained depend on the score difference and the hidden MMR gap between sides.
+- Points lost depend on the score difference and the points gap between you and your opponent.
+- Winning streaks amplify gains. Losing streaks amplify losses.
+
+## Monthly Finals
+At the end of each month, the top 4 players enter a bracket:
+- Semi 1: #1 vs #2
+- Semi 2: #3 vs #4
+- Final: winners of each semi
+- The winning pair is crowned **Monthly Champions**.
+
+## Conduct
+- Results must be agreed by both sides before logging.
+- Disputes go to an admin. Admin decisions are final.
+- Unsportsmanlike behaviour may result in removal from the leaderboard.
+- Admins have the right to adjust points or MMR retroactively in case of errors or disputes.
+- Admins have the right to ban players for misconduct, cheating, or repeated unsportsmanlike behaviour.
+`;
+
+// ============================================================
+// MMR / POINTS ENGINE
+// ============================================================
+
+// Quality-weighted streak multiplier.
+// streakPower = accumulated (eloScale * rankScale) from recent wins,
+// decays if only playing weak opponents, resets to 0 on loss.
+// Max bonus 1.45x win / 1.35x loss — prevents unclosable gaps.
+function streakMult(streakPower, isWinner) {
+  const power = Math.max(0, streakPower || 0);
+  const t = Math.tanh(power / CONFIG.STREAK_POWER_SCALE);
+  const cap = isWinner ? CONFIG.STREAK_WIN_MAX : CONFIG.STREAK_LOSS_MAX;
+  return 1 + t * cap;
 }
+
+// Update a player's streakPower after a game result.
+// qualityScore = eloScale * rankScale from this game (how "hard" was the opponent).
+function updateStreakPower(currentPower, isWin, qualityScore) {
+  if (!isWin) return 0; // loss always resets streak power
+  const base = (currentPower || 0);
+  // Decay if opponent was easy (below threshold)
+  const decayed = qualityScore < CONFIG.STREAK_DECAY_THRESHOLD
+    ? base * CONFIG.STREAK_QUALITY_DECAY
+    : base;
+  return Math.min(decayed + qualityScore, CONFIG.STREAK_WINDOW * 2); // absolute cap
+}
+
+function avg(ids, players, key) {
+  const found = ids.map(id => players.find(p => p.id === id)).filter(Boolean);
+  if (!found.length) return key === "mmr" ? CONFIG.STARTING_MMR : 0;
+  return found.reduce((s, p) => s + (p[key] || 0), 0) / found.length;
+}
+
+// Recompute monthlyPlacements from game list (used after delete/edit)
+function computePlacements(games) {
+  const placements = {};
+  for (const g of games) {
+    const mk = g.monthKey || g.date?.slice(0,7)?.replace('-','') || '';
+    if (!mk) continue;
+    if (!placements[mk]) placements[mk] = {};
+    for (const pid of [...g.sideA, ...g.sideB]) {
+      placements[mk][pid] = (placements[mk][pid] || 0) + 1;
+    }
+  }
+  return placements;
+}
+
+// Recalculate pts/mmr/streaks/wins/losses from scratch using per-player deltas.
+// Returns { players, games } — caller must update both.
+function replayGames(basePlayers, games) {
+  let players = basePlayers.map(p => ({
+    ...p, mmr: CONFIG.STARTING_MMR, pts: CONFIG.STARTING_PTS,
+    wins: 0, losses: 0, streak: 0, streakPower: 0,
+  }));
+  const sorted = [...games].sort((a, b) => new Date(a.date) - new Date(b.date));
+  const updatedGames = sorted.map(g => {
+    const winIds = g.winner === "A" ? g.sideA : g.sideB;
+    const losIds = g.winner === "A" ? g.sideB : g.sideA;
+    const ranked = [...players].sort((a,b)=>(b.pts||0)-(a.pts||0));
+    const rankOf = id => { const i = ranked.findIndex(p=>p.id===id); return i === -1 ? ranked.length : i; };
+    const oppAvgMMR  = ids => avg(ids, players, "mmr");
+    const oppAvgRank = ids => ids.reduce((s,id)=>s+rankOf(id),0)/ids.length;
+    const winnerScore = Math.max(g.scoreA, g.scoreB);
+    const loserScore  = Math.min(g.scoreA, g.scoreB);
+    const oppWinMMR  = oppAvgMMR(winIds);
+    const oppLosMMR  = oppAvgMMR(losIds);
+    const oppWinRank = oppAvgRank(winIds);
+    const oppLosRank = oppAvgRank(losIds);
+
+    // Per-player deltas
+    const playerDeltas = {};
+    [...winIds, ...losIds].forEach(pid => {
+      const p = players.find(x => x.id === pid);
+      if (!p) return;
+      const isWinner = winIds.includes(pid);
+      const d = calcPlayerDelta({
+        winnerScore, loserScore,
+        playerMMR:          p.mmr,
+        playerRank:         rankOf(pid),
+        playerStreakPower:  p.streakPower || 0,
+        oppAvgMMR:    isWinner ? oppLosMMR  : oppWinMMR,
+        oppAvgRank:   isWinner ? oppLosRank : oppWinRank,
+        isWinner,
+      });
+      playerDeltas[pid] = d;
+    });
+
+    players = players.map(p => {
+      const d = playerDeltas[p.id];
+      if (!d) return p;
+      const isWin = winIds.includes(p.id);
+      if (isWin) {
+        const ns = (p.streak||0) >= 0 ? (p.streak||0)+1 : 1;
+        const newPower = updateStreakPower(p.streakPower||0, true, d.qualityScore||1);
+        return { ...p, mmr: p.mmr+d.gain, pts: (p.pts||0)+d.gain, wins: p.wins+1, streak: ns, streakPower: newPower };
+      }
+      const ns = (p.streak||0) <= 0 ? (p.streak||0)-1 : -1;
+      return { ...p, mmr: Math.max(0,p.mmr-d.loss), pts: Math.max(0,(p.pts||0)-d.loss), losses: p.losses+1, streak: ns, streakPower: 0 };
+    });
+
+    // Flat per-player gain/loss maps — persisted, not stripped by slimState
+    const perPlayerGains  = {};
+    const perPlayerLosses = {};
+    winIds.forEach(id => { if (playerDeltas[id]) perPlayerGains[id]  = playerDeltas[id].gain; });
+    losIds.forEach(id => { if (playerDeltas[id]) perPlayerLosses[id] = playerDeltas[id].loss; });
+
+    // Summary averages for legacy display fallback
+    const avgGain = Math.round(winIds.reduce((s,id)=>s+(playerDeltas[id]?.gain||0),0)/Math.max(winIds.length,1));
+    const avgLoss = Math.round(losIds.reduce((s,id)=>s+(playerDeltas[id]?.loss||0),0)/Math.max(losIds.length,1));
+
+    return { ...g, ptsGain: avgGain, ptsLoss: avgLoss, mmrGain: avgGain, mmrLoss: avgLoss, perPlayerGains, perPlayerLosses };
+  });
+
+  return { players, games: updatedGames };
+}
+
+// ── CORE DELTA FORMULA (PER-PLAYER) ──────────────────────────
+// Each player receives their own individual gain/loss based on:
+//   1. SCORE DOMINANCE  — scoreMult shared (same game for everyone)
+//   2. MMR SURPRISE     — each player's MMR vs average opponent MMR
+//   3. RANK GAP         — each player's rank vs average opponent rank
+//   4. STREAK           — each player's own streak
+//
+// This means two players on the same winning team can receive
+// different gains if one is heavily favoured and the other is an underdog.
+//
+function calcPlayerDelta({ winnerScore, loserScore, playerMMR, playerRank,
+                           playerStreakPower, oppAvgMMR, oppAvgRank, isWinner }) {
+  // 1. Score dominance
+  const scoreDiff  = winnerScore - loserScore;
+  const scoreRatio = scoreDiff / Math.max(winnerScore, 1);
+  const scoreMult  = 1 + CONFIG.SCORE_WEIGHT * Math.pow(scoreRatio, CONFIG.SCORE_EXP);
+
+  // 2. MMR surprise
+  const mmrGap   = playerMMR - oppAvgMMR;
+  const eloScale = 2 / (1 + Math.exp(mmrGap / CONFIG.ELO_DIVISOR));
+
+  // 3. Rank gap
+  const rankDiff  = isWinner
+    ? (oppAvgRank - playerRank)
+    : (playerRank - oppAvgRank);
+  const rankScale = 1 + CONFIG.RANK_WEIGHT * Math.tanh(rankDiff / CONFIG.RANK_DIVISOR);
+
+  // 4. Quality-weighted streak (capped, convergence-safe)
+  const mult = streakMult(playerStreakPower, isWinner);
+
+  // Quality score this game = how "hard" was the opponent
+  const qualityScore = eloScale * rankScale;
+
+  if (isWinner) {
+    const gain = Math.max(2, Math.round(CONFIG.BASE_GAIN * scoreMult * eloScale * rankScale * mult));
+    return { gain, loss: 0, scoreMult, eloScale, rankScale, streakMultVal: mult, qualityScore };
+  } else {
+    // Loss is harsher for:
+    //   - high scoreMult (blowout defeat)
+    //   - low eloScale  (expected win that didn't happen — higher MMR player lost)
+    //   - high rankScale (higher-ranked player lost to lower-ranked)
+    //   - active loss streak (streakMult > 1)
+    // LOSS_HARSHNESS nudges the base up slightly without doubling anything
+    const lossRankPunish = (2 - rankScale); // > 1 when higher-ranked lost to lower
+    const loss = Math.max(1, Math.round(
+      CONFIG.BASE_LOSS * scoreMult * (2 - eloScale) * lossRankPunish * mult * CONFIG.LOSS_HARSHNESS
+    ));
+    return { gain: 0, loss, scoreMult, eloScale, rankScale, streakMultVal: mult, qualityScore };
+  }
+}
+
+// Legacy team-level wrapper used by GameDetail display (summary only)
+function calcDelta({ winnerScore, loserScore, winnerAvgMMR, loserAvgMMR,
+                     winnerAvgStreakPower, loserAvgStreakPower, winnerAvgRank, loserAvgRank }) {
+  const scoreDiff  = winnerScore - loserScore;
+  const scoreRatio = scoreDiff / Math.max(winnerScore, 1);
+  const scoreMult  = 1 + CONFIG.SCORE_WEIGHT * Math.pow(scoreRatio, CONFIG.SCORE_EXP);
+  const mmrGap     = winnerAvgMMR - loserAvgMMR;
+  const eloScale   = 2 / (1 + Math.exp(mmrGap / CONFIG.ELO_DIVISOR));
+  const rankDiff   = (loserAvgRank ?? 0) - (winnerAvgRank ?? 0);
+  const rankScale  = 1 + CONFIG.RANK_WEIGHT * Math.tanh(rankDiff / CONFIG.RANK_DIVISOR);
+  const winMult    = streakMult(winnerAvgStreakPower ?? 0, true);
+  const lossMult   = streakMult(loserAvgStreakPower ?? 0, false);
+  const gain = Math.max(2, Math.round(CONFIG.BASE_GAIN * scoreMult * eloScale * rankScale * winMult));
+  const loss = Math.max(1, Math.round(CONFIG.BASE_LOSS * scoreMult * (2 - eloScale) * (2 - rankScale) * lossMult * CONFIG.LOSS_HARSHNESS));
+  return { gain, loss, eloScale, rankScale, winMult, lossMult, scoreMult };
+}
+
+function getMonthKey() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+// ============================================================
+// DATA SHAPES
+// Player: { id, name, mmr, pts, wins, losses, streak,
+//           championships: [{month, year, partner}] }
+// Game:   { id, sideA:[pid,pid], sideB:[pid,pid],
+//           winner:"A"|"B", scoreA, scoreB,
+//           ptsGain, ptsLoss, mmrGain, mmrLoss,
+//           eloScale, ptsFactor, winMult, lossMult,
+//           date, monthKey }
+// State:  { players, games, monthlyPlacements, finals, rules }
+// ============================================================
+const MK = getMonthKey();
+const SEED = {
+  players: [
+    { id:"p1", name:"Alex",   mmr:1060, pts:74,  wins:9,  losses:3, streak: 4, championships:[] },
+    { id:"p2", name:"Jordan", mmr:1038, pts:55,  wins:8,  losses:4, streak: 3, championships:[] },
+    { id:"p3", name:"Sam",    mmr:1018, pts:38,  wins:6,  losses:5, streak: 1, championships:[] },
+    { id:"p4", name:"Riley",  mmr: 992, pts:18,  wins:4,  losses:6, streak:-2, championships:[] },
+    { id:"p5", name:"Casey",  mmr: 981, pts:10,  wins:3,  losses:7, streak:-3, championships:[] },
+    { id:"p6", name:"Morgan", mmr: 970, pts: 4,  wins:2,  losses:8, streak:-4, championships:[] },
+  ],
+  games: [
+    { id:"g1", sideA:["p1","p2"], sideB:["p3","p4"], winner:"A", scoreA:10, scoreB:6,  ptsGain:14, ptsLoss:6,  mmrGain:14, mmrLoss:6,  eloScale:.52, ptsFactor:.55, winMult:1.7, lossMult:1.1, date:new Date(Date.now()-86400000*3).toISOString(), monthKey:MK },
+    { id:"g2", sideA:["p3","p5"], sideB:["p4","p6"], winner:"A", scoreA:10, scoreB:7,  ptsGain:12, ptsLoss:5,  mmrGain:12, mmrLoss:5,  eloScale:.50, ptsFactor:.50, winMult:1.2, lossMult:1.0, date:new Date(Date.now()-86400000*2).toISOString(), monthKey:MK },
+    { id:"g3", sideA:["p2","p4"], sideB:["p1","p3"], winner:"A", scoreA:10, scoreB:8,  ptsGain:13, ptsLoss:5,  mmrGain:13, mmrLoss:5,  eloScale:.55, ptsFactor:.48, winMult:1.4, lossMult:1.3, date:new Date(Date.now()-86400000).toISOString(),   monthKey:MK },
+  ],
+  monthlyPlacements: {},
+  finals: {},
+  rules: DEFAULT_RULES,
+};
+
+// ============================================================
+// SUPABASE FUNCTIONS — REPLACED FROM localStorage
+// ============================================================
+async function loadState() {
+  try {
+    const { data, error } = await supabase
+      .from('app_state')
+      .select('state')
+      .eq('id', 1)
+      .single();
+
+    if (error) {
+      console.warn('Failed to load from Supabase, using seed:', error);
+      return SEED;
+    }
+
+    const s = data?.state || {};
+    if (!s.players || s.players.length === 0) return SEED;
+    const ns = normaliseState(s);
+    // If DB has no _v yet, treat as 0 (upsert path will seed it)
+    if (typeof s._v !== 'number') ns._v = 0;
+    return ns;
+  } catch (err) {
+    console.error('Supabase load error:', err);
+    return SEED;
+  }
+}
+
+function normaliseState(s) {
+  return {
+    players: s.players || [],
+    games: s.games || [],
+    monthlyPlacements: s.monthlyPlacements || {},
+    finals: s.finals || {},
+    rules: s.rules || DEFAULT_RULES,
+    finalsDate: s.finalsDate || null,
+    _v: typeof s._v === 'number' ? s._v : 0,
+  };
+}
+
+// Duplicate game check: same players + same score on same day
+function isDuplicateGame(candidate, existing) {
+  const day = candidate.date.slice(0,10);
+  const cSet = new Set([...candidate.sideA, ...candidate.sideB]);
+  return existing.some(g => {
+    if (g.date.slice(0,10) !== day) return false;
+    const gSet = new Set([...g.sideA, ...g.sideB]);
+    if (gSet.size !== cSet.size) return false;
+    for (const id of cSet) if (!gSet.has(id)) return false;
+    return g.scoreA === candidate.scoreA && g.scoreB === candidate.scoreB;
+  });
+}
+
+// ── SUPABASE SETUP REQUIRED ─────────────────────────────────
+// Run this SQL once in the Supabase SQL editor to enable true version-locked saves:
+//
+//   create or replace function update_state_versioned(expected_v int, new_state jsonb)
+//   returns boolean language plpgsql as $$
+//   declare updated int;
+//   begin
+//     update app_state set state = new_state, updated_at = now()
+//     where id = 1 and (state->>'_v')::int = expected_v;
+//     get diagnostics updated = row_count;
+//     return updated > 0;
+//   end;
+//   $$;
+//
+// Without this, saves fall back to unconditional upsert (still works, less safe).
+// ── SAVE QUEUE: true version-locked writes + exponential retry ─
+// _pendingVersion tracks what _v we're about to write so the
+// subscription can ignore our own echo without a timer window.
+const _sq = {
+  state: null, version: 0, pendingVersion: null,
+  retries: 0, timer: null, onConflict: null, onSuccess: null,
+};
+
+function saveState(s, onConflict, onSuccess) {
+  clearTimeout(_sq.timer);
+  _sq.state = s;
+  _sq.version = typeof s._v === 'number' ? s._v : 0;
+  _sq.retries = 0;
+  _sq.onConflict = onConflict || null;
+  _sq.onSuccess = onSuccess || null;
+  _sq.timer = setTimeout(_flushSave, 500);
+}
+
+async function _flushSave() {
+  if (!_sq.state) return;
+  const { state: s, version } = _sq;
+  const nextV = version + 1;
+  _sq.pendingVersion = nextV;
+
+  const doUpsert = async () => {
+    // Unconditional upsert — used when RPC unavailable or _v not yet seeded
+    const { error } = await supabase
+      .from('app_state')
+      .upsert({ id: 1, state: slimState({ ...s, _v: nextV }), updated_at: new Date().toISOString() });
+    if (error) throw new Error(error.message);
+    const cb = _sq.onSuccess;
+    _sq.state = null; _sq.retries = 0; _sq.onSuccess = null; _sq.pendingVersion = null;
+    if (cb) cb(nextV);
+  };
+
+  try {
+    const { data, error } = await supabase.rpc('update_state_versioned', {
+      expected_v: version,
+      new_state: slimState({ ...s, _v: nextV }),
+    });
+
+    if (!error && data === true) {
+      // Clean success
+      console.log('✓ saved _v' + nextV);
+      const cb = _sq.onSuccess;
+      _sq.state = null; _sq.retries = 0; _sq.onSuccess = null; _sq.pendingVersion = null;
+      if (cb) cb(nextV);
+      return;
+    }
+
+    if (!error && data === false) {
+      // Definitive version mismatch — fetch remote to check
+      // It's possible _v was null in DB (not seeded); if so, fall back to upsert
+      const { data: cur } = await supabase.from('app_state').select('state').eq('id',1).single();
+      const remoteV = cur?.state?._v;
+      if (remoteV == null) {
+        // _v not seeded in DB yet — just upsert, no real conflict
+        console.warn('DB _v not seeded, falling back to upsert');
+        await doUpsert();
+        return;
+      }
+      if (remoteV === nextV) {
+        // We actually succeeded (
