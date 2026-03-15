@@ -32,16 +32,12 @@ const CONFIG = {
   // ── STREAK SYSTEM (quality-weighted, convergence-safe) ────
   // Streak power accumulates quality (eloScale * rankScale) per win,
   // resets to 0 on loss. Prevents unclosable gaps from weak-opponent farming.
-  // Streak scaling — calibrated so streak 2 shows multiplier, streak 1 stays clean.
-  // Based on Glicko-2 / LoL LP streak principles: felt from game 2, not game 4.
-  // Win and loss use same scale but different caps — losses slightly less punishing
-  // to allow recovery (asymmetric by design, prevents rank lock).
-  STREAK_POWER_SCALE: 2.5,      // tanh half-point — lower = faster ramp (streak 2 shows ×1.27)
-  STREAK_WIN_MAX: 0.40,         // max win bonus  (+40% = ×1.40 cap)
-  STREAK_LOSS_MAX: 0.32,        // max loss amplifier (+32% = ×1.32 cap, slightly lower for recovery)
-  STREAK_QUALITY_DECAY: 0.85,   // decay rate if opponent easy (eloScale < threshold)
-  STREAK_DECAY_THRESHOLD: 1.05, // below this eloScale = easy opponent
-  STREAK_WINDOW: 8,             // absolute cap on accumulated power (8 games)
+  STREAK_POWER_SCALE: 4.0,      // tanh half-point (higher = slower ramp)
+  STREAK_WIN_MAX: 0.45,         // max bonus for win streak (+45% = 1.45x cap)
+  STREAK_LOSS_MAX: 0.35,        // max amplifier for loss streak (1.35x cap)
+  STREAK_QUALITY_DECAY: 0.88,   // per-game decay if opponent eloScale < 1.1
+  STREAK_DECAY_THRESHOLD: 1.05, // eloScale below this = "easy" opponent
+  STREAK_WINDOW: 8,             // rolling quality window (games)
 
   // Loss harshness scalar — multiplied into every loss, >1 = harsher
   // 1.15 means losses are ~15% larger across the board after other factors
@@ -150,7 +146,7 @@ function computePlacements(games) {
 function replayGames(basePlayers, games) {
   let players = basePlayers.map(p => ({
     ...p, mmr: CONFIG.STARTING_MMR, pts: CONFIG.STARTING_PTS,
-    wins: 0, losses: 0, streak: 0, streakPower: 0, lossStreakPower: 0,
+    wins: 0, losses: 0, streak: 0, streakPower: 0,
   }));
   const sorted = [...games].sort((a, b) => new Date(a.date) - new Date(b.date));
   const updatedGames = sorted.map(g => {
@@ -175,10 +171,9 @@ function replayGames(basePlayers, games) {
       const isWinner = winIds.includes(pid);
       const d = calcPlayerDelta({
         winnerScore, loserScore,
-        playerMMR:              p.mmr,
-        playerRank:             rankOf(pid),
-        playerStreakPower:      p.streakPower || 0,
-        playerLossStreakPower:  p.lossStreakPower || 0,
+        playerMMR:          p.mmr,
+        playerRank:         rankOf(pid),
+        playerStreakPower:  p.streakPower || 0,
         oppAvgMMR:    isWinner ? oppLosMMR  : oppWinMMR,
         oppAvgRank:   isWinner ? oppLosRank : oppWinRank,
         isWinner,
@@ -193,11 +188,10 @@ function replayGames(basePlayers, games) {
       if (isWin) {
         const ns = (p.streak||0) >= 0 ? (p.streak||0)+1 : 1;
         const newPower = updateStreakPower(p.streakPower||0, true, d.qualityScore||1);
-        return { ...p, mmr: p.mmr+d.gain, pts: (p.pts||0)+d.gain, wins: p.wins+1, streak: ns, streakPower: newPower, lossStreakPower: 0 };
+        return { ...p, mmr: p.mmr+d.gain, pts: (p.pts||0)+d.gain, wins: p.wins+1, streak: ns, streakPower: newPower };
       }
       const ns = (p.streak||0) <= 0 ? (p.streak||0)-1 : -1;
-      const newLossPower = updateStreakPower(p.lossStreakPower||0, true, d.qualityScore||1);
-      return { ...p, mmr: Math.max(0,p.mmr-d.loss), pts: Math.max(0,(p.pts||0)-d.loss), losses: p.losses+1, streak: ns, streakPower: 0, lossStreakPower: newLossPower };
+      return { ...p, mmr: Math.max(0,p.mmr-d.loss), pts: Math.max(0,(p.pts||0)-d.loss), losses: p.losses+1, streak: ns, streakPower: 0 };
     });
 
     // Flat per-player gain/loss maps — persisted, not stripped by slimState
@@ -227,7 +221,7 @@ function replayGames(basePlayers, games) {
 // different gains if one is heavily favoured and the other is an underdog.
 //
 function calcPlayerDelta({ winnerScore, loserScore, playerMMR, playerRank,
-                           playerStreakPower, playerLossStreakPower, oppAvgMMR, oppAvgRank, isWinner }) {
+                           playerStreakPower, oppAvgMMR, oppAvgRank, isWinner }) {
   // 1. Score dominance
   const scoreDiff  = winnerScore - loserScore;
   const scoreRatio = scoreDiff / Math.max(winnerScore, 1);
@@ -243,10 +237,8 @@ function calcPlayerDelta({ winnerScore, loserScore, playerMMR, playerRank,
     : (playerRank - oppAvgRank);
   const rankScale = 1 + CONFIG.RANK_WEIGHT * Math.tanh(rankDiff / CONFIG.RANK_DIVISOR);
 
-  // 4. Quality-weighted streak — use win power for winners, loss power for losers
-  const mult = isWinner
-    ? streakMult(playerStreakPower || 0, true)
-    : streakMult(playerLossStreakPower || 0, false);
+  // 4. Quality-weighted streak (capped, convergence-safe)
+  const mult = streakMult(playerStreakPower, isWinner);
 
   // Quality score this game = how "hard" was the opponent
   const qualityScore = eloScale * rankScale;
@@ -352,7 +344,7 @@ async function loadState() {
 
 function normaliseState(s) {
   return {
-    players: (s.players || []).map(p => ({ streakPower: 0, lossStreakPower: 0, ...p })),
+    players: s.players || [],
     games: s.games || [],
     monthlyPlacements: s.monthlyPlacements || {},
     finals: s.finals || {},
@@ -789,7 +781,19 @@ const CSS = `
   @keyframes cdGlow{from{text-shadow:0 0 8px rgba(94,201,138,.2)}to{text-shadow:0 0 20px rgba(94,201,138,.5)}}
 
   /* ── MOBILE ──────────────────────────────────────────────── */
+  /* ── MOBILE LEADERBOARD CARDS ───────────────────────────── */
+  .lb-cards{display:none;flex-direction:column;gap:0}
+  .lb-card{display:flex;align-items:center;gap:10px;padding:11px 16px;border-bottom:1px solid var(--b1);cursor:pointer;transition:background .12s}
+  .lb-card:hover{background:rgba(255,255,255,.03)}
+  .lb-card:last-child{border-bottom:none}
+  .lb-card-rank{font-family:var(--disp);font-size:16px;font-weight:700;min-width:36px;color:var(--dim)}
+  .lb-card-name{flex:1;font-weight:600;font-size:14px}
+  .lb-card-pts{font-family:var(--disp);font-size:18px;font-weight:700;color:var(--amber);min-width:40px;text-align:right}
+  .lb-card-meta{font-size:11px;color:var(--dimmer);margin-top:1px}
+
   @media(max-width:640px){
+    .tbl-wrap{display:none}
+    .lb-cards{display:flex}
     .topbar{padding:0 14px;gap:8px;height:52px}
     .brand{font-size:14px;letter-spacing:1px}
     .brand span{display:none}
@@ -850,16 +854,15 @@ function fmtMonth(key) {
 }
 function pName(id, players) { return players.find(p => p.id === id)?.name || "?"; }
 
-function StreakBadge({ streak, streakPower=0, lossStreakPower=0, showMult=false }) {
+function StreakBadge({ streak, streakPower=0, showMult=false }) {
   const s = streak || 0;
   if (s === 0) return <span className="text-dd">—</span>;
   const m = s > 0
     ? streakMult(streakPower, true)
-    : streakMult(lossStreakPower, false);
-  const showM = showMult && m >= 1.15;
+    : streakMult(Math.abs(s) * CONFIG.STREAK_POWER_SCALE * 0.4, false);
   return s > 0
-    ? <span className="text-g bold">▲{s}{showM && <span className="xs" style={{opacity:.75,marginLeft:2}}> ×{m.toFixed(2)}</span>}</span>
-    : <span className="text-r bold">▼{Math.abs(s)}{showM && <span className="xs" style={{opacity:.75,marginLeft:2}}> ×{m.toFixed(2)}</span>}</span>;
+    ? <span className="text-g bold">▲{s}{showMult && <span className="xs" style={{opacity:.7}}> ×{m.toFixed(2)}</span>}</span>
+    : <span className="text-r bold">▼{Math.abs(s)}{showMult && <span className="xs" style={{opacity:.7}}> ×{m.toFixed(2)}</span>}</span>;
 }
 function Pips({ used }) {
   return <>{Array.from({length:CONFIG.MAX_PLACEMENTS_PER_MONTH}).map((_,i)=>
@@ -987,7 +990,7 @@ function PlayerProfile({ player, state, onClose, isAdmin, onEdit }) {
         </div>
         <div className="stat-box">
           <div className="stat-lbl">Streak</div>
-          <div className="stat-val" style={{fontSize:20}}><StreakBadge streak={player.streak} streakPower={player.streakPower||0} lossStreakPower={player.lossStreakPower||0} showMult /></div>
+          <div className="stat-val" style={{fontSize:20}}><StreakBadge streak={player.streak} streakPower={player.streakPower||0} showMult /></div>
         </div>
       </div>
 
@@ -1323,6 +1326,67 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
   );
 }
 
+// Last N game results for a player — oldest first
+function lastNResults(pid, games, n=5) {
+  return [...games]
+    .filter(g => g.sideA.includes(pid) || g.sideB.includes(pid))
+    .sort((a,b) => new Date(a.date)-new Date(b.date))
+    .slice(-n)
+    .map(g => {
+      const onA = g.sideA.includes(pid);
+      return (onA && g.winner==="A") || (!onA && g.winner==="B") ? "W" : "L";
+    });
+}
+
+function Sparkline({ pid, games }) {
+  const results = lastNResults(pid, games, 5);
+  if (!results.length) return null;
+  return (
+    <div style={{display:"flex",gap:2,alignItems:"center"}}>
+      {results.map((r,i) => (
+        <div key={i} style={{
+          width:5, height:5, borderRadius:"50%",
+          background: r==="W" ? "var(--green)" : "var(--red)",
+          opacity: 0.5 + (i/results.length)*0.5,
+        }}/>
+      ))}
+    </div>
+  );
+}
+
+// ============================================================
+// LIVE TICKER
+// ============================================================
+function LiveTicker({ games, players }) {
+  const [visible, setVisible] = useState(true);
+  const latest = [...(games||[])].sort((a,b)=>new Date(b.date)-new Date(a.date))[0];
+  if (!latest || !visible) return null;
+  const age = Date.now() - new Date(latest.date).getTime();
+  if (age > 5 * 60 * 1000) return null; // only show within 5 mins
+  const wIds = latest.winner==="A"?latest.sideA:latest.sideB;
+  const lIds = latest.winner==="A"?latest.sideB:latest.sideA;
+  const wNames = wIds.map(id=>pName(id,players)).join(" & ");
+  const lNames = lIds.map(id=>pName(id,players)).join(" & ");
+  const score = `${latest.scoreA}–${latest.scoreB}`;
+  return (
+    <div style={{
+      background:"radial-gradient(ellipse 80% 300% at 0% 50%,rgba(94,201,138,.12),var(--s1))",
+      border:"1px solid var(--amber-d)",borderRadius:10,
+      padding:"8px 16px",display:"flex",alignItems:"center",gap:10,fontSize:12,
+      animation:"slideUp .3s ease"
+    }}>
+      <span className="tag tag-w" style={{flexShrink:0}}>LIVE</span>
+      <span style={{flex:1}}>
+        <span className="text-g bold">{wNames}</span>
+        <span className="text-dd"> beat </span>
+        <span>{lNames}</span>
+        <span className="text-am bold" style={{marginLeft:8,fontFamily:"var(--disp)"}}>{score}</span>
+      </span>
+      <button onClick={()=>setVisible(false)} style={{background:"none",border:"none",color:"var(--dimmer)",cursor:"pointer",fontSize:14,padding:"0 4px"}}>×</button>
+    </div>
+  );
+}
+
 // ============================================================
 // LEADERBOARD VIEW
 // ============================================================
@@ -1377,6 +1441,7 @@ function LeaderboardView({ state, setState, onSelectPlayer, rtConnected, isAdmin
   return (
     <>
     <div className="stack page-fade">
+      <LiveTicker games={state.games} players={state.players}/>
       {isAdmin && (
         <div style={{display:"flex",justifyContent:"flex-end"}}>
           <button className="btn btn-g btn-sm" style={{gap:6}} onClick={()=>setShowRecalcConfirm(true)}>
@@ -1389,6 +1454,29 @@ function LeaderboardView({ state, setState, onSelectPlayer, rtConnected, isAdmin
         <div className="stat-box"><div className="stat-lbl">Games This Month</div><div className="stat-val">{monthGames.length}</div></div>
         <div className="stat-box"><div className="stat-lbl">Top Points</div><div className="stat-val am">{ranked[0]?.pts??0}</div></div>
       </div>
+      {ranked.filter(p=>(state.monthlyPlacements[monthKey]||{})[p.id]>=CONFIG.MAX_PLACEMENTS_PER_MONTH).slice(0,4).length >= 2 && (
+        <div className="card">
+          <div className="card-header">
+            <span className="card-title">Finals Contention</span>
+            <span className="tag tag-a">Top 4</span>
+          </div>
+          <div style={{padding:"10px 16px",display:"flex",gap:8,flexWrap:"wrap"}}>
+            {ranked.filter(p=>(state.monthlyPlacements[monthKey]||{})[p.id]>=CONFIG.MAX_PLACEMENTS_PER_MONTH).slice(0,4).map((p,i)=>(
+              <div key={p.id} style={{
+                flex:"1 1 120px",padding:"8px 12px",borderRadius:8,
+                background: i===0?"radial-gradient(ellipse 120% 120% at 100% 100%,rgba(232,184,74,.12),var(--s2))":
+                            i===1?"radial-gradient(ellipse 120% 120% at 100% 100%,rgba(192,200,196,.08),var(--s2))":
+                            "var(--s2)",
+                border:`1px solid ${i===0?"rgba(232,184,74,.3)":i===1?"rgba(192,200,196,.2)":"var(--b2)"}`,
+              }}>
+                <div className="xs text-dd" style={{marginBottom:3}}>#{i+1}</div>
+                <div style={{fontWeight:600,fontSize:13}}>{p.name}</div>
+                <div className="xs text-am">{p.pts||0} pts</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       <div className="card">
         <div className="card-header">
           <span className="card-title">Rankings — {fmtMonth(monthKey)}</span>
@@ -1423,11 +1511,14 @@ function LeaderboardView({ state, setState, onSelectPlayer, rtConnected, isAdmin
                 <tr key={p.id} className={`lb-row ${anim}`} style={{animationDelay:`${i*28}ms`,opacity:isPlaced?1:0.6}} onClick={()=>onSelectPlayer(p)}>
                   <td><span className={`rk ${isPlaced?(rankNum===1?"r1":rankNum===2?"r2":rankNum===3?"r3":""):""}`}
                     style={!isPlaced?{color:"var(--dimmer)"}:{}}>
-                    {isPlaced?(rankNum===1?"①":rankNum===2?"②":rankNum===3?"③":`#${rankNum}`):"?"}
+                    {isPlaced?(rankNum===1?"①":rankNum===2?"②":rankNum===3?"③":`#${rankNum}`):<span style={{fontSize:9,letterSpacing:.5,fontFamily:"var(--sans)",fontWeight:500}}>UNRANKED</span>}
                   </span></td>
                   <td>
-                    <span className="bold">{p.name}</span>
-                    {(p.championships||[]).length>0&&<span style={{marginLeft:6,fontSize:13}}>🏆</span>}
+                    <div style={{display:"flex",alignItems:"center",gap:8}}>
+                      <span className="bold">{p.name}</span>
+                      {(p.championships||[]).length>0&&<span style={{fontSize:13}}>🏆</span>}
+                      <Sparkline pid={p.id} games={state.games}/>
+                    </div>
                   </td>
                   <td>
                     {isPlaced
@@ -1435,13 +1526,13 @@ function LeaderboardView({ state, setState, onSelectPlayer, rtConnected, isAdmin
                           {anim==="rank-up"&&<span className="xs text-g" style={{marginLeft:5}}>▲</span>}
                           {anim==="rank-down"&&<span className="xs text-r" style={{marginLeft:5}}>▼</span>}
                         </>
-                      : <span className="bold text-dd" style={{fontSize:14}} title="Complete placements to reveal ranking">?</span>
+                      : <span className="text-dd" style={{fontSize:10,fontFamily:"var(--sans)",fontWeight:500,letterSpacing:.3}}>—</span>
                     }
                   </td>
                   <td><span className="text-g bold">{p.wins}</span></td>
                   <td><span className="text-r bold">{p.losses}</span></td>
                   <td><span className={pct>=50?"text-g":"text-d"}>{total?`${pct}%`:"—"}</span></td>
-                  <td><StreakBadge streak={p.streak} streakPower={p.streakPower||0} lossStreakPower={p.lossStreakPower||0} showMult /></td>
+                  <td><StreakBadge streak={p.streak} streakPower={p.streakPower||0} showMult /></td>
                   <td><PosBadge pos={p.position}/></td>
                   <td>
                     {isPlaced
@@ -1457,6 +1548,42 @@ function LeaderboardView({ state, setState, onSelectPlayer, rtConnected, isAdmin
             </td></tr>}
           </tbody>
         </table>
+        </div>
+        {/* Mobile card layout */}
+        <div className="lb-cards">
+          {(()=>{ let placedCount=0; return ranked.map((p,i)=>{
+            const placements=(state.monthlyPlacements[monthKey]||{})[p.id]||0;
+            const isPlaced=placements>=CONFIG.MAX_PLACEMENTS_PER_MONTH;
+            const rankNum=isPlaced?++placedCount:null;
+            const total=p.wins+p.losses;
+            const pct=total?Math.round(p.wins/total*100):0;
+            return (
+              <div key={p.id} className="lb-card" onClick={()=>onSelectPlayer(p)}>
+                <div className="lb-card-rank">
+                  {isPlaced
+                    ? <span className={rankNum===1?"text-am":rankNum===2?"":rankNum===3?"":""} style={{color:rankNum===1?"var(--gold)":rankNum===2?"#c0c8c4":rankNum===3?"#c8864a":"var(--dim)"}}>
+                        #{rankNum}
+                      </span>
+                    : <span style={{fontSize:9,color:"var(--dimmer)",fontFamily:"var(--sans)"}}>—</span>
+                  }
+                </div>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{display:"flex",alignItems:"center",gap:6}}>
+                    <span className="lb-card-name">{p.name}</span>
+                    {(p.championships||[]).length>0&&<span style={{fontSize:12}}>🏆</span>}
+                    <Sparkline pid={p.id} games={state.games}/>
+                  </div>
+                  <div className="lb-card-meta">
+                    <span className="text-g">{p.wins}W</span>
+                    {" "}<span className="text-r">{p.losses}L</span>
+                    {" · "}{total?`${pct}%`:"—"}
+                    {" · "}<StreakBadge streak={p.streak} streakPower={p.streakPower||0} lossStreakPower={p.lossStreakPower||0} showMult />
+                  </div>
+                </div>
+                <div className="lb-card-pts">{isPlaced?p.pts||0:"—"}</div>
+              </div>
+            );
+          });})()}
         </div>
       </div>
     </div>
@@ -1481,6 +1608,7 @@ function HistoryView({ state, setState, isAdmin, showToast }) {
   const [dateTo, setDateTo] = useState("");
   const [showFilters, setShowFilters] = useState(false);
   const [selectedGameId, setSelectedGameId] = useState(null);
+  const [visibleDays, setVisibleDays] = useState(5);
 
   const allGames = [...(state.games ?? [])].sort((a, b) => new Date(b.date) - new Date(a.date));
 
@@ -1594,7 +1722,7 @@ function HistoryView({ state, setState, isAdmin, showToast }) {
           </div>
         )}
         {groups.length === 0 && <div style={{padding:32,textAlign:"center",color:"var(--dimmer)",fontSize:12}}>No games found</div>}
-        {groups.map(({ day, games }) => (
+        {groups.slice(0, visibleDays).map(({ day, games }) => (
           <div key={day}>
             <div style={{padding:"7px 18px",background:"var(--s2)",borderBottom:"1px solid var(--b1)",fontSize:10,letterSpacing:1.5,textTransform:"uppercase",color:"var(--dimmer)",fontWeight:600}}>
               {day} · {games.length} game{games.length!==1?"s":""}
@@ -1602,6 +1730,13 @@ function HistoryView({ state, setState, isAdmin, showToast }) {
             {games.map(g => <GameRow key={g.id} g={g}/>)}
           </div>
         ))}
+        {groups.length > visibleDays && (
+          <div style={{padding:"12px 18px",textAlign:"center",borderTop:"1px solid var(--b1)"}}>
+            <button className="btn btn-g btn-sm" onClick={()=>setVisibleDays(v=>v+5)}>
+              Load more — {groups.length - visibleDays} day{groups.length-visibleDays!==1?"s":""} remaining
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1855,6 +1990,149 @@ function OnboardView({ state, setState, showToast }) {
 // ADMIN: LOG GAMES
 // ============================================================
 // ============================================================
+// STATS VIEW — per-player deep stats + H2H + team balancer
+// ============================================================
+function StatsView({ state, onSelectPlayer }) {
+  const [selectedId, setSelectedId] = useState(null);
+  const [h2hId, setH2hId] = useState(null);
+  const [search, setSearch] = useState("");
+
+  const sorted = [...state.players].sort((a,b)=>(b.pts||0)-(a.pts||0));
+  const selected = state.players.find(p=>p.id===selectedId);
+  const h2hPlayer = state.players.find(p=>p.id===h2hId);
+
+  // Head to head record between two players
+  function getH2H(pidA, pidB) {
+    const shared = state.games.filter(g =>
+      (g.sideA.includes(pidA)||g.sideB.includes(pidA)) &&
+      (g.sideA.includes(pidB)||g.sideB.includes(pidB))
+    );
+    let winsA=0, winsB=0;
+    for (const g of shared) {
+      const aOnA = g.sideA.includes(pidA);
+      const won = (aOnA&&g.winner==="A")||(!aOnA&&g.winner==="B");
+      if (won) winsA++; else winsB++;
+    }
+    return { games: shared.length, winsA, winsB };
+  }
+
+  // Player stats
+  function getStats(p) {
+    const games = state.games.filter(g=>g.sideA.includes(p.id)||g.sideB.includes(p.id));
+    const wins = games.filter(g=>{const onA=g.sideA.includes(p.id);return(onA&&g.winner==="A")||(!onA&&g.winner==="B");});
+    const losses = games.filter(g=>{const onA=g.sideA.includes(p.id);return(onA&&g.winner==="B")||(!onA&&g.winner==="A");});
+    const avgGain = wins.length ? Math.round(wins.reduce((s,g)=>{
+      const d=g.perPlayerGains?.[p.id]??g.ptsGain; return s+d;
+    },0)/wins.length) : 0;
+    const avgLoss = losses.length ? Math.round(losses.reduce((s,g)=>{
+      const d=g.perPlayerLosses?.[p.id]??g.ptsLoss; return s+d;
+    },0)/losses.length) : 0;
+    const biggestWin = wins.reduce((best,g)=>{
+      const sc=Math.max(g.scoreA,g.scoreB)-Math.min(g.scoreA,g.scoreB);
+      return sc>best?sc:best;
+    },0);
+    const last5 = lastNResults(p.id, state.games, 5);
+    return { avgGain, avgLoss, biggestWin, last5, totalGames: games.length };
+  }
+
+  return (
+    <div className="stack page-fade">
+      <div className="grid-2">
+        {/* Player selector */}
+        <div className="card">
+          <div className="card-header"><span className="card-title">Player Stats</span></div>
+          <div style={{padding:14}}>
+            <input className="inp" placeholder="Search…" value={search}
+              onChange={e=>setSearch(e.target.value)} style={{marginBottom:10,fontSize:12}}/>
+            <div style={{display:"flex",flexDirection:"column",gap:3,maxHeight:220,overflowY:"auto"}}>
+              {sorted.filter(p=>!search||p.name.toLowerCase().includes(search.toLowerCase())).map(p=>(
+                <div key={p.id} className={`player-chip ${selectedId===p.id?"sel-a":""}`}
+                  onClick={()=>{setSelectedId(p.id);setH2hId(null);}}>
+                  <span style={{fontWeight:600}}>{p.name}</span>
+                  <span className="xs text-dd">{p.pts||0}pts · {p.wins}W {p.losses}L</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Stats panel */}
+        {selected ? (() => {
+          const st = getStats(selected);
+          return (
+            <div className="card">
+              <div className="card-header">
+                <span className="card-title">{selected.name}</span>
+                <button className="btn btn-g btn-sm" onClick={()=>onSelectPlayer(selected)}>Profile</button>
+              </div>
+              <div style={{padding:14,display:"flex",flexDirection:"column",gap:10}}>
+                <div className="grid-3">
+                  <div className="stat-box" style={{padding:"10px 12px"}}>
+                    <div className="stat-lbl">Avg gain</div>
+                    <div className="stat-val am" style={{fontSize:22}}>+{st.avgGain}</div>
+                  </div>
+                  <div className="stat-box" style={{padding:"10px 12px"}}>
+                    <div className="stat-lbl">Avg loss</div>
+                    <div className="stat-val" style={{fontSize:22,color:"var(--red)"}}>−{st.avgLoss}</div>
+                  </div>
+                  <div className="stat-box" style={{padding:"10px 12px"}}>
+                    <div className="stat-lbl">Best margin</div>
+                    <div className="stat-val" style={{fontSize:22}}>{st.biggestWin}</div>
+                  </div>
+                </div>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <span className="xs text-dd">Last 5:</span>
+                  {st.last5.map((r,i)=>(
+                    <span key={i} style={{
+                      padding:"2px 7px",borderRadius:4,fontSize:11,fontWeight:700,
+                      background:r==="W"?"rgba(94,201,138,.15)":"rgba(240,112,112,.12)",
+                      color:r==="W"?"var(--green)":"var(--red)"
+                    }}>{r}</span>
+                  ))}
+                  {!st.last5.length && <span className="xs text-dd">No games</span>}
+                </div>
+                {/* H2H selector */}
+                <div className="sec" style={{marginBottom:4}}>Head to Head</div>
+                <div style={{display:"flex",flexDirection:"column",gap:3,maxHeight:140,overflowY:"auto"}}>
+                  {sorted.filter(p=>p.id!==selected.id).map(p=>{
+                    const h = getH2H(selected.id, p.id);
+                    if (!h.games) return null;
+                    return (
+                      <div key={p.id} style={{
+                        display:"flex",alignItems:"center",gap:8,padding:"5px 10px",
+                        borderRadius:6,background:"var(--s2)",fontSize:12,
+                        border:h2hId===p.id?"1px solid var(--amber-d)":"1px solid var(--b1)",
+                        cursor:"pointer"
+                      }} onClick={()=>setH2hId(h2hId===p.id?null:p.id)}>
+                        <span style={{flex:1,fontWeight:600}}>{p.name}</span>
+                        <span className="text-g bold">{h.winsA}W</span>
+                        <span className="text-dd xs">–</span>
+                        <span className="text-r bold">{h.winsB}L</span>
+                        <span className="xs text-dd">{h.games} game{h.games!==1?"s":""}</span>
+                      </div>
+                    );
+                  }).filter(Boolean)}
+                  {!sorted.filter(p=>p.id!==selected.id).some(p=>getH2H(selected.id,p.id).games>0) && (
+                    <div className="xs text-dd" style={{padding:"8px 0"}}>No H2H data yet</div>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })() : (
+          <div className="card" style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:200}}>
+            <span className="text-dd xs">Select a player to view stats</span>
+          </div>
+        )}
+      </div>
+
+      {/* Team Balancer below */}
+      <TeamBalancer players={state.players}/>
+    </div>
+  );
+}
+
+// ============================================================
 // TEAM BALANCER
 // ============================================================
 function TeamBalancer({ players }) {
@@ -1973,6 +2251,7 @@ function LogView({ state, setState, showToast }) {
   const [errors, setErrors] = useState({});
   const [undoStack, setUndoStack] = useState([]);
   const [confirm, setConfirm] = useState(null);
+  const [lastLogged, setLastLogged] = useState(null); // { games: [...], timestamp }
   const [templates, setTemplates] = useState(() => { 
     try { 
       return JSON.parse(localStorage.getItem("foosball_tpl") || "[]"); 
@@ -2112,10 +2391,9 @@ function LogView({ state, setState, showToast }) {
         const isWin = winnerIds.includes(pid);
         playerDeltas[pid] = calcPlayerDelta({
           winnerScore, loserScore,
-          playerMMR:             p.mmr,
-          playerRank:            rankOf(pid),
-          playerStreakPower:     p.streakPower || 0,
-          playerLossStreakPower: p.lossStreakPower || 0,
+          playerMMR:         p.mmr,
+          playerRank:        rankOf(pid),
+          playerStreakPower: p.streakPower || 0,
           oppAvgMMR:    isWin ? oppLosMMR  : oppWinMMR,
           oppAvgRank:   isWin ? oppLosRank : oppWinRank,
           isWinner: isWin,
@@ -2134,12 +2412,11 @@ function LogView({ state, setState, showToast }) {
           const ns = (p.streak||0) >= 0 ? (p.streak||0)+1 : 1;
           const newPts = placedBefore ? (p.pts||0)+d.gain : (p.pts||0);
           const newPower = updateStreakPower(p.streakPower||0, true, d.qualityScore||1);
-          return { ...p, mmr: p.mmr+d.gain, pts: newPts, wins: p.wins+1, streak: ns, streakPower: newPower, lossStreakPower: 0 };
+          return { ...p, mmr: p.mmr+d.gain, pts: newPts, wins: p.wins+1, streak: ns, streakPower: newPower };
         }
         const ns = (p.streak||0) <= 0 ? (p.streak||0)-1 : -1;
         const newPts = placedBefore ? Math.max(0,(p.pts||0)-d.loss) : (p.pts||0);
-        const newLossPower = updateStreakPower(p.lossStreakPower||0, true, d.qualityScore||1);
-        return { ...p, mmr: Math.max(0,p.mmr-d.loss), pts: newPts, losses: p.losses+1, streak: ns, streakPower: 0, lossStreakPower: newLossPower };
+        return { ...p, mmr: Math.max(0,p.mmr-d.loss), pts: newPts, losses: p.losses+1, streak: ns, streakPower: 0 };
       });
 
       // Placements + calibration
@@ -2183,6 +2460,7 @@ function LogView({ state, setState, showToast }) {
 
     setState(s => ({ ...s, players: newPlayers, games: [...newGames, ...s.games], monthlyPlacements: newPlacements }));
     setRows([EMPTY_ROW()]);
+    setLastLogged({ games: newGames, players: newPlayers, timestamp: new Date() });
     showToast(`${newGames.length} game${newGames.length > 1 ? "s" : ""} logged`, "success");
 
     clearTimeout(undoTimeout.current);
@@ -2206,6 +2484,31 @@ function LogView({ state, setState, showToast }) {
   return (
     <>
     <div className="stack page-fade">
+      {lastLogged && (
+        <div className="card" style={{borderColor:"var(--amber-d)"}}>
+          <div className="card-header" style={{background:"var(--amber-g)"}}>
+            <span className="card-title">✓ Just Logged</span>
+            <button className="btn btn-g btn-sm" onClick={()=>setLastLogged(null)}>Dismiss</button>
+          </div>
+          <div style={{padding:"10px 16px",display:"flex",flexDirection:"column",gap:8}}>
+            {lastLogged.games.map(g => {
+              const wIds = g.winner==="A"?g.sideA:g.sideB;
+              const lIds = g.winner==="A"?g.sideB:g.sideA;
+              return (
+                <div key={g.id} style={{display:"flex",alignItems:"center",gap:10,fontSize:13}}>
+                  <span className="text-g bold">{wIds.map(id=>pName(id,lastLogged.players)).join(" & ")}</span>
+                  <span className="disp text-am" style={{fontSize:18}}>{g.scoreA}–{g.scoreB}</span>
+                  <span className="text-dd">{lIds.map(id=>pName(id,lastLogged.players)).join(" & ")}</span>
+                  <span className="xs text-dd" style={{marginLeft:"auto"}}>
+                    {wIds.map(id=><span key={id} className="text-g" style={{marginRight:6}}>+{g.perPlayerGains?.[id]??g.ptsGain} {pName(id,lastLogged.players).split(" ")[0]}</span>)}
+                    {lIds.map(id=><span key={id} className="text-r" style={{marginRight:6}}>−{g.perPlayerLosses?.[id]??g.ptsLoss} {pName(id,lastLogged.players).split(" ")[0]}</span>)}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
       {templates.length > 0 && (
         <div className="card">
           <div className="card-header"><span className="card-title">Templates</span></div>
@@ -2970,6 +3273,37 @@ function AdminLogin({onLogin}){
 // ============================================================
 export default function App(){
 
+  // PWA setup
+  useEffect(()=>{
+    // Manifest
+    if (!document.querySelector('link[rel="manifest"]')) {
+      const manifest = {
+        name: "St. Marylebone Table Tracker",
+        short_name: "Table Tracker",
+        start_url: "/",
+        display: "standalone",
+        background_color: "#0e1210",
+        theme_color: "#0e1210",
+        icons: [{ src: "/favicon.ico", sizes: "any", type: "image/x-icon" }]
+      };
+      const blob = new Blob([JSON.stringify(manifest)], {type:"application/json"});
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("link");
+      link.rel = "manifest"; link.href = url;
+      document.head.appendChild(link);
+    }
+    // Theme color meta
+    if (!document.querySelector('meta[name="theme-color"]')) {
+      const meta = document.createElement("meta");
+      meta.name = "theme-color"; meta.content = "#0e1210";
+      document.head.appendChild(meta);
+    }
+    // Apple mobile web app
+    const apple = document.createElement("meta");
+    apple.name = "apple-mobile-web-app-capable"; apple.content = "yes";
+    document.head.appendChild(apple);
+  },[]);
+
   const[state,setState]=useState(SEED);
   const[isAdmin,setIsAdmin]=useState(false);
   const[tab,setTab]=useState("leaderboard");
@@ -3152,7 +3486,7 @@ export default function App(){
   // ============================================================
   // NAV
   // ============================================================
-  const PUB = ["leaderboard","history","teams","finals","rules"];
+  const PUB = ["ranks","history","stats","play","rules"];
 
   const ADMIN_TABS = [
     { id:"onboard", label:"Onboard" },
@@ -3290,7 +3624,7 @@ export default function App(){
 
         <div className="main">
 
-          {tab==="leaderboard" && (
+          {tab==="ranks" && (
             <LeaderboardView
               state={state}
               setState={setState}
@@ -3314,19 +3648,14 @@ export default function App(){
             />
           )}
 
-          {tab==="teams" && (
-            <div className="stack page-fade">
-              <div className="card">
-                <div className="card-header">
-                  <span className="card-title">Team Generator</span>
-                  <span className="xs text-dd">MMR-balanced matchups</span>
-                </div>
-              </div>
-              <TeamBalancer players={state.players}/>
-            </div>
+          {tab==="stats" && (
+            <StatsView
+              state={state}
+              onSelectPlayer={p=>{setSelPlayer(p);setEditPlayer(null);}}
+            />
           )}
 
-          {tab==="finals" && (
+          {tab==="play" && (
             <FinalsView
               state={state}
               setState={setState}
