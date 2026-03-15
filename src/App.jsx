@@ -44,6 +44,10 @@ const CONFIG = {
   LOSS_HARSHNESS: 1.05,
 
   MAX_PLACEMENTS_PER_MONTH: 5,  // per player per calendar month
+
+  // Disciplinary cards — pts deducted after all other calculations, survive recalc
+  YELLOW_CARD_PTS: 5,   // minor infraction — unsportsmanlike conduct, excessive stalling
+  RED_CARD_PTS: 20,     // serious misconduct — abuse, repeated offences, cheating
 };
 
 // ============================================================
@@ -92,6 +96,14 @@ At the end of each month, the top 4 players enter a bracket:
 - Unsportsmanlike behaviour may result in removal from the leaderboard.
 - Admins have the right to adjust points or MMR retroactively in case of errors or disputes.
 - Admins have the right to ban players for misconduct, cheating, or repeated unsportsmanlike behaviour.
+
+## Disciplinary Cards
+Admins can issue cards to individual players against any logged match. Penalties are permanent and survive any recalculation.
+
+- 🟡 **Yellow Card** — −${CONFIG.YELLOW_CARD_PTS} points. Issued for: unsportsmanlike conduct, excessive stalling, persistent rule violations, disrespectful behaviour.
+- 🔴 **Red Card** — −${CONFIG.RED_CARD_PTS} points. Issued for: serious misconduct, verbal abuse, deliberate cheating, repeated yellow card offences.
+
+Cards are applied per-player and are visible on the match detail. A player may receive multiple cards in a single match for escalating behaviour.
 `;
 
 // ============================================================
@@ -203,6 +215,17 @@ function replayGames(basePlayers, games) {
     // Summary averages for legacy display fallback
     const avgGain = Math.round(winIds.reduce((s,id)=>s+(playerDeltas[id]?.gain||0),0)/Math.max(winIds.length,1));
     const avgLoss = Math.round(losIds.reduce((s,id)=>s+(playerDeltas[id]?.loss||0),0)/Math.max(losIds.length,1));
+
+    // Apply penalties AFTER normal pts — they survive recalc
+    if (g.penalties) {
+      players = players.map(p => {
+        const pen = g.penalties[p.id];
+        if (!pen) return p;
+        const deduct = (pen.yellow||0) * CONFIG.YELLOW_CARD_PTS + (pen.red||0) * CONFIG.RED_CARD_PTS;
+        if (!deduct) return p;
+        return { ...p, pts: Math.max(0, (p.pts||0) - deduct) };
+      });
+    }
 
     return { ...g, ptsGain: avgGain, ptsLoss: avgLoss, mmrGain: avgGain, mmrLoss: avgLoss, perPlayerGains, perPlayerLosses };
   });
@@ -1191,7 +1214,7 @@ function EditPlayerModal({ player, state, setState, showToast, onClose }) {
 }
 
 // ============================================================
-// GAME DETAIL MODAL (with edit)
+// GAME DETAIL MODAL (with edit + per-player penalties)
 // ============================================================
 function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
   const [editing, setEditing] = useState(false);
@@ -1199,18 +1222,25 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
   const [scoreB, setScoreB] = useState(String(game.scoreB));
   const [winner, setWinner] = useState(game.winner);
   const [confirm, setConfirm] = useState(null);
+  // penalties: { [pid]: { yellow: N, red: N } } — per-player
+  const [penalties, setPenalties] = useState(() => game.penalties || {});
 
   const sA = game.sideA.map(id=>state.players.find(p=>p.id===id)).filter(Boolean);
   const sB = game.sideB.map(id=>state.players.find(p=>p.id===id)).filter(Boolean);
+  const allPlayers = [...sA, ...sB];
 
-  function saveEdit() {
-    const nA = parseInt(scoreA), nB = parseInt(scoreB);
-    if (isNaN(nA)||isNaN(nB)||nA<0||nB<0) { showToast("Invalid scores","error"); return; }
-    if (nA===nB) { showToast("No draws","error"); return; }
-    // Update game record, then replay all games to recalculate stats
-    const updatedGame = {...game, scoreA:nA, scoreB:nB, winner};
+  function setPenalty(pid, type, val) {
+    setPenalties(prev => ({
+      ...prev,
+      [pid]: { ...(prev[pid]||{yellow:0,red:0}), [type]: Math.max(0, val) }
+    }));
+  }
+
+  function savePenalties() {
+    // Save penalties without changing scores — just rerun to apply
+    const updatedGame = {...game, penalties};
     const editedGames = state.games.map(g=>g.id===game.id ? updatedGame : g);
-    const basePlayers = state.players.map(p=>({...p, mmr:CONFIG.STARTING_MMR, pts:CONFIG.STARTING_PTS, wins:0, losses:0, streak:0}));
+    const basePlayers = state.players.map(p=>({...p, mmr:CONFIG.STARTING_MMR, pts:CONFIG.STARTING_PTS, wins:0, losses:0, streak:0, streakPower:0, lossStreakPower:0}));
     const { players: newPlayers, games: newGames } = replayGames(basePlayers, editedGames);
     const mergedPlayers = newPlayers.map(p => {
       const orig = state.players.find(x=>x.id===p.id);
@@ -1218,19 +1248,39 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
     });
     const newPlacements = computePlacements(newGames);
     setState(s=>({...s, games:newGames, players:mergedPlayers, monthlyPlacements:newPlacements}));
-    showToast("Game updated & stats recalculated");
+    const totalCards = Object.values(penalties).reduce((s,v)=>(v.yellow||0)+(v.red||0)+s, 0);
+    showToast(totalCards > 0 ? "Penalties applied & stats updated" : "Penalties cleared");
+    setEditing(false);
+    onClose();
+  }
+
+  function saveEdit() {
+    const nA = parseInt(scoreA), nB = parseInt(scoreB);
+    if (isNaN(nA)||isNaN(nB)||nA<0||nB<0) { showToast("Invalid scores","error"); return; }
+    if (nA===nB) { showToast("No draws","error"); return; }
+    const updatedGame = {...game, scoreA:nA, scoreB:nB, winner, penalties};
+    const editedGames = state.games.map(g=>g.id===game.id ? updatedGame : g);
+    const basePlayers = state.players.map(p=>({...p, mmr:CONFIG.STARTING_MMR, pts:CONFIG.STARTING_PTS, wins:0, losses:0, streak:0, streakPower:0, lossStreakPower:0}));
+    const { players: newPlayers, games: newGames } = replayGames(basePlayers, editedGames);
+    const mergedPlayers = newPlayers.map(p => {
+      const orig = state.players.find(x=>x.id===p.id);
+      return {...p, name:orig?.name||p.name, championships:orig?.championships||[], position:orig?.position||p.position};
+    });
+    const newPlacements = computePlacements(newGames);
+    setState(s=>({...s, games:newGames, players:mergedPlayers, monthlyPlacements:newPlacements}));
+    showToast("Match updated & stats recalculated");
     setEditing(false);
     onClose();
   }
 
   function deleteGame() {
     setConfirm({
-      title:"Delete Game?",
-      msg:"This will permanently remove the game and recalculate all affected stats.",
+      title:"Delete Match?",
+      msg:"Permanently removes this match and recalculates all affected stats.",
       danger:true,
       onConfirm:()=>{
         const filteredGames = state.games.filter(g=>g.id!==game.id);
-        const basePlayers = state.players.map(p=>({...p, mmr:CONFIG.STARTING_MMR, pts:CONFIG.STARTING_PTS, wins:0, losses:0, streak:0}));
+        const basePlayers = state.players.map(p=>({...p, mmr:CONFIG.STARTING_MMR, pts:CONFIG.STARTING_PTS, wins:0, losses:0, streak:0, streakPower:0, lossStreakPower:0}));
         const { players: newPlayers, games: newGames } = replayGames(basePlayers, filteredGames);
         const mergedPlayers = newPlayers.map(p => {
           const orig = state.players.find(x=>x.id===p.id);
@@ -1238,75 +1288,153 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
         });
         const newPlacements = computePlacements(newGames);
         setState(s=>({...s, games:newGames, players:mergedPlayers, monthlyPlacements:newPlacements}));
-        showToast("Game deleted & stats recalculated");
+        showToast("Match deleted & stats recalculated");
         setConfirm(null);
         onClose();
       }
     });
   }
 
+  // Total penalty deduction per player
+  function penaltyTotal(pid) {
+    const p = penalties[pid]||{};
+    return (p.yellow||0)*CONFIG.YELLOW_CARD_PTS + (p.red||0)*CONFIG.RED_CARD_PTS;
+  }
+
+  const hasPenalties = Object.values(game.penalties||{}).some(v=>(v.yellow||0)+(v.red||0)>0);
+
   return (
     <>
       <Modal onClose={onClose}>
-        <div className="fbc mb16">
-          <div className="modal-title" style={{marginBottom:0}}>Match Detail</div>
+        <div className="fbc mb12">
+          <div>
+            <div className="modal-title" style={{marginBottom:2}}>Match Detail</div>
+            <div className="xs text-dd">{fmtDate(game.date)}</div>
+          </div>
           {isAdmin && !editing && (
-            <div className="fac">
+            <div className="fac" style={{gap:6}}>
               <button className="btn btn-warn btn-sm" onClick={()=>setEditing(true)}>Edit</button>
               <button className="btn btn-d btn-sm" onClick={deleteGame}>Delete</button>
             </div>
           )}
         </div>
-        <div className="xs text-dd mb16">{fmtDate(game.date)}</div>
 
-        <div style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:14,alignItems:"center",marginBottom:18}}>
+        {/* Score display / edit */}
+        <div style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:14,alignItems:"center",margin:"14px 0"}}>
           <div>
-            <div className="xs text-dd" style={{marginBottom:5}}>{game.winner==="A"?"WINNER":"LOSER"}</div>
-            {sA.map(p=><div key={p.id} className={`bold ${game.winner==="A"?"text-g":"text-r"}`}>{p.name}</div>)}
+            <div className="xs" style={{marginBottom:6,fontWeight:600,color:game.winner==="A"?"var(--green)":"var(--dimmer)"}}>
+              {game.winner==="A"?"🏆 ":""}Side A
+            </div>
+            {sA.map(p=>{
+              const gain = game.perPlayerGains?.[p.id]??game.ptsGain;
+              const loss = game.perPlayerLosses?.[p.id]??game.ptsLoss;
+              const pen = penaltyTotal(p.id);
+              return (
+                <div key={p.id} style={{marginBottom:4}}>
+                  <div className={`bold ${game.winner==="A"?"text-g":"text-r"}`} style={{fontSize:14}}>{p.name}</div>
+                  <div className="xs text-dd">
+                    {game.winner==="A"?<span className="text-g">+{gain}pts</span>:<span className="text-r">−{loss}pts</span>}
+                    {pen>0&&<span style={{color:"var(--orange)",marginLeft:4}}>−{pen} 🟡</span>}
+                  </div>
+                </div>
+              );
+            })}
           </div>
+
           <div style={{textAlign:"center"}}>
             {editing ? (
-              <div className="fac" style={{justifyContent:"center",gap:6}}>
-                <input className="inp inp-edit" type="number" min="0" value={scoreA}
-                  onChange={e=>setScoreA(e.target.value)}
-                  style={{width:56,textAlign:"center",fontSize:18,fontFamily:"var(--disp)",fontWeight:800}}/>
-                <span className="text-dd">–</span>
-                <input className="inp inp-edit" type="number" min="0" value={scoreB}
-                  onChange={e=>setScoreB(e.target.value)}
-                  style={{width:56,textAlign:"center",fontSize:18,fontFamily:"var(--disp)",fontWeight:800}}/>
-              </div>
-            ) : (
-              <div className="disp text-am" style={{fontSize:34}}>{game.scoreA}–{game.scoreB}</div>
-            )}
-            {editing && (
-              <div className="mt8">
-                <label className="lbl">Winner</label>
-                <select className="inp" value={winner} onChange={e=>setWinner(e.target.value)}>
-                  <option value="A">Side A ({sA.map(p=>p.name).join(" & ")})</option>
-                  <option value="B">Side B ({sB.map(p=>p.name).join(" & ")})</option>
+              <div style={{display:"flex",flexDirection:"column",gap:6,alignItems:"center"}}>
+                <div className="fac" style={{gap:6}}>
+                  <input className="inp inp-edit" type="number" min="0" value={scoreA}
+                    onChange={e=>setScoreA(e.target.value)}
+                    style={{width:52,textAlign:"center",fontSize:20,fontFamily:"var(--disp)",fontWeight:700}}/>
+                  <span className="text-dd" style={{fontSize:18}}>–</span>
+                  <input className="inp inp-edit" type="number" min="0" value={scoreB}
+                    onChange={e=>setScoreB(e.target.value)}
+                    style={{width:52,textAlign:"center",fontSize:20,fontFamily:"var(--disp)",fontWeight:700}}/>
+                </div>
+                <select className="inp" value={winner} onChange={e=>setWinner(e.target.value)} style={{fontSize:11,padding:"4px 8px"}}>
+                  <option value="A">A won</option>
+                  <option value="B">B won</option>
                 </select>
               </div>
-            )}
-            {!editing && (
-              <div className="xs text-dd mt8">
-                {game.winner==="A"
-                  ? <><span className="text-g">+{game.ptsGain}pts</span> / <span className="text-r">-{game.ptsLoss}pts</span></>
-                  : <><span className="text-r">-{game.ptsLoss}pts</span> / <span className="text-g">+{game.ptsGain}pts</span></>}
-              </div>
+            ) : (
+              <div className="disp text-am" style={{fontSize:36,fontWeight:700}}>{game.scoreA}–{game.scoreB}</div>
             )}
           </div>
+
           <div style={{textAlign:"right"}}>
-            <div className="xs text-dd" style={{marginBottom:5}}>{game.winner==="B"?"WINNER":"LOSER"}</div>
-            {sB.map(p=><div key={p.id} className={`bold ${game.winner==="B"?"text-g":"text-r"}`}>{p.name}</div>)}
+            <div className="xs" style={{marginBottom:6,fontWeight:600,color:game.winner==="B"?"var(--green)":"var(--dimmer)"}}>
+              Side B{game.winner==="B"?" 🏆":""}
+            </div>
+            {sB.map(p=>{
+              const gain = game.perPlayerGains?.[p.id]??game.ptsGain;
+              const loss = game.perPlayerLosses?.[p.id]??game.ptsLoss;
+              const pen = penaltyTotal(p.id);
+              return (
+                <div key={p.id} style={{marginBottom:4}}>
+                  <div className={`bold ${game.winner==="B"?"text-g":"text-r"}`} style={{fontSize:14}}>{p.name}</div>
+                  <div className="xs text-dd">
+                    {game.winner==="B"?<span className="text-g">+{gain}pts</span>:<span className="text-r">−{loss}pts</span>}
+                    {pen>0&&<span style={{color:"var(--orange)",marginLeft:4}}>−{pen} 🟡</span>}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
 
-        {!editing && game.eloScale!=null && (
-          <div style={{background:"var(--s2)",borderRadius:6,padding:"8px 12px",fontSize:11,color:"var(--dimmer)",display:"flex",gap:16,flexWrap:"wrap"}}>
-            <span>Elo scale: <span className="text-am">{(game.eloScale*100).toFixed(0)}%</span></span>
-            <span>Rank scale: <span className="text-am">{game.rankScale?.toFixed(2) ?? "—"}</span></span>
-            <span>Win streak ×: <span className="text-am">{game.winMult?.toFixed(2)}</span></span>
-            <span>Loss streak ×: <span className="text-am">{game.lossMult?.toFixed(2)}</span></span>
+        {/* Per-player penalties — always shown to admin */}
+        {isAdmin && (
+          <div style={{marginTop:4}}>
+            <div className="sec" style={{marginBottom:8}}>Disciplinary Cards</div>
+            <div style={{display:"flex",flexDirection:"column",gap:6}}>
+              {allPlayers.map(p=>{
+                const pen = penalties[p.id]||{yellow:0,red:0};
+                return (
+                  <div key={p.id} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 12px",background:"var(--s2)",borderRadius:8,border:"1px solid var(--b1)"}}>
+                    <span style={{flex:1,fontWeight:600,fontSize:13}}>{p.name}</span>
+                    {/* Yellow card */}
+                    <div className="fac" style={{gap:4}}>
+                      <span style={{fontSize:16}}>🟡</span>
+                      <button className="btn btn-g btn-sm" style={{padding:"2px 7px",minWidth:22}}
+                        onClick={()=>setPenalty(p.id,"yellow",Math.max(0,(pen.yellow||0)-1))}>−</button>
+                      <span style={{minWidth:16,textAlign:"center",fontWeight:700,fontSize:13}}>{pen.yellow||0}</span>
+                      <button className="btn btn-g btn-sm" style={{padding:"2px 7px",minWidth:22}}
+                        onClick={()=>setPenalty(p.id,"yellow",(pen.yellow||0)+1)}>+</button>
+                      <span className="xs text-dd">−{CONFIG.YELLOW_CARD_PTS}pts ea</span>
+                    </div>
+                    {/* Red card */}
+                    <div className="fac" style={{gap:4}}>
+                      <span style={{fontSize:16}}>🔴</span>
+                      <button className="btn btn-g btn-sm" style={{padding:"2px 7px",minWidth:22}}
+                        onClick={()=>setPenalty(p.id,"red",Math.max(0,(pen.red||0)-1))}>−</button>
+                      <span style={{minWidth:16,textAlign:"center",fontWeight:700,fontSize:13}}>{pen.red||0}</span>
+                      <button className="btn btn-g btn-sm" style={{padding:"2px 7px",minWidth:22}}
+                        onClick={()=>setPenalty(p.id,"red",(pen.red||0)+1)}>+</button>
+                      <span className="xs text-dd">−{CONFIG.RED_CARD_PTS}pts ea</span>
+                    </div>
+                    {penaltyTotal(p.id)>0 && (
+                      <span style={{color:"var(--orange)",fontWeight:700,fontSize:12,minWidth:50,textAlign:"right"}}>
+                        −{penaltyTotal(p.id)} pts
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            {!editing && (
+              <button className="btn btn-warn w-full mt8" onClick={savePenalties}>
+                Apply Penalties
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Existing penalties display for non-admin */}
+        {!isAdmin && hasPenalties && (
+          <div className="msg msg-e" style={{marginTop:8,fontSize:11}}>
+            ⚠ Disciplinary penalties have been applied to this match
           </div>
         )}
 
@@ -1390,7 +1518,7 @@ function LiveTicker({ games, players }) {
 // ============================================================
 // LEADERBOARD VIEW
 // ============================================================
-function LeaderboardView({ state, setState, onSelectPlayer, onNavToPlay, rtConnected, isAdmin, showToast, syncStatus }) {
+function LeaderboardView({ state, setState, onSelectPlayer, onNavToPlay, onNavToHistory, rtConnected, isAdmin, showToast, syncStatus }) {
   const monthKey = getMonthKey();
   const ranked = [...(state.players ?? [])].sort((a,b)=>(b.pts||0)-(a.pts||0));
   const [showRecalcConfirm, setShowRecalcConfirm] = useState(false);
@@ -1451,7 +1579,12 @@ function LeaderboardView({ state, setState, onSelectPlayer, onNavToPlay, rtConne
       )}
       <div className="grid-3">
         <div className="stat-box"><div className="stat-lbl">Players</div><div className="stat-val am">{(state.players??[]).length}</div></div>
-        <div className="stat-box"><div className="stat-lbl">Games This Month</div><div className="stat-val">{monthGames.length}</div></div>
+        <div className="stat-box" style={{cursor:"pointer"}} onClick={onNavToHistory}
+          title="View match history">
+          <div className="stat-lbl">Games This Month</div>
+          <div className="stat-val">{monthGames.length}</div>
+          <div className="xs text-dd" style={{marginTop:3}}>View history →</div>
+        </div>
         <div className="stat-box"><div className="stat-lbl">Top Points</div><div className="stat-val am">{ranked[0]?.pts??0}</div></div>
       </div>
       {ranked.filter(p=>(state.monthlyPlacements[monthKey]||{})[p.id]>=CONFIG.MAX_PLACEMENTS_PER_MONTH).slice(0,4).length >= 2 && (
@@ -1664,6 +1797,12 @@ function HistoryView({ state, setState, isAdmin, showToast }) {
         <div style={{textAlign:"center"}}>
           <div className="g-score">{g.scoreA}–{g.scoreB}</div>
           <div className="g-date">{new Date(g.date).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})}</div>
+          {g.penalties && Object.values(g.penalties).some(v=>(v.yellow||0)+(v.red||0)>0) && (
+            <div style={{fontSize:10,marginTop:2}}>
+              {Object.values(g.penalties).some(v=>v.red>0)&&<span>🔴</span>}
+              {Object.values(g.penalties).some(v=>v.yellow>0)&&<span>🟡</span>}
+            </div>
+          )}
         </div>
         {/* Side B */}
         <div className="g-side right">
@@ -2412,7 +2551,7 @@ function TeamBalancer({ players }) {
   );
 }
 
-const EMPTY_ROW = () => ({ id: crypto.randomUUID(), sideA: [], sideB: [], scoreA: "", scoreB: "", searchA: "", searchB: "" });
+const EMPTY_ROW = () => ({ id: crypto.randomUUID(), sideA: [], sideB: [], scoreA: "", scoreB: "", searchA: "", searchB: "", penalties: {} });
 
 function LogView({ state, setState, showToast }) {
   const [rows, setRows] = useState([EMPTY_ROW()]);
@@ -2445,6 +2584,15 @@ function LogView({ state, setState, showToast }) {
   // ============================================================
   // TOGGLE PLAYER IN ROW
   // ============================================================
+  function setRowPenalty(rowId, pid, type, delta) {
+    setRows(r => r.map(row => {
+      if (row.id !== rowId) return row;
+      const cur = row.penalties?.[pid] || { yellow:0, red:0 };
+      const newVal = Math.max(0, (cur[type]||0) + delta);
+      return { ...row, penalties: { ...row.penalties, [pid]: { ...cur, [type]: newVal } } };
+    }));
+  }
+
   function togglePlayer(rowId, side, pid) {
     setRows(r =>
       r.map(row => {
@@ -2617,11 +2765,15 @@ function LogView({ state, setState, showToast }) {
       const avgGain = Math.round(winnerIds.reduce((s,id)=>s+(playerDeltas[id]?.gain||0),0)/Math.max(winnerIds.length,1));
       const avgLoss = Math.round(loserIds.reduce((s,id)=>s+(playerDeltas[id]?.loss||0),0)/Math.max(loserIds.length,1));
 
+      // Only include penalties if any were set
+      const gamePenalties = Object.keys(row.penalties||{}).length > 0 ? row.penalties : undefined;
+
       newGames.push({
         id: crypto.randomUUID(), sideA: row.sideA, sideB: row.sideB,
         winner, scoreA: sA, scoreB: sB,
         ptsGain: avgGain, ptsLoss: avgLoss, mmrGain: avgGain, mmrLoss: avgLoss,
         perPlayerGains, perPlayerLosses,
+        ...(gamePenalties ? { penalties: gamePenalties } : {}),
         date: new Date().toISOString(), monthKey
       });
     }
@@ -2853,6 +3005,51 @@ function LogView({ state, setState, showToast }) {
                 {errors[row.id] && (
                   <div className="msg msg-e mt8" style={{fontWeight:600,fontSize:12}}>
                     ⚠ {errors[row.id]}
+                  </div>
+                )}
+
+                {/* Penalty cards — shown when all 4 players selected */}
+                {row.sideA.length===2 && row.sideB.length===2 && (
+                  <div style={{marginTop:8,borderTop:"1px solid var(--b1)",paddingTop:8}}>
+                    <div className="xs text-dd" style={{marginBottom:6,fontWeight:600,letterSpacing:.5}}>
+                      DISCIPLINARY CARDS <span style={{opacity:.6}}>(optional)</span>
+                    </div>
+                    <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                      {[...row.sideA,...row.sideB].map(pid => {
+                        const pen = row.penalties?.[pid] || { yellow:0, red:0 };
+                        const total = (pen.yellow||0)*CONFIG.YELLOW_CARD_PTS + (pen.red||0)*CONFIG.RED_CARD_PTS;
+                        if (pen.yellow===0 && pen.red===0 && total===0) {
+                          // Compact row — just show quick-add buttons
+                          return (
+                            <div key={pid} style={{display:"flex",alignItems:"center",gap:8,fontSize:12}}>
+                              <span style={{flex:1,fontWeight:500}}>{pName(pid,state.players)}</span>
+                              <button className="btn btn-g btn-sm" style={{fontSize:10,padding:"2px 8px"}}
+                                onClick={()=>setRowPenalty(row.id,pid,"yellow",1)}>🟡+</button>
+                              <button className="btn btn-g btn-sm" style={{fontSize:10,padding:"2px 8px"}}
+                                onClick={()=>setRowPenalty(row.id,pid,"red",1)}>🔴+</button>
+                            </div>
+                          );
+                        }
+                        return (
+                          <div key={pid} style={{display:"flex",alignItems:"center",gap:8,padding:"5px 8px",background:"var(--s1)",borderRadius:6,border:"1px solid var(--b1)",fontSize:12}}>
+                            <span style={{flex:1,fontWeight:600}}>{pName(pid,state.players)}</span>
+                            <div className="fac" style={{gap:3}}>
+                              <span>🟡</span>
+                              <button className="btn btn-g btn-sm" style={{padding:"1px 6px"}} onClick={()=>setRowPenalty(row.id,pid,"yellow",-1)}>−</button>
+                              <span style={{minWidth:14,textAlign:"center",fontWeight:700}}>{pen.yellow||0}</span>
+                              <button className="btn btn-g btn-sm" style={{padding:"1px 6px"}} onClick={()=>setRowPenalty(row.id,pid,"yellow",1)}>+</button>
+                            </div>
+                            <div className="fac" style={{gap:3}}>
+                              <span>🔴</span>
+                              <button className="btn btn-g btn-sm" style={{padding:"1px 6px"}} onClick={()=>setRowPenalty(row.id,pid,"red",-1)}>−</button>
+                              <span style={{minWidth:14,textAlign:"center",fontWeight:700}}>{pen.red||0}</span>
+                              <button className="btn btn-g btn-sm" style={{padding:"1px 6px"}} onClick={()=>setRowPenalty(row.id,pid,"red",1)}>+</button>
+                            </div>
+                            <span style={{color:"var(--orange)",fontWeight:700,minWidth:44,textAlign:"right"}}>−{total}pts</span>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
                 )}
               </div>
@@ -3801,6 +3998,7 @@ export default function App(){
               showToast={showToast}
               syncStatus={syncStatus}
               onNavToPlay={()=>navTo("play")}
+              onNavToHistory={()=>navTo("history")}
               onSelectPlayer={p=>{
                 setSelPlayer(p);
                 setEditPlayer(null);
