@@ -478,51 +478,52 @@ function slimState(s) {
 // STYLES
 // ============================================================
 const CSS = `
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Playfair+Display:wght@700;800&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Outfit:wght@600;700;800&display=swap');
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
   :root{
-    /* ── St Marylebone — deep green on warm dark ── */
-    --bg:#111714;
-    --s1:#18211c;
-    --s2:#1d2921;
-    --s3:#223028;
+    /* ── St Marylebone — dark slate with forest green ── */
+    --bg:#0e1210;
+    --s1:#151c18;
+    --s2:#1b2520;
+    --s3:#202d27;
 
-    --b1:#2a3d32;
-    --b2:#344d40;
+    --b1:#273830;
+    --b2:#324840;
 
-    /* School forest green */
-    --amber:#4caf78;
-    --amber-d:#3a8f5e;
-    --amber-g:rgba(76,175,120,0.10);
+    /* Forest green — primary */
+    --amber:#5ec98a;
+    --amber-d:#3fa86a;
+    --amber-g:rgba(94,201,138,0.09);
 
-    /* Supporting */
-    --green:#4caf78;
-    --red:#e06464;
-    --blue:#6ba3d6;
-    --purple:#a585e8;
-    --orange:#e8a44a;
+    /* Colour diversity */
+    --green:#5ec98a;
+    --red:#f07070;
+    --blue:#60a8e8;
+    --gold:#e8b84a;
+    --purple:#b08af0;
+    --orange:#f09050;
 
-    --text:#eef4f0;
-    --dim:#8aab98;
-    --dimmer:#537060;
+    --text:#f0f5f2;
+    --dim:#7da899;
+    --dimmer:#4d7060;
 
-    --sans:'Inter',system-ui,sans-serif;
-    --disp:'Playfair Display',Georgia,serif;
-    --mono:'Inter',system-ui,sans-serif;
+    --sans:'DM Sans',system-ui,sans-serif;
+    --disp:'Outfit',system-ui,sans-serif;
+    --mono:'DM Sans',system-ui,sans-serif;
   }
   body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:100vh;-webkit-font-smoothing:antialiased}
   ::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:var(--bg)}::-webkit-scrollbar-thumb{background:var(--b2);border-radius:2px}
   .app{display:flex;flex-direction:column;min-height:100vh}
 
   /* ── TOPBAR ─────────────────────────────────────────────── */
-  .topbar{display:flex;align-items:center;justify-content:space-between;padding:0 24px;height:58px;background:var(--s1);border-bottom:1px solid var(--b1);position:sticky;top:0;z-index:100;gap:12px;box-shadow:0 1px 0 var(--b1)}
-  .brand{font-family:var(--disp);font-size:20px;font-weight:700;letter-spacing:.5px;color:var(--amber);white-space:nowrap}
-  .brand span{color:var(--dim);font-weight:400;font-family:var(--sans);font-size:13px;letter-spacing:0}
+  .topbar{display:flex;align-items:center;justify-content:space-between;padding:0 24px;height:56px;background:radial-gradient(ellipse 60% 200% at 0% 50%,#1e3528 0%,var(--s1) 70%);border-bottom:1px solid var(--b1);position:sticky;top:0;z-index:100;gap:12px}
+  .brand{font-family:var(--disp);font-size:17px;font-weight:700;letter-spacing:.5px;color:var(--amber);white-space:nowrap}
+  .brand span{color:var(--dim);font-weight:500;font-family:var(--sans);font-size:12px;letter-spacing:.3px;margin-left:6px}
   .nav{display:flex;gap:1px;flex-wrap:nowrap;overflow:hidden}
-  .nav-btn{background:none;border:none;cursor:pointer;font-family:var(--sans);font-size:13px;font-weight:500;color:var(--dim);padding:6px 14px;border-radius:6px;transition:all .15s;white-space:nowrap}
+  .nav-btn{background:none;border:none;cursor:pointer;font-family:var(--disp);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--dim);padding:6px 14px;border-radius:6px;transition:all .15s;white-space:nowrap}
   .nav-btn:hover{color:var(--text);background:var(--s2)}
-  .nav-btn.active{color:var(--amber);background:var(--amber-g);font-weight:600}
-  .admin-badge{font-size:11px;font-weight:600;color:var(--amber);background:var(--amber-g);border:1px solid var(--amber-d);border-radius:20px;padding:3px 10px;white-space:nowrap}
+  .nav-btn.active{color:var(--amber);background:radial-gradient(ellipse 150% 300% at 50% 100%,rgba(94,201,138,.16),rgba(94,201,138,.04));font-weight:700;box-shadow:inset 0 -2px 0 var(--amber)}
+  .admin-badge{font-size:11px;font-weight:600;color:var(--gold);background:rgba(232,184,74,.1);border:1px solid rgba(232,184,74,.35);border-radius:20px;padding:3px 10px;font-family:var(--sans);white-space:nowrap}
 
   /* Hamburger — mobile only */
   .ham-btn{display:none;background:none;border:none;cursor:pointer;padding:6px;color:var(--dim);flex-direction:column;gap:4px;flex-shrink:0}
@@ -543,24 +544,25 @@ const CSS = `
   /* ── CARDS ──────────────────────────────────────────────── */
   .card{background:var(--s1);border:1px solid var(--b1);border-radius:12px;overflow:hidden;transition:border-color .2s,box-shadow .2s}
   .card-hover:hover{border-color:var(--b2);box-shadow:0 4px 20px rgba(0,0,0,.25)}
-  .card-header{padding:14px 20px;border-bottom:1px solid var(--b1);display:flex;align-items:center;justify-content:space-between;gap:8px;background:var(--s2)}
-  .card-title{font-family:var(--sans);font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:1.2px;color:var(--text);white-space:nowrap}
+  .card-header{padding:14px 20px;border-bottom:1px solid var(--b1);display:flex;align-items:center;justify-content:space-between;gap:8px;background:radial-gradient(ellipse 80% 300% at 0% 50%,var(--s3) 0%,var(--s2) 60%,var(--s1) 100%)}
+  .card-title{font-family:var(--disp);font-size:14px;font-weight:700;letter-spacing:.2px;color:var(--text);white-space:nowrap}
 
   /* ── TABLE ──────────────────────────────────────────────── */
   .tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
   .tbl{width:100%;border-collapse:collapse;min-width:520px}
-  .tbl th{font-size:11px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:var(--dimmer);padding:10px 16px;text-align:left;border-bottom:1px solid var(--b1);background:var(--s2)}
+  .tbl th{font-size:10px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:var(--dimmer);padding:10px 16px;text-align:left;border-bottom:1px solid var(--b1);background:var(--s2)}
   .tbl td{padding:13px 16px;border-bottom:1px solid var(--b1);font-size:14px;color:var(--text);transition:background .1s}
   .tbl tr:last-child td{border-bottom:none}
   .tbl tbody tr{transition:background .12s;cursor:pointer;position:relative}
   .tbl tbody tr:hover{background:rgba(255,255,255,.03)}
-  .tbl tbody tr:hover td:first-child{box-shadow:inset 3px 0 0 var(--amber)}
-  .rk{font-family:var(--disp);font-size:18px;font-weight:700;color:var(--dim);min-width:26px;display:inline-block}
-  .rk.r1{color:var(--amber)}.rk.r2{color:#b8b8b8}.rk.r3{color:#c8864a}
+  .tbl tbody tr:hover td:first-child{box-shadow:inset 3px 0 0 var(--green)}
+  .tbl tbody tr.rank-1 td:first-child{box-shadow:inset 3px 0 0 var(--gold)}
+  .rk{font-family:var(--disp);font-size:17px;font-weight:700;color:var(--dim);min-width:26px;display:inline-block}
+  .rk.r1{color:var(--gold)}.rk.r2{color:#c0c8c4}.rk.r3{color:#c8864a}
 
   /* ── BUTTONS ─────────────────────────────────────────────── */
-  .btn{font-family:var(--sans);font-size:12px;font-weight:600;letter-spacing:.3px;padding:8px 16px;border-radius:8px;cursor:pointer;border:1px solid transparent;transition:all .15s;white-space:nowrap}
-  .btn-p{background:var(--amber);color:#0d1a12;border-color:var(--amber)}.btn-p:hover{background:var(--amber-d);filter:brightness(1.15)}
+  .btn{font-family:var(--sans);font-size:13px;font-weight:600;padding:8px 16px;border-radius:8px;cursor:pointer;border:1px solid transparent;transition:all .15s;white-space:nowrap}
+  .btn-p{background:radial-gradient(ellipse 120% 200% at 30% 0%,#72dda0,#3a9660);color:#0a160f;border-color:transparent}.btn-p:hover{background:radial-gradient(ellipse 120% 200% at 30% 0%,#82e9b0,#4aa870);filter:none}
   .btn-g{background:transparent;color:var(--dim);border-color:var(--b2)}.btn-g:hover{color:var(--text);border-color:var(--b2);background:var(--s2)}
   .btn-d{background:transparent;color:var(--red);border-color:rgba(224,100,100,.3)}.btn-d:hover{background:rgba(224,100,100,.10)}
   .btn-warn{background:transparent;color:var(--amber);border-color:var(--amber-d)}.btn-warn:hover{background:var(--amber-g)}
@@ -570,7 +572,7 @@ const CSS = `
 
   /* ── INPUTS ──────────────────────────────────────────────── */
   .inp{background:var(--s2);border:1px solid var(--b2);color:var(--text);font-family:var(--sans);font-size:14px;padding:9px 13px;border-radius:8px;outline:none;width:100%;transition:border .15s,box-shadow .15s}
-  .inp:focus{border-color:var(--amber);box-shadow:0 0 0 3px rgba(76,175,120,.12)}
+  .inp:focus{border-color:var(--amber);box-shadow:0 0 0 3px rgba(94,201,138,.12)}
   .inp::placeholder{color:var(--dimmer)}
   select.inp{cursor:pointer}
   textarea.inp{resize:vertical;line-height:1.7}
@@ -580,8 +582,8 @@ const CSS = `
   /* ── MESSAGES ────────────────────────────────────────────── */
   .msg{font-size:12px;padding:7px 11px;border-radius:4px;margin-top:7px}
   .msg-e{background:rgba(224,82,82,.10);color:var(--red);border:1px solid rgba(224,82,82,.3)}
-  .msg-s{background:rgba(76,175,120,.10);color:var(--green);border:1px solid rgba(76,175,120,.3)}
-  .msg-w{background:rgba(76,175,120,.08);color:var(--amber);border:1px solid rgba(76,175,120,.25)}
+  .msg-s{background:rgba(94,201,138,.10);color:var(--green);border:1px solid rgba(94,201,138,.3)}
+  .msg-w{background:rgba(94,201,138,.08);color:var(--amber);border:1px solid rgba(94,201,138,.25)}
 
   /* ── TOAST ───────────────────────────────────────────────── */
   .toast{position:fixed;bottom:24px;right:20px;z-index:999;background:var(--s2);border:1px solid var(--b2);padding:12px 18px;border-radius:12px;font-size:13px;animation:slideUp .2s ease;box-shadow:0 12px 40px rgba(0,0,0,.5);max-width:320px;font-family:var(--sans)}
@@ -591,18 +593,18 @@ const CSS = `
 
   /* ── MODALS ──────────────────────────────────────────────── */
   .overlay{position:fixed;inset:0;background:rgba(0,0,0,.75);display:flex;align-items:center;justify-content:center;z-index:200;backdrop-filter:blur(8px);padding:16px}
-  .modal{background:var(--s1);border:1px solid var(--b2);border-radius:16px;padding:28px;width:100%;max-width:560px;max-height:90vh;overflow-y:auto;box-shadow:0 32px 80px rgba(0,0,0,.6);animation:mIn .2s ease}
+  .modal{background:radial-gradient(ellipse 100% 60% at 15% 0%,var(--s3) 0%,var(--s1) 60%);border:1px solid var(--b2);border-radius:16px;padding:28px;width:100%;max-width:560px;max-height:90vh;overflow-y:auto;box-shadow:0 32px 80px rgba(0,0,0,.6);animation:mIn .2s ease}
   .modal-lg{max-width:740px}
   @keyframes mIn{from{transform:scale(.97) translateY(6px);opacity:0}to{transform:scale(1) translateY(0);opacity:1}}
-  .modal-title{font-family:var(--disp);font-size:22px;font-weight:700;margin-bottom:20px;color:var(--amber)}
+  .modal-title{font-family:var(--disp);font-size:21px;font-weight:700;margin-bottom:20px;color:var(--amber)}
   .confirm-modal{max-width:380px;text-align:center}
   .confirm-modal .modal-title{font-size:18px}
 
   /* ── STAT BOXES ──────────────────────────────────────────── */
-  .stat-box{background:var(--s2);border:1px solid var(--b1);border-radius:12px;padding:16px 20px;transition:border-color .2s,box-shadow .2s}
-  .stat-box:hover{border-color:var(--amber-d);box-shadow:0 4px 16px rgba(0,0,0,.2)}
-  .stat-lbl{font-size:11px;letter-spacing:.6px;text-transform:uppercase;color:var(--dimmer);margin-bottom:6px;font-weight:500}
-  .stat-val{font-family:var(--disp);font-size:28px;font-weight:700;color:var(--text)}
+  .stat-box{background:radial-gradient(ellipse 120% 120% at 100% 100%,rgba(94,201,138,.07) 0%,var(--s2) 55%);border:1px solid var(--b1);border-radius:12px;padding:16px 20px;transition:border-color .2s,box-shadow .2s}
+  .stat-box:hover{border-color:var(--amber-d);box-shadow:0 0 0 1px var(--amber-d),0 6px 20px rgba(94,201,138,.08)}
+  .stat-lbl{font-size:11px;letter-spacing:.5px;text-transform:uppercase;color:var(--dimmer);margin-bottom:6px;font-weight:500;font-family:var(--sans)}
+  .stat-val{font-family:var(--disp);font-size:30px;font-weight:700;color:var(--text)}
   .stat-val.am{color:var(--amber)}
 
   /* ── PILLS / TAGS ────────────────────────────────────────── */
@@ -611,7 +613,7 @@ const CSS = `
   .pill.on{background:var(--amber);color:#0d1a12;border-color:var(--amber);font-weight:600}
   .pill:hover:not(.on){color:var(--text);border-color:var(--dim)}
   .tag{display:inline-block;font-size:11px;letter-spacing:.4px;text-transform:uppercase;padding:2px 8px;border-radius:20px;font-weight:600;font-family:var(--sans)}
-  .tag-w{background:rgba(76,175,120,.15);color:var(--green)}
+  .tag-w{background:radial-gradient(ellipse 200% 200% at 0% 50%,rgba(94,201,138,.22),rgba(94,201,138,.06));color:var(--green)}
   .tag-l{background:rgba(224,100,100,.12);color:var(--red)}
   .tag-a{background:var(--amber-g);color:var(--amber)}
   .tag-b{background:rgba(107,163,214,.12);color:var(--blue)}
@@ -624,7 +626,7 @@ const CSS = `
   .game-row:last-child{border-bottom:none}
   .g-side{display:flex;flex-direction:column;gap:3px}
   .g-side.right{text-align:right;align-items:flex-end}
-  .g-score{font-family:var(--disp);font-size:24px;font-weight:700;color:var(--amber);text-align:center;line-height:1}
+  .g-score{font-family:var(--disp);font-size:22px;font-weight:700;color:var(--amber);text-align:center;line-height:1}
   .g-date{font-size:11px;color:var(--dimmer);text-align:center;margin-top:3px}
   .g-name-w{color:var(--text);font-weight:600;font-size:13px}
   .g-name-l{color:var(--dim);font-size:13px}
@@ -635,7 +637,7 @@ const CSS = `
   .add-row:hover{border-color:var(--amber);color:var(--amber)}
   .player-chip{display:flex;align-items:center;justify-content:space-between;background:var(--s2);border:1px solid var(--b1);border-radius:8px;padding:7px 11px;font-size:13px;cursor:pointer;transition:all .12s;user-select:none}
   .player-chip:hover:not(.disabled){border-color:var(--amber);background:var(--s3)}
-  .player-chip.sel-a{background:rgba(76,175,120,.1);border-color:var(--green);color:var(--green)}
+  .player-chip.sel-a{background:rgba(94,201,138,.1);border-color:var(--green);color:var(--green)}
   .player-chip.sel-b{background:rgba(107,163,214,.10);border-color:var(--blue);color:var(--blue)}
   .player-chip.disabled{opacity:.3;cursor:not-allowed}
 
@@ -647,8 +649,8 @@ const CSS = `
 
   /* ── PLACEMENT STATUS ────────────────────────────────────── */
   .placement-badge{display:inline-flex;align-items:center;gap:4px;font-size:9px;font-weight:700;letter-spacing:1px;text-transform:uppercase;padding:2px 7px;border-radius:3px}
-  .placement-done{background:rgba(76,175,120,.12);color:var(--green);border:1px solid rgba(76,175,120,.3)}
-  .placement-pending{background:rgba(240,160,80,.10);color:var(--orange);border:1px solid rgba(240,160,80,.3)}
+  .placement-done{background:radial-gradient(ellipse 200% 200% at 0% 50%,rgba(94,201,138,.18),rgba(94,201,138,.05));color:var(--green);border:1px solid rgba(94,201,138,.3)}
+  .placement-pending{background:radial-gradient(ellipse 200% 200% at 0% 50%,rgba(96,168,232,.16),rgba(96,168,232,.04));color:var(--blue);border:1px solid rgba(96,168,232,.25)}
 
   /* ── BRACKET ─────────────────────────────────────────────── */
   .bracket{padding:20px;display:flex;gap:28px;align-items:center;justify-content:center;overflow-x:auto;-webkit-overflow-scrolling:touch}
@@ -662,9 +664,9 @@ const CSS = `
   /* ── PROFILE ─────────────────────────────────────────────── */
   .prof-head{display:flex;align-items:center;gap:16px;margin-bottom:20px}
   .prof-av{width:54px;height:54px;border-radius:12px;background:var(--amber-g);border:2px solid var(--amber-d);display:flex;align-items:center;justify-content:center;font-family:var(--disp);font-size:24px;font-weight:700;color:var(--amber);flex-shrink:0}
-  .prof-name{font-family:var(--disp);font-size:26px;font-weight:700}
+  .prof-name{font-family:var(--disp);font-size:24px;font-weight:700}
   .prof-sub{font-size:13px;color:var(--dim);margin-top:3px}
-  .championship-banner{background:linear-gradient(135deg,rgba(76,175,120,.12),rgba(76,175,120,.03));border:1px solid var(--amber-d);border-radius:10px;padding:12px 16px;display:flex;align-items:center;gap:10px;margin-bottom:16px}
+  .championship-banner{background:radial-gradient(ellipse 140% 140% at 0% 0%,rgba(232,184,74,.18) 0%,rgba(94,201,138,.08) 60%,transparent 100%);border:1px solid rgba(232,184,74,.35);border-radius:10px;padding:12px 16px;display:flex;align-items:center;gap:10px;margin-bottom:16px}
 
   /* ── MISC ────────────────────────────────────────────────── */
   .login-wrap{display:flex;align-items:center;justify-content:center;min-height:60vh}
@@ -697,21 +699,21 @@ const CSS = `
   .undo-bar{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--s2);border:1px solid var(--b2);border-radius:6px;padding:10px 16px;display:flex;align-items:center;gap:12px;font-size:12px;z-index:150;box-shadow:0 8px 32px rgba(0,0,0,.5);animation:slideUp .2s ease}
 
   /* ── EDIT HIGHLIGHT ──────────────────────────────────────── */
-  .inp-edit{border-color:var(--amber-d) !important;background:rgba(76,175,120,.05) !important}
+  .inp-edit{border-color:var(--amber-d) !important;background:rgba(94,201,138,.05) !important}
 
   /* ── REALTIME DOT ────────────────────────────────────────── */
   .rt-dot{width:8px;height:8px;border-radius:50%;background:var(--dimmer);display:block;flex-shrink:0;transition:background .3s}
   .rt-dot.live{background:var(--green);animation:rtPulse 2.5s infinite}
-  @keyframes rtPulse{0%{box-shadow:0 0 0 0 rgba(76,175,120,.55)}70%{box-shadow:0 0 0 7px rgba(76,175,120,0)}100%{box-shadow:0 0 0 0 rgba(76,175,120,0)}}
+  @keyframes rtPulse{0%{box-shadow:0 0 0 0 rgba(94,201,138,.55)}70%{box-shadow:0 0 0 7px rgba(94,201,138,0)}100%{box-shadow:0 0 0 0 rgba(94,201,138,0)}}
 
   /* ── LEADERBOARD ANIMATIONS ──────────────────────────────── */
   .lb-row{transition:background .1s}
   .lb-row.rank-up{animation:rankUp .75s ease forwards}
   .lb-row.rank-down{animation:rankDown .75s ease forwards}
   .lb-row.pts-changed{animation:ptsFlash .85s ease}
-  @keyframes rankUp{0%{background:rgba(76,175,120,.18)}100%{background:transparent}}
+  @keyframes rankUp{0%{background:rgba(94,201,138,.18)}100%{background:transparent}}
   @keyframes rankDown{0%{background:rgba(224,100,100,.15)}100%{background:transparent}}
-  @keyframes ptsFlash{0%,100%{background:transparent}30%{background:rgba(76,175,120,.08)}}
+  @keyframes ptsFlash{0%,100%{background:transparent}30%{background:rgba(94,201,138,.08)}}
 
   /* Stagger entrance for leaderboard rows */
   @keyframes rowIn{from{opacity:0;transform:translateX(-6px)}to{opacity:1;transform:translateX(0)}}
@@ -730,19 +732,19 @@ const CSS = `
   /* ── COUNTDOWN BLOCK ─────────────────────────────────────── */
   .cd-wrap{display:flex;gap:6px;align-items:flex-end;justify-content:center;margin:16px 0 6px}
   .cd-unit{display:flex;flex-direction:column;align-items:center;min-width:54px}
-  .cd-num{font-family:var(--disp);font-size:46px;font-weight:800;line-height:1;letter-spacing:-1px;transition:color .4s}
+  .cd-num{font-family:var(--disp);font-size:46px;font-weight:700;line-height:1;letter-spacing:-1px;transition:color .4s;text-shadow:0 2px 12px rgba(94,201,138,.2)}
   .cd-lbl{font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--dimmer);margin-top:2px}
   .cd-sep{font-family:var(--disp);font-size:38px;font-weight:800;color:var(--dimmer);line-height:1;margin-bottom:16px;animation:sepBlink 1.2s step-start infinite}
   @keyframes sepBlink{0%,49%{opacity:1}50%,100%{opacity:.2}}
   .cd-urgent1{color:var(--orange) !important}
   .cd-urgent2{color:var(--red) !important}
   .cd-glow{animation:cdGlow 2s ease-in-out infinite alternate}
-  @keyframes cdGlow{from{text-shadow:0 0 8px rgba(76,175,120,.2)}to{text-shadow:0 0 20px rgba(76,175,120,.5)}}
+  @keyframes cdGlow{from{text-shadow:0 0 8px rgba(94,201,138,.2)}to{text-shadow:0 0 20px rgba(94,201,138,.5)}}
 
   /* ── MOBILE ──────────────────────────────────────────────── */
   @media(max-width:640px){
     .topbar{padding:0 14px;gap:8px;height:52px}
-    .brand{font-size:15px;letter-spacing:1px}
+    .brand{font-size:14px;letter-spacing:1px}
     .brand span{display:none}
     .nav{display:none}
     .ham-btn{display:flex}
@@ -1861,7 +1863,7 @@ function TeamBalancer({ players }) {
             <div className="sec">Suggested matchups</div>
             {matchups.map(({t1,t2,mmr1,mmr2,diff,balance},i)=>(
               <div key={i} style={{
-                background: i===0?"rgba(76,175,120,.06)":"var(--s2)",
+                background: i===0?"rgba(94,201,138,.06)":"var(--s2)",
                 border: `1px solid ${i===0?"var(--amber-d)":"var(--b2)"}`,
                 borderRadius:6, padding:"10px 14px"
               }}>
@@ -2638,7 +2640,7 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
         <div className="xs text-dd" style={{ textAlign: "center", marginBottom: 5, letterSpacing: 2, textTransform: "uppercase" }}>{label}</div>
         <div style={{ background: "var(--s2)", border: "1px solid var(--b2)", borderRadius: 8, overflow: "hidden", minWidth: 280 }}>
           {/* Team A */}
-          <div style={{ padding: "10px 14px", borderBottom: "2px solid var(--b1)", background: m.winner === "A" ? "rgba(76,175,120,.08)" : "transparent", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ padding: "10px 14px", borderBottom: "2px solid var(--b1)", background: m.winner === "A" ? "rgba(94,201,138,.08)" : "transparent", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
               {pA.map((pl, i) => (
                 <div key={i} className="fac" style={{ gap: 6 }}>
@@ -2653,7 +2655,7 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
           {/* VS divider */}
           <div style={{ textAlign: "center", padding: "4px 0", background: "var(--s3)", fontSize: 9, letterSpacing: 3, color: "var(--dimmer)", textTransform: "uppercase" }}>vs</div>
           {/* Team B */}
-          <div style={{ padding: "10px 14px", background: m.winner === "B" ? "rgba(76,175,120,.08)" : "transparent", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ padding: "10px 14px", background: m.winner === "B" ? "rgba(94,201,138,.08)" : "transparent", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             {sideBReady ? (
               <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                 {pB.map((pl, i) => (
