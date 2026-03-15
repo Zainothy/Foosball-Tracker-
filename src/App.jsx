@@ -976,7 +976,7 @@ function PlayerProfile({ player, state, onClose, isAdmin, onEdit }) {
         </div>
         <div className="stat-box">
           <div className="stat-lbl">Streak</div>
-          <div className="stat-val" style={{fontSize:20}}><StreakBadge streak={player.streak} showMult /></div>
+          <div className="stat-val" style={{fontSize:20}}><StreakBadge streak={player.streak} streakPower={player.streakPower||0} showMult /></div>
         </div>
       </div>
 
@@ -1430,7 +1430,7 @@ function LeaderboardView({ state, setState, onSelectPlayer, rtConnected, isAdmin
                   <td><span className="text-g bold">{p.wins}</span></td>
                   <td><span className="text-r bold">{p.losses}</span></td>
                   <td><span className={pct>=50?"text-g":"text-d"}>{total?`${pct}%`:"—"}</span></td>
-                  <td><StreakBadge streak={p.streak} showMult /></td>
+                  <td><StreakBadge streak={p.streak} streakPower={p.streakPower||0} showMult /></td>
                   <td><PosBadge pos={p.position}/></td>
                   <td>
                     {isPlaced
