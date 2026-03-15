@@ -1390,7 +1390,7 @@ function LiveTicker({ games, players }) {
 // ============================================================
 // LEADERBOARD VIEW
 // ============================================================
-function LeaderboardView({ state, setState, onSelectPlayer, rtConnected, isAdmin, showToast, syncStatus }) {
+function LeaderboardView({ state, setState, onSelectPlayer, onNavToPlay, rtConnected, isAdmin, showToast, syncStatus }) {
   const monthKey = getMonthKey();
   const ranked = [...(state.players ?? [])].sort((a,b)=>(b.pts||0)-(a.pts||0));
   const [showRecalcConfirm, setShowRecalcConfirm] = useState(false);
@@ -1455,23 +1455,28 @@ function LeaderboardView({ state, setState, onSelectPlayer, rtConnected, isAdmin
         <div className="stat-box"><div className="stat-lbl">Top Points</div><div className="stat-val am">{ranked[0]?.pts??0}</div></div>
       </div>
       {ranked.filter(p=>(state.monthlyPlacements[monthKey]||{})[p.id]>=CONFIG.MAX_PLACEMENTS_PER_MONTH).slice(0,4).length >= 2 && (
-        <div className="card">
+        <div className="card" style={{cursor:"pointer",transition:"border-color .15s"}}
+          onClick={()=>onNavToPlay()} onMouseEnter={e=>e.currentTarget.style.borderColor="var(--amber-d)"}
+          onMouseLeave={e=>e.currentTarget.style.borderColor=""}>
           <div className="card-header">
-            <span className="card-title">Finals Contention</span>
-            <span className="tag tag-a">Top 4</span>
+            <span className="card-title">Championship Race</span>
+            <span className="tag tag-a" style={{cursor:"pointer"}}>View Finals →</span>
           </div>
           <div style={{padding:"10px 16px",display:"flex",gap:8,flexWrap:"wrap"}}>
             {ranked.filter(p=>(state.monthlyPlacements[monthKey]||{})[p.id]>=CONFIG.MAX_PLACEMENTS_PER_MONTH).slice(0,4).map((p,i)=>(
               <div key={p.id} style={{
                 flex:"1 1 120px",padding:"8px 12px",borderRadius:8,
-                background: i===0?"radial-gradient(ellipse 120% 120% at 100% 100%,rgba(232,184,74,.12),var(--s2))":
+                background: i===0?"radial-gradient(ellipse 120% 120% at 100% 100%,rgba(232,184,74,.15),var(--s2))":
                             i===1?"radial-gradient(ellipse 120% 120% at 100% 100%,rgba(192,200,196,.08),var(--s2))":
+                            i===2?"radial-gradient(ellipse 120% 120% at 100% 100%,rgba(200,134,74,.08),var(--s2))":
                             "var(--s2)",
-                border:`1px solid ${i===0?"rgba(232,184,74,.3)":i===1?"rgba(192,200,196,.2)":"var(--b2)"}`,
+                border:`1px solid ${i===0?"rgba(232,184,74,.35)":i===1?"rgba(192,200,196,.2)":i===2?"rgba(200,134,74,.2)":"var(--b2)"}`,
               }}>
-                <div className="xs text-dd" style={{marginBottom:3}}>#{i+1}</div>
+                <div className="xs" style={{marginBottom:3,color:i===0?"var(--gold)":i===1?"#c0c8c4":i===2?"#c8864a":"var(--dimmer)"}}>
+                  {i===0?"🥇":i===1?"🥈":i===2?"🥉":`#${i+1}`}
+                </div>
                 <div style={{fontWeight:600,fontSize:13}}>{p.name}</div>
-                <div className="xs text-am">{p.pts||0} pts</div>
+                <div className="xs" style={{color:i===0?"var(--gold)":"var(--amber)",marginTop:2}}>{p.pts||0} pts</div>
               </div>
             ))}
           </div>
@@ -1992,16 +1997,165 @@ function OnboardView({ state, setState, showToast }) {
 // ============================================================
 // STATS VIEW — per-player deep stats + H2H + team balancer
 // ============================================================
+
+// SVG pts-over-time line chart with hover tooltip
+function PtsChart({ pid, games, players }) {
+  const W=320, H=90, PAD=10;
+  const [hovered, setHovered] = useState(null); // index
+  const svgRef = useRef(null);
+
+  const playerGames = [...games]
+    .filter(g=>g.sideA.includes(pid)||g.sideB.includes(pid))
+    .sort((a,b)=>new Date(a.date)-new Date(b.date));
+  if (playerGames.length < 2) return (
+    <div style={{height:H,display:"flex",alignItems:"center",justifyContent:"center"}}>
+      <span className="xs text-dd">Not enough games</span>
+    </div>
+  );
+
+  // Build cumulative pts + per-game delta
+  let pts = 0;
+  const data = playerGames.map(g => {
+    const onA = g.sideA.includes(pid);
+    const won = (onA&&g.winner==="A")||(!onA&&g.winner==="B");
+    const delta = won ? (g.perPlayerGains?.[pid]??g.ptsGain) : -(g.perPlayerLosses?.[pid]??g.ptsLoss);
+    pts += delta;
+    const oppIds = onA ? g.sideB : g.sideA;
+    const opps = oppIds.map(id=>pName(id, players||[])).join(" & ");
+    return { pts, delta, won, date: g.date, opps, scoreA: g.scoreA, scoreB: g.scoreB };
+  });
+
+  const minP = Math.min(0, ...data.map(d=>d.pts));
+  const maxP = Math.max(...data.map(d=>d.pts));
+  const range = Math.max(maxP - minP, 1);
+  const toX = i => PAD + (i / (data.length-1)) * (W - PAD*2);
+  const toY = v => PAD + (1 - (v - minP) / range) * (H - PAD*2);
+
+  const pathD = data.map((d,i)=>`${i===0?"M":"L"}${toX(i).toFixed(1)},${toY(d.pts).toFixed(1)}`).join(" ");
+  const fillD = pathD + ` L${toX(data.length-1).toFixed(1)},${H} L${toX(0).toFixed(1)},${H} Z`;
+  const lastPts = data[data.length-1].pts;
+  const isPos = lastPts >= 0;
+  const lineCol = isPos ? "#5ec98a" : "#f07070";
+
+  // Find nearest data point from mouse x position
+  function handleMouseMove(e) {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const rect = svg.getBoundingClientRect();
+    const scaleX = W / rect.width;
+    const mouseX = (e.clientX - rect.left) * scaleX;
+    let closest = 0, minDist = Infinity;
+    data.forEach((_, i) => {
+      const dist = Math.abs(toX(i) - mouseX);
+      if (dist < minDist) { minDist = dist; closest = i; }
+    });
+    setHovered(closest);
+  }
+
+  const hov = hovered !== null ? data[hovered] : null;
+
+  return (
+    <div style={{position:"relative"}}>
+      <svg ref={svgRef} width="100%" viewBox={`0 0 ${W} ${H}`}
+        style={{overflow:"visible",cursor:"crosshair",display:"block"}}
+        onMouseMove={handleMouseMove} onMouseLeave={()=>setHovered(null)}>
+        <defs>
+          <linearGradient id={`cg-${pid}`} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={lineCol} stopOpacity="0.22"/>
+            <stop offset="100%" stopColor={lineCol} stopOpacity="0"/>
+          </linearGradient>
+        </defs>
+        {/* Grid lines */}
+        {[0.25,0.5,0.75].map(t=>(
+          <line key={t} x1={PAD} y1={PAD+(1-t)*(H-PAD*2)} x2={W-PAD} y2={PAD+(1-t)*(H-PAD*2)}
+            stroke="var(--b1)" strokeWidth="1"/>
+        ))}
+        {minP < 0 && <line x1={PAD} y1={toY(0)} x2={W-PAD} y2={toY(0)} stroke="var(--b2)" strokeWidth="1" strokeDasharray="4,3"/>}
+        {/* Fill */}
+        <path d={fillD} fill={`url(#cg-${pid})`}/>
+        {/* Line */}
+        <path d={pathD} fill="none" stroke={lineCol} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+        {/* All dots — small */}
+        {data.map((d,i)=>(
+          <circle key={i} cx={toX(i)} cy={toY(d.pts)} r={hovered===i?4:2}
+            fill={d.won?"#5ec98a":"#f07070"}
+            stroke={hovered===i?"var(--bg)":"none"} strokeWidth="1.5"
+            style={{transition:"r .1s"}}/>
+        ))}
+        {/* Hover crosshair */}
+        {hov && (
+          <line x1={toX(hovered)} y1={PAD} x2={toX(hovered)} y2={H-PAD}
+            stroke="var(--dimmer)" strokeWidth="1" strokeDasharray="3,2"/>
+        )}
+      </svg>
+
+      {/* Tooltip */}
+      {hov && (() => {
+        const x = toX(hovered) / W * 100;
+        const flipLeft = x > 65;
+        return (
+          <div style={{
+            position:"absolute", top:0,
+            left: flipLeft ? "auto" : `calc(${x}% + 8px)`,
+            right: flipLeft ? `calc(${100-x}% + 8px)` : "auto",
+            background:"var(--s1)", border:"1px solid var(--b2)",
+            borderRadius:8, padding:"6px 10px", fontSize:11,
+            pointerEvents:"none", zIndex:10, minWidth:130,
+            boxShadow:"0 4px 20px rgba(0,0,0,.5)",
+            lineHeight:1.7,
+          }}>
+            <div style={{fontWeight:700,fontSize:13,color:hov.won?"var(--green)":"var(--red)",marginBottom:2}}>
+              {hov.won?"▲":"▼"} {hov.pts} pts
+            </div>
+            <div style={{color:hov.won?"var(--green)":"var(--red)"}}>
+              {hov.delta>=0?"+":""}{hov.delta} this game
+            </div>
+            <div className="text-dd">{hov.scoreA}–{hov.scoreB} vs {hov.opps}</div>
+            <div className="text-dd" style={{fontSize:10,marginTop:2}}>
+              {new Date(hov.date).toLocaleDateString("en-GB",{day:"numeric",month:"short"})}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Axis labels */}
+      <div style={{display:"flex",justifyContent:"space-between",marginTop:3,padding:`0 ${PAD}px`}}>
+        <span className="xs text-dd">{new Date(playerGames[0].date).toLocaleDateString("en-GB",{day:"numeric",month:"short"})}</span>
+        <span className="xs text-dd">{lastPts} pts</span>
+        <span className="xs text-dd">{new Date(playerGames[playerGames.length-1].date).toLocaleDateString("en-GB",{day:"numeric",month:"short"})}</span>
+      </div>
+    </div>
+  );
+}
+
+// Win rate donut
+function WinDonut({ wins, losses }) {
+  const total = wins + losses;
+  if (!total) return <div style={{width:64,height:64,display:"flex",alignItems:"center",justifyContent:"center"}}><span className="xs text-dd">—</span></div>;
+  const pct = wins/total;
+  const R=28, CX=32, CY=32, CIRC=2*Math.PI*R;
+  const dash = pct * CIRC;
+  return (
+    <svg width="64" height="64" viewBox="0 0 64 64">
+      <circle cx={CX} cy={CY} r={R} fill="none" stroke="var(--b2)" strokeWidth="6"/>
+      <circle cx={CX} cy={CY} r={R} fill="none" stroke="#5ec98a" strokeWidth="6"
+        strokeDasharray={`${dash} ${CIRC}`} strokeDashoffset={CIRC/4}
+        strokeLinecap="round" style={{transition:"stroke-dasharray .6s ease"}}/>
+      <text x={CX} y={CY+1} textAnchor="middle" dominantBaseline="middle"
+        fill="var(--text)" fontSize="11" fontWeight="700" fontFamily="var(--disp)">
+        {Math.round(pct*100)}%
+      </text>
+    </svg>
+  );
+}
+
 function StatsView({ state, onSelectPlayer }) {
   const [selectedId, setSelectedId] = useState(null);
-  const [h2hId, setH2hId] = useState(null);
   const [search, setSearch] = useState("");
 
   const sorted = [...state.players].sort((a,b)=>(b.pts||0)-(a.pts||0));
   const selected = state.players.find(p=>p.id===selectedId);
-  const h2hPlayer = state.players.find(p=>p.id===h2hId);
 
-  // Head to head record between two players
   function getH2H(pidA, pidB) {
     const shared = state.games.filter(g =>
       (g.sideA.includes(pidA)||g.sideB.includes(pidA)) &&
@@ -2016,40 +2170,46 @@ function StatsView({ state, onSelectPlayer }) {
     return { games: shared.length, winsA, winsB };
   }
 
-  // Player stats
   function getStats(p) {
-    const games = state.games.filter(g=>g.sideA.includes(p.id)||g.sideB.includes(p.id));
-    const wins = games.filter(g=>{const onA=g.sideA.includes(p.id);return(onA&&g.winner==="A")||(!onA&&g.winner==="B");});
-    const losses = games.filter(g=>{const onA=g.sideA.includes(p.id);return(onA&&g.winner==="B")||(!onA&&g.winner==="A");});
-    const avgGain = wins.length ? Math.round(wins.reduce((s,g)=>{
-      const d=g.perPlayerGains?.[p.id]??g.ptsGain; return s+d;
-    },0)/wins.length) : 0;
-    const avgLoss = losses.length ? Math.round(losses.reduce((s,g)=>{
-      const d=g.perPlayerLosses?.[p.id]??g.ptsLoss; return s+d;
-    },0)/losses.length) : 0;
-    const biggestWin = wins.reduce((best,g)=>{
-      const sc=Math.max(g.scoreA,g.scoreB)-Math.min(g.scoreA,g.scoreB);
-      return sc>best?sc:best;
-    },0);
-    const last5 = lastNResults(p.id, state.games, 5);
-    return { avgGain, avgLoss, biggestWin, last5, totalGames: games.length };
+    const playerGames = [...state.games]
+      .filter(g=>g.sideA.includes(p.id)||g.sideB.includes(p.id))
+      .sort((a,b)=>new Date(a.date)-new Date(b.date));
+    const wins = playerGames.filter(g=>{const onA=g.sideA.includes(p.id);return(onA&&g.winner==="A")||(!onA&&g.winner==="B");});
+    const losses = playerGames.filter(g=>{const onA=g.sideA.includes(p.id);return(onA&&g.winner==="B")||(!onA&&g.winner==="A");});
+    const avgGain = wins.length ? Math.round(wins.reduce((s,g)=>s+(g.perPlayerGains?.[p.id]??g.ptsGain),0)/wins.length) : 0;
+    const avgLoss = losses.length ? Math.round(losses.reduce((s,g)=>s+(g.perPlayerLosses?.[p.id]??g.ptsLoss),0)/losses.length) : 0;
+    const biggestMargin = wins.reduce((best,g)=>Math.max(best,Math.abs(g.scoreA-g.scoreB)),0);
+    const longestStreak = (() => {
+      let best=0, cur=0;
+      playerGames.forEach(g=>{
+        const onA=g.sideA.includes(p.id);
+        const won=(onA&&g.winner==="A")||(!onA&&g.winner==="B");
+        cur = won ? cur+1 : 0;
+        best = Math.max(best,cur);
+      });
+      return best;
+    })();
+    return { avgGain, avgLoss, biggestMargin, longestStreak, totalGames: playerGames.length, wins: wins.length, losses: losses.length };
   }
 
   return (
     <div className="stack page-fade">
-      <div className="grid-2">
+      <div className="grid-2" style={{alignItems:"start"}}>
         {/* Player selector */}
         <div className="card">
           <div className="card-header"><span className="card-title">Player Stats</span></div>
           <div style={{padding:14}}>
             <input className="inp" placeholder="Search…" value={search}
               onChange={e=>setSearch(e.target.value)} style={{marginBottom:10,fontSize:12}}/>
-            <div style={{display:"flex",flexDirection:"column",gap:3,maxHeight:220,overflowY:"auto"}}>
+            <div style={{display:"flex",flexDirection:"column",gap:3,maxHeight:260,overflowY:"auto"}}>
               {sorted.filter(p=>!search||p.name.toLowerCase().includes(search.toLowerCase())).map(p=>(
                 <div key={p.id} className={`player-chip ${selectedId===p.id?"sel-a":""}`}
-                  onClick={()=>{setSelectedId(p.id);setH2hId(null);}}>
+                  onClick={()=>setSelectedId(p.id)}>
                   <span style={{fontWeight:600}}>{p.name}</span>
-                  <span className="xs text-dd">{p.pts||0}pts · {p.wins}W {p.losses}L</span>
+                  <div style={{display:"flex",alignItems:"center",gap:6}}>
+                    <Sparkline pid={p.id} games={state.games}/>
+                    <span className="xs text-dd">{p.pts||0}pts</span>
+                  </div>
                 </div>
               ))}
             </div>
@@ -2059,74 +2219,82 @@ function StatsView({ state, onSelectPlayer }) {
         {/* Stats panel */}
         {selected ? (() => {
           const st = getStats(selected);
+          const rank = sorted.findIndex(p=>p.id===selected.id)+1;
           return (
             <div className="card">
               <div className="card-header">
-                <span className="card-title">{selected.name}</span>
+                <div style={{display:"flex",flexDirection:"column",gap:1}}>
+                  <span className="card-title">{selected.name}</span>
+                  <span className="xs text-dd">Rank #{rank} · {st.totalGames} games played</span>
+                </div>
                 <button className="btn btn-g btn-sm" onClick={()=>onSelectPlayer(selected)}>Profile</button>
               </div>
-              <div style={{padding:14,display:"flex",flexDirection:"column",gap:10}}>
-                <div className="grid-3">
-                  <div className="stat-box" style={{padding:"10px 12px"}}>
+              <div style={{padding:16,display:"flex",flexDirection:"column",gap:14}}>
+
+                {/* Points chart */}
+                <div>
+                  <div className="xs text-dd" style={{marginBottom:6,letterSpacing:.5,textTransform:"uppercase",fontWeight:600}}>Points over time</div>
+                  <div style={{background:"var(--s2)",borderRadius:8,padding:"10px 12px"}}>
+                    <PtsChart pid={selected.id} games={state.games} players={state.players}/>
+                  </div>
+                </div>
+
+                {/* Stats row */}
+                <div style={{display:"grid",gridTemplateColumns:"64px 1fr 1fr 1fr",gap:10,alignItems:"center"}}>
+                  <WinDonut wins={st.wins} losses={st.losses}/>
+                  <div className="stat-box" style={{padding:"8px 12px"}}>
                     <div className="stat-lbl">Avg gain</div>
-                    <div className="stat-val am" style={{fontSize:22}}>+{st.avgGain}</div>
+                    <div className="stat-val am" style={{fontSize:20}}>+{st.avgGain}</div>
                   </div>
-                  <div className="stat-box" style={{padding:"10px 12px"}}>
+                  <div className="stat-box" style={{padding:"8px 12px"}}>
                     <div className="stat-lbl">Avg loss</div>
-                    <div className="stat-val" style={{fontSize:22,color:"var(--red)"}}>−{st.avgLoss}</div>
+                    <div className="stat-val" style={{fontSize:20,color:"var(--red)"}}>−{st.avgLoss}</div>
                   </div>
-                  <div className="stat-box" style={{padding:"10px 12px"}}>
-                    <div className="stat-lbl">Best margin</div>
-                    <div className="stat-val" style={{fontSize:22}}>{st.biggestWin}</div>
+                  <div className="stat-box" style={{padding:"8px 12px"}}>
+                    <div className="stat-lbl">Best streak</div>
+                    <div className="stat-val" style={{fontSize:20}}>▲{st.longestStreak}</div>
                   </div>
                 </div>
-                <div style={{display:"flex",alignItems:"center",gap:8}}>
-                  <span className="xs text-dd">Last 5:</span>
-                  {st.last5.map((r,i)=>(
-                    <span key={i} style={{
-                      padding:"2px 7px",borderRadius:4,fontSize:11,fontWeight:700,
-                      background:r==="W"?"rgba(94,201,138,.15)":"rgba(240,112,112,.12)",
-                      color:r==="W"?"var(--green)":"var(--red)"
-                    }}>{r}</span>
-                  ))}
-                  {!st.last5.length && <span className="xs text-dd">No games</span>}
-                </div>
-                {/* H2H selector */}
-                <div className="sec" style={{marginBottom:4}}>Head to Head</div>
-                <div style={{display:"flex",flexDirection:"column",gap:3,maxHeight:140,overflowY:"auto"}}>
-                  {sorted.filter(p=>p.id!==selected.id).map(p=>{
-                    const h = getH2H(selected.id, p.id);
-                    if (!h.games) return null;
-                    return (
-                      <div key={p.id} style={{
-                        display:"flex",alignItems:"center",gap:8,padding:"5px 10px",
-                        borderRadius:6,background:"var(--s2)",fontSize:12,
-                        border:h2hId===p.id?"1px solid var(--amber-d)":"1px solid var(--b1)",
-                        cursor:"pointer"
-                      }} onClick={()=>setH2hId(h2hId===p.id?null:p.id)}>
-                        <span style={{flex:1,fontWeight:600}}>{p.name}</span>
-                        <span className="text-g bold">{h.winsA}W</span>
-                        <span className="text-dd xs">–</span>
-                        <span className="text-r bold">{h.winsB}L</span>
-                        <span className="xs text-dd">{h.games} game{h.games!==1?"s":""}</span>
-                      </div>
-                    );
-                  }).filter(Boolean)}
-                  {!sorted.filter(p=>p.id!==selected.id).some(p=>getH2H(selected.id,p.id).games>0) && (
-                    <div className="xs text-dd" style={{padding:"8px 0"}}>No H2H data yet</div>
-                  )}
+
+                {/* H2H */}
+                <div>
+                  <div className="sec" style={{marginBottom:6}}>Head to Head</div>
+                  <div style={{display:"flex",flexDirection:"column",gap:4,maxHeight:160,overflowY:"auto"}}>
+                    {sorted.filter(p=>p.id!==selected.id).map(p=>{
+                      const h = getH2H(selected.id, p.id);
+                      if (!h.games) return null;
+                      const pct = Math.round(h.winsA/h.games*100);
+                      return (
+                        <div key={p.id} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 10px",borderRadius:8,background:"var(--s2)",border:"1px solid var(--b1)"}}>
+                          <span style={{flex:1,fontWeight:600,fontSize:13}}>{p.name}</span>
+                          {/* Mini win bar */}
+                          <div style={{width:60,height:5,borderRadius:3,background:"var(--b2)",overflow:"hidden"}}>
+                            <div style={{width:`${pct}%`,height:"100%",background:"var(--green)",borderRadius:3,transition:"width .4s ease"}}/>
+                          </div>
+                          <span className="text-g bold" style={{fontSize:12,minWidth:20}}>{h.winsA}W</span>
+                          <span className="text-dd xs">–</span>
+                          <span className="text-r bold" style={{fontSize:12,minWidth:20}}>{h.winsB}L</span>
+                        </div>
+                      );
+                    }).filter(Boolean)}
+                    {!sorted.filter(p=>p.id!==selected.id).some(p=>getH2H(selected.id,p.id).games>0) && (
+                      <div className="xs text-dd" style={{padding:"8px 0"}}>No H2H data yet</div>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
           );
         })() : (
-          <div className="card" style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:200}}>
-            <span className="text-dd xs">Select a player to view stats</span>
+          <div className="card" style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:240}}>
+            <div style={{textAlign:"center"}}>
+              <div style={{fontSize:28,marginBottom:8}}>📊</div>
+              <span className="text-dd" style={{fontSize:13}}>Select a player to view stats</span>
+            </div>
           </div>
         )}
       </div>
 
-      {/* Team Balancer below */}
       <TeamBalancer players={state.players}/>
     </div>
   );
@@ -3306,7 +3474,7 @@ export default function App(){
 
   const[state,setState]=useState(SEED);
   const[isAdmin,setIsAdmin]=useState(false);
-  const[tab,setTab]=useState("leaderboard");
+  const[tab,setTab]=useState("ranks");
   const[adminTab,setAdminTab]=useState("onboard");
   const[showLogin,setShowLogin]=useState(false);
   const[toast,setToast]=useState(null);
@@ -3545,7 +3713,7 @@ export default function App(){
 
         <div className="topbar" style={{position:"sticky",top:0,zIndex:100}}>
 
-          <div className="brand">
+          <div className="brand" onClick={()=>navTo("ranks")} style={{cursor:"pointer",userSelect:"none"}} title="Go to leaderboard">
             St. Marylebone <span className="brand-sub">Table Tracker</span>
           </div>
 
@@ -3553,7 +3721,7 @@ export default function App(){
           <nav className="nav">
             {PUB.map(t=>(
               <button key={t} className={`nav-btn ${tab===t?"active":""}`} onClick={()=>navTo(t)}>
-                {t}
+                {{"ranks":"Ranks","history":"History","stats":"Stats","play":"Champions","rules":"Rules"}[t]||t}
               </button>
             ))}
             {isAdmin && ADMIN_TABS.map(t=>(
@@ -3605,7 +3773,7 @@ export default function App(){
         <div className={`mob-nav ${mobMenuOpen?"open":""}`}>
           {PUB.map(t=>(
             <button key={t} className={`nav-btn ${tab===t?"active":""}`} onClick={()=>navTo(t)}>
-              {t}
+              {{"ranks":"Ranks","history":"History","stats":"Stats","play":"Champions","rules":"Rules"}[t]||t}
             </button>
           ))}
           {isAdmin && ADMIN_TABS.map(t=>(
@@ -3632,6 +3800,7 @@ export default function App(){
               isAdmin={isAdmin}
               showToast={showToast}
               syncStatus={syncStatus}
+              onNavToPlay={()=>navTo("play")}
               onSelectPlayer={p=>{
                 setSelPlayer(p);
                 setEditPlayer(null);
