@@ -32,12 +32,16 @@ const CONFIG = {
   // ── STREAK SYSTEM (quality-weighted, convergence-safe) ────
   // Streak power accumulates quality (eloScale * rankScale) per win,
   // resets to 0 on loss. Prevents unclosable gaps from weak-opponent farming.
-  STREAK_POWER_SCALE: 4.0,      // tanh half-point (higher = slower ramp)
-  STREAK_WIN_MAX: 0.45,         // max bonus for win streak (+45% = 1.45x cap)
-  STREAK_LOSS_MAX: 0.35,        // max amplifier for loss streak (1.35x cap)
-  STREAK_QUALITY_DECAY: 0.88,   // per-game decay if opponent eloScale < 1.1
-  STREAK_DECAY_THRESHOLD: 1.05, // eloScale below this = "easy" opponent
-  STREAK_WINDOW: 8,             // rolling quality window (games)
+  // Streak scaling — calibrated so streak 2 shows multiplier, streak 1 stays clean.
+  // Based on Glicko-2 / LoL LP streak principles: felt from game 2, not game 4.
+  // Win and loss use same scale but different caps — losses slightly less punishing
+  // to allow recovery (asymmetric by design, prevents rank lock).
+  STREAK_POWER_SCALE: 2.5,      // tanh half-point — lower = faster ramp (streak 2 shows ×1.27)
+  STREAK_WIN_MAX: 0.40,         // max win bonus  (+40% = ×1.40 cap)
+  STREAK_LOSS_MAX: 0.32,        // max loss amplifier (+32% = ×1.32 cap, slightly lower for recovery)
+  STREAK_QUALITY_DECAY: 0.85,   // decay rate if opponent easy (eloScale < threshold)
+  STREAK_DECAY_THRESHOLD: 1.05, // below this eloScale = easy opponent
+  STREAK_WINDOW: 8,             // absolute cap on accumulated power (8 games)
 
   // Loss harshness scalar — multiplied into every loss, >1 = harsher
   // 1.15 means losses are ~15% larger across the board after other factors
@@ -146,7 +150,7 @@ function computePlacements(games) {
 function replayGames(basePlayers, games) {
   let players = basePlayers.map(p => ({
     ...p, mmr: CONFIG.STARTING_MMR, pts: CONFIG.STARTING_PTS,
-    wins: 0, losses: 0, streak: 0, streakPower: 0,
+    wins: 0, losses: 0, streak: 0, streakPower: 0, lossStreakPower: 0,
   }));
   const sorted = [...games].sort((a, b) => new Date(a.date) - new Date(b.date));
   const updatedGames = sorted.map(g => {
@@ -171,9 +175,10 @@ function replayGames(basePlayers, games) {
       const isWinner = winIds.includes(pid);
       const d = calcPlayerDelta({
         winnerScore, loserScore,
-        playerMMR:          p.mmr,
-        playerRank:         rankOf(pid),
-        playerStreakPower:  p.streakPower || 0,
+        playerMMR:              p.mmr,
+        playerRank:             rankOf(pid),
+        playerStreakPower:      p.streakPower || 0,
+        playerLossStreakPower:  p.lossStreakPower || 0,
         oppAvgMMR:    isWinner ? oppLosMMR  : oppWinMMR,
         oppAvgRank:   isWinner ? oppLosRank : oppWinRank,
         isWinner,
@@ -188,10 +193,11 @@ function replayGames(basePlayers, games) {
       if (isWin) {
         const ns = (p.streak||0) >= 0 ? (p.streak||0)+1 : 1;
         const newPower = updateStreakPower(p.streakPower||0, true, d.qualityScore||1);
-        return { ...p, mmr: p.mmr+d.gain, pts: (p.pts||0)+d.gain, wins: p.wins+1, streak: ns, streakPower: newPower };
+        return { ...p, mmr: p.mmr+d.gain, pts: (p.pts||0)+d.gain, wins: p.wins+1, streak: ns, streakPower: newPower, lossStreakPower: 0 };
       }
       const ns = (p.streak||0) <= 0 ? (p.streak||0)-1 : -1;
-      return { ...p, mmr: Math.max(0,p.mmr-d.loss), pts: Math.max(0,(p.pts||0)-d.loss), losses: p.losses+1, streak: ns, streakPower: 0 };
+      const newLossPower = updateStreakPower(p.lossStreakPower||0, true, d.qualityScore||1);
+      return { ...p, mmr: Math.max(0,p.mmr-d.loss), pts: Math.max(0,(p.pts||0)-d.loss), losses: p.losses+1, streak: ns, streakPower: 0, lossStreakPower: newLossPower };
     });
 
     // Flat per-player gain/loss maps — persisted, not stripped by slimState
@@ -221,7 +227,7 @@ function replayGames(basePlayers, games) {
 // different gains if one is heavily favoured and the other is an underdog.
 //
 function calcPlayerDelta({ winnerScore, loserScore, playerMMR, playerRank,
-                           playerStreakPower, oppAvgMMR, oppAvgRank, isWinner }) {
+                           playerStreakPower, playerLossStreakPower, oppAvgMMR, oppAvgRank, isWinner }) {
   // 1. Score dominance
   const scoreDiff  = winnerScore - loserScore;
   const scoreRatio = scoreDiff / Math.max(winnerScore, 1);
@@ -237,8 +243,10 @@ function calcPlayerDelta({ winnerScore, loserScore, playerMMR, playerRank,
     : (playerRank - oppAvgRank);
   const rankScale = 1 + CONFIG.RANK_WEIGHT * Math.tanh(rankDiff / CONFIG.RANK_DIVISOR);
 
-  // 4. Quality-weighted streak (capped, convergence-safe)
-  const mult = streakMult(playerStreakPower, isWinner);
+  // 4. Quality-weighted streak — use win power for winners, loss power for losers
+  const mult = isWinner
+    ? streakMult(playerStreakPower || 0, true)
+    : streakMult(playerLossStreakPower || 0, false);
 
   // Quality score this game = how "hard" was the opponent
   const qualityScore = eloScale * rankScale;
@@ -344,7 +352,7 @@ async function loadState() {
 
 function normaliseState(s) {
   return {
-    players: s.players || [],
+    players: (s.players || []).map(p => ({ streakPower: 0, lossStreakPower: 0, ...p })),
     games: s.games || [],
     monthlyPlacements: s.monthlyPlacements || {},
     finals: s.finals || {},
@@ -842,15 +850,16 @@ function fmtMonth(key) {
 }
 function pName(id, players) { return players.find(p => p.id === id)?.name || "?"; }
 
-function StreakBadge({ streak, streakPower=0, showMult=false }) {
+function StreakBadge({ streak, streakPower=0, lossStreakPower=0, showMult=false }) {
   const s = streak || 0;
   if (s === 0) return <span className="text-dd">—</span>;
   const m = s > 0
     ? streakMult(streakPower, true)
-    : streakMult(Math.abs(s) * CONFIG.STREAK_POWER_SCALE * 0.4, false);
+    : streakMult(lossStreakPower, false);
+  const showM = showMult && m >= 1.15;
   return s > 0
-    ? <span className="text-g bold">▲{s}{showMult && <span className="xs" style={{opacity:.7}}> ×{m.toFixed(2)}</span>}</span>
-    : <span className="text-r bold">▼{Math.abs(s)}{showMult && <span className="xs" style={{opacity:.7}}> ×{m.toFixed(2)}</span>}</span>;
+    ? <span className="text-g bold">▲{s}{showM && <span className="xs" style={{opacity:.75,marginLeft:2}}> ×{m.toFixed(2)}</span>}</span>
+    : <span className="text-r bold">▼{Math.abs(s)}{showM && <span className="xs" style={{opacity:.75,marginLeft:2}}> ×{m.toFixed(2)}</span>}</span>;
 }
 function Pips({ used }) {
   return <>{Array.from({length:CONFIG.MAX_PLACEMENTS_PER_MONTH}).map((_,i)=>
@@ -978,7 +987,7 @@ function PlayerProfile({ player, state, onClose, isAdmin, onEdit }) {
         </div>
         <div className="stat-box">
           <div className="stat-lbl">Streak</div>
-          <div className="stat-val" style={{fontSize:20}}><StreakBadge streak={player.streak} streakPower={player.streakPower||0} showMult /></div>
+          <div className="stat-val" style={{fontSize:20}}><StreakBadge streak={player.streak} streakPower={player.streakPower||0} lossStreakPower={player.lossStreakPower||0} showMult /></div>
         </div>
       </div>
 
@@ -1432,7 +1441,7 @@ function LeaderboardView({ state, setState, onSelectPlayer, rtConnected, isAdmin
                   <td><span className="text-g bold">{p.wins}</span></td>
                   <td><span className="text-r bold">{p.losses}</span></td>
                   <td><span className={pct>=50?"text-g":"text-d"}>{total?`${pct}%`:"—"}</span></td>
-                  <td><StreakBadge streak={p.streak} streakPower={p.streakPower||0} showMult /></td>
+                  <td><StreakBadge streak={p.streak} streakPower={p.streakPower||0} lossStreakPower={p.lossStreakPower||0} showMult /></td>
                   <td><PosBadge pos={p.position}/></td>
                   <td>
                     {isPlaced
@@ -2103,9 +2112,10 @@ function LogView({ state, setState, showToast }) {
         const isWin = winnerIds.includes(pid);
         playerDeltas[pid] = calcPlayerDelta({
           winnerScore, loserScore,
-          playerMMR:         p.mmr,
-          playerRank:        rankOf(pid),
-          playerStreakPower: p.streakPower || 0,
+          playerMMR:             p.mmr,
+          playerRank:            rankOf(pid),
+          playerStreakPower:     p.streakPower || 0,
+          playerLossStreakPower: p.lossStreakPower || 0,
           oppAvgMMR:    isWin ? oppLosMMR  : oppWinMMR,
           oppAvgRank:   isWin ? oppLosRank : oppWinRank,
           isWinner: isWin,
@@ -2124,11 +2134,12 @@ function LogView({ state, setState, showToast }) {
           const ns = (p.streak||0) >= 0 ? (p.streak||0)+1 : 1;
           const newPts = placedBefore ? (p.pts||0)+d.gain : (p.pts||0);
           const newPower = updateStreakPower(p.streakPower||0, true, d.qualityScore||1);
-          return { ...p, mmr: p.mmr+d.gain, pts: newPts, wins: p.wins+1, streak: ns, streakPower: newPower };
+          return { ...p, mmr: p.mmr+d.gain, pts: newPts, wins: p.wins+1, streak: ns, streakPower: newPower, lossStreakPower: 0 };
         }
         const ns = (p.streak||0) <= 0 ? (p.streak||0)-1 : -1;
         const newPts = placedBefore ? Math.max(0,(p.pts||0)-d.loss) : (p.pts||0);
-        return { ...p, mmr: Math.max(0,p.mmr-d.loss), pts: newPts, losses: p.losses+1, streak: ns, streakPower: 0 };
+        const newLossPower = updateStreakPower(p.lossStreakPower||0, true, d.qualityScore||1);
+        return { ...p, mmr: Math.max(0,p.mmr-d.loss), pts: newPts, losses: p.losses+1, streak: ns, streakPower: 0, lossStreakPower: newLossPower };
       });
 
       // Placements + calibration
