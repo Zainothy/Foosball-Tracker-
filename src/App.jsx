@@ -1329,20 +1329,38 @@ function LeaderboardView({ state, setState, onSelectPlayer, rtConnected, isAdmin
   }
   const monthGames = (state.games ?? []).filter(g=>g.monthKey===monthKey);
 
-  const prevSnapshot = useRef({});
+  const prevSnapshot = useRef(null); // null = not yet initialised
+  const animClearTimer = useRef(null);
   const [animMap, setAnimMap] = useState({});
   useEffect(()=>{
-    const prev = prevSnapshot.current;
+    // Build new snapshot from current ranked list
     const next = {};
+    ranked.forEach((p,i)=>{ next[p.id]={rank:i,pts:p.pts||0}; });
+
+    const prev = prevSnapshot.current;
+    // First render — just store snapshot, no animation
+    if(!prev){ prevSnapshot.current=next; return; }
+
     const anims = {};
     ranked.forEach((p,i)=>{
-      const pr = prev[p.id]?.rank, pp = prev[p.id]?.pts;
-      if(pr!==undefined && pr!==i) anims[p.id] = i<pr?"rank-up":"rank-down";
-      else if(pp!==undefined && pp!==(p.pts||0)) anims[p.id]="pts-changed";
-      next[p.id]={rank:i,pts:p.pts||0};
+      const pr = prev[p.id]?.rank;
+      const pp = prev[p.id]?.pts;
+      // Only animate if we have a previous value AND it changed
+      if(pr!==undefined && pr!==i){
+        anims[p.id] = i < pr ? "rank-up" : "rank-down";
+      } else if(pp!==undefined && pp!==(p.pts||0)){
+        anims[p.id] = "pts-changed";
+      }
     });
-    prevSnapshot.current=next;
-    if(Object.keys(anims).length){ setAnimMap(anims); setTimeout(()=>setAnimMap({}),900); }
+
+    // Update snapshot to new state
+    prevSnapshot.current = next;
+
+    if(Object.keys(anims).length){
+      clearTimeout(animClearTimer.current);
+      setAnimMap(anims);
+      animClearTimer.current = setTimeout(()=>setAnimMap({}), 1200);
+    }
   },[state.players]);
 
   return (
