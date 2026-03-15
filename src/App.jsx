@@ -845,7 +845,9 @@ function pName(id, players) { return players.find(p => p.id === id)?.name || "?"
 function StreakBadge({ streak, streakPower=0, showMult=false }) {
   const s = streak || 0;
   if (s === 0) return <span className="text-dd">—</span>;
-  const m = streakMult(streakPower || Math.abs(s) * 0.8, s > 0);
+  const m = s > 0
+    ? streakMult(streakPower, true)
+    : streakMult(Math.abs(s) * CONFIG.STREAK_POWER_SCALE * 0.4, false);
   return s > 0
     ? <span className="text-g bold">▲{s}{showMult && <span className="xs" style={{opacity:.7}}> ×{m.toFixed(2)}</span>}</span>
     : <span className="text-r bold">▼{Math.abs(s)}{showMult && <span className="xs" style={{opacity:.7}}> ×{m.toFixed(2)}</span>}</span>;
