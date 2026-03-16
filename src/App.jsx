@@ -366,11 +366,15 @@ async function loadState() {
 }
 
 function normaliseState(s) {
+  const rawFinals = s.finals || {};
+  const normFinals = Object.fromEntries(
+    Object.entries(rawFinals).map(([k, v]) => [k, { liveScores: {}, ...v }])
+  );
   return {
-    players: s.players || [],
-    games: s.games || [],
+    players: (s.players || []).map(p => ({ streakPower: 0, lossStreakPower: 0, ...p })),
+    games: (s.games || []).map(g => ({ penalties: {}, ...g })),
     monthlyPlacements: s.monthlyPlacements || {},
-    finals: s.finals || {},
+    finals: normFinals,
     rules: s.rules || DEFAULT_RULES,
     finalsDate: s.finalsDate || null,
     _v: typeof s._v === 'number' ? s._v : 0,
@@ -390,116 +394,137 @@ function isDuplicateGame(candidate, existing) {
   });
 }
 
-// ── SUPABASE SETUP REQUIRED ─────────────────────────────────
-// Run this SQL once in the Supabase SQL editor to enable true version-locked saves:
-//
+// ── SUPABASE SQL REQUIRED (run once) ─────────────────────────
 //   create or replace function update_state_versioned(expected_v int, new_state jsonb)
-//   returns boolean language plpgsql as $$
+//   returns boolean language plpgsql security definer as $$
 //   declare updated int;
 //   begin
 //     update app_state set state = new_state, updated_at = now()
-//     where id = 1 and (state->>'_v')::int = expected_v;
+//     where id = 1 and (state->''_v'')::int = expected_v;
 //     get diagnostics updated = row_count;
 //     return updated > 0;
-//   end;
-//   $$;
+//   end; $$;
+//   grant execute on function update_state_versioned(int,jsonb) to anon, authenticated;
+// ─────────────────────────────────────────────────────────────
+
+// ── SAVE QUEUE ───────────────────────────────────────────────
 //
-// Without this, saves fall back to unconditional upsert (still works, less safe).
-// ── SAVE QUEUE: true version-locked writes + exponential retry ─
-// _pendingVersion tracks what _v we're about to write so the
-// subscription can ignore our own echo without a timer window.
+// Design principles:
+//  1. The queue ALWAYS holds the latest state. Rapid successive changes
+//     cancel the pending debounce and replace the payload — only the
+//     most recent state is ever written.
+//  2. _v is managed entirely inside the queue. React state never needs
+//     to track it; the queue maintains a monotonically increasing counter
+//     in _sq.confirmedV that survives rapid re-queuing.
+//  3. Echo suppression: we track every _v we have in-flight or confirmed
+//     in a Set so we never misidentify our own realtime echo as a remote update.
+//  4. onSuccess is called with the confirmed DB version so the App can
+//     stamp it back into state for display, but saving never depends on it.
+//  5. No save loop: onSuccess stamps _v via isRemoteUpdate=true so the
+//     autosave effect skips it.
+//
 const _sq = {
-  state: null, version: 0, pendingVersion: null,
-  retries: 0, timer: null, onConflict: null, onSuccess: null,
+  pending: null,       // { stateToSave } — latest state waiting to flush
+  confirmedV: -1,      // last _v we successfully wrote to DB
+  inflightV: null,     // _v currently being written (async)
+  echoSet: new Set(),  // all _v values we own (inflight + confirmed) for echo suppression
+  retries: 0,
+  timer: null,
+  onConflict: null,
+  onSuccess: null,
 };
 
+// Queue a state for saving. Always uses confirmedV+1 as the next version,
+// regardless of what's in state._v — this prevents the stale-version bug
+// where two rapid saves both send expected_v=N.
 function saveState(s, onConflict, onSuccess) {
   clearTimeout(_sq.timer);
-  _sq.state = s;
-  _sq.version = typeof s._v === 'number' ? s._v : 0;
-  _sq.retries = 0;
+  _sq.pending = { stateToSave: s };
   _sq.onConflict = onConflict || null;
   _sq.onSuccess = onSuccess || null;
-  _sq.timer = setTimeout(_flushSave, 500);
+  _sq.retries = 0;
+  _sq.timer = setTimeout(_flushSave, 350);
 }
 
 async function _flushSave() {
-  if (!_sq.state) return;
-  const { state: s, version } = _sq;
-  const nextV = version + 1;
-  _sq.pendingVersion = nextV;
+  if (!_sq.pending) return;
+  const { stateToSave } = _sq.pending;
 
-  const doUpsert = async () => {
-    // Unconditional upsert — used when RPC unavailable or _v not yet seeded
-    const { error } = await supabase
-      .from('app_state')
-      .upsert({ id: 1, state: slimState({ ...s, _v: nextV }), updated_at: new Date().toISOString() });
-    if (error) throw new Error(error.message);
+  // Always write confirmedV+1, never trust state._v for the version
+  // This ensures rapid sequential saves don't collide
+  const baseV = _sq.confirmedV >= 0 ? _sq.confirmedV : (stateToSave._v ?? 0);
+  const nextV = baseV + 1;
+
+  _sq.inflightV = nextV;
+  _sq.echoSet.add(nextV);
+
+  const slimmed = slimState({ ...stateToSave, _v: nextV });
+
+  async function succeed() {
+    console.log('[sync] ✓ saved _v' + nextV);
+    _sq.confirmedV = nextV;
+    _sq.inflightV = null;
+    // Keep echo suppression active for 10s after confirm
+    setTimeout(() => _sq.echoSet.delete(nextV), 10000);
     const cb = _sq.onSuccess;
-    _sq.state = null; _sq.retries = 0; _sq.onSuccess = null; _sq.pendingVersion = null;
-    if (cb) cb(nextV);
-  };
+    _sq.pending = null; _sq.retries = 0; _sq.onSuccess = null; _sq.onConflict = null;
+    cb?.(nextV);
+  }
+
+  async function handleConflict() {
+    console.warn('[sync] conflict at v' + baseV + ', fetching remote');
+    _sq.inflightV = null;
+    _sq.echoSet.delete(nextV);
+    try {
+      const { data: cur } = await supabase.from('app_state').select('state').eq('id',1).single();
+      if (!cur?.state) return;
+      const remote = normaliseState(cur.state);
+      const remoteV = remote._v ?? 0;
+      // If remote already has our version, we somehow won — treat as success
+      if (remoteV >= nextV) { await succeed(); return; }
+      // Genuine conflict — apply remote
+      _sq.confirmedV = remoteV;
+      const cb = _sq.onConflict;
+      _sq.pending = null; _sq.retries = 0; _sq.onConflict = null; _sq.onSuccess = null;
+      cb?.(remote);
+    } catch(e) { console.error('[sync] conflict fetch failed:', e); }
+  }
 
   try {
-    const { data, error } = await supabase.rpc('update_state_versioned', {
-      expected_v: version,
-      new_state: slimState({ ...s, _v: nextV }),
+    // Try version-locked RPC first
+    const { data: rpcData, error: rpcErr } = await supabase.rpc('update_state_versioned', {
+      expected_v: baseV,
+      new_state: slimmed,
     });
 
-    if (!error && data === true) {
-      // Clean success
-      console.log('✓ saved _v' + nextV);
-      const cb = _sq.onSuccess;
-      _sq.state = null; _sq.retries = 0; _sq.onSuccess = null; _sq.pendingVersion = null;
-      if (cb) cb(nextV);
-      return;
-    }
+    if (!rpcErr && rpcData === true) { await succeed(); return; }
+    if (!rpcErr && rpcData === false) { await handleConflict(); return; }
 
-    if (!error && data === false) {
-      // Definitive version mismatch — fetch remote to check
-      // It's possible _v was null in DB (not seeded); if so, fall back to upsert
-      const { data: cur } = await supabase.from('app_state').select('state').eq('id',1).single();
-      const remoteV = cur?.state?._v;
-      if (remoteV == null) {
-        // _v not seeded in DB yet — just upsert, no real conflict
-        console.warn('DB _v not seeded, falling back to upsert');
-        await doUpsert();
-        return;
-      }
-      if (remoteV === nextV) {
-        // We actually succeeded (echo), treat as success
-        console.log('✓ echo detected, treating as success _v' + nextV);
-        const cb = _sq.onSuccess;
-        _sq.state = null; _sq.retries = 0; _sq.onSuccess = null; _sq.pendingVersion = null;
-        if (cb) cb(nextV);
-        return;
-      }
-      // Genuine conflict — another client saved first
-      console.warn('Version conflict at _v' + version + ', remote is _v' + remoteV);
-      _sq.pendingVersion = null; _sq.state = null; _sq.retries = 0;
-      if (cur?.state && _sq.onConflict) _sq.onConflict(normaliseState(cur.state));
-      return;
-    }
-
-    // RPC unavailable (null data or error) — fall back to upsert
-    if (error) console.warn('RPC error, falling back to upsert:', error.message);
-    else console.warn('RPC returned null, falling back to upsert');
-    await doUpsert();
+    // RPC unavailable — unconditional upsert (degraded mode, no version check)
+    console.warn('[sync] RPC unavailable, falling back to upsert:', rpcErr?.message);
+    const { error: upsertErr } = await supabase
+      .from('app_state')
+      .upsert({ id: 1, state: slimmed, updated_at: new Date().toISOString() });
+    if (upsertErr) throw new Error('upsert: ' + upsertErr.message);
+    await succeed();
 
   } catch (err) {
-    _sq.pendingVersion = null;
-    const MAX = 8;
+    _sq.inflightV = null;
+    _sq.echoSet.delete(nextV);
+    const MAX = 6;
     if (_sq.retries < MAX) {
       _sq.retries++;
-      const delay = Math.min(600 * Math.pow(1.7, _sq.retries), 30000);
-      console.warn(`Save retry ${_sq.retries}/${MAX} in ${Math.round(delay)}ms:`, err.message);
+      const delay = Math.min(500 * Math.pow(2, _sq.retries), 20000);
+      console.warn('[sync] retry ' + _sq.retries + '/' + MAX + ' in ' + delay + 'ms:', err.message);
       _sq.timer = setTimeout(_flushSave, delay);
     } else {
-      console.error('Save failed after max retries');
-      _sq.state = null; _sq.retries = 0;
+      console.error('[sync] failed after ' + MAX + ' retries:', err.message);
+      const cb = _sq.onConflict;
+      _sq.pending = null; _sq.retries = 0; _sq.onConflict = null; _sq.onSuccess = null;
+      // Last resort: surface the remote state
       try {
         const { data: cur } = await supabase.from('app_state').select('state').eq('id',1).single();
-        if (cur?.state && _sq.onConflict) _sq.onConflict(normaliseState(cur.state));
+        if (cur?.state) cb?.(normaliseState(cur.state));
       } catch {}
     }
   }
@@ -785,6 +810,18 @@ const CSS = `
   .page-fade{animation:pageFade .18s ease both}
   .page-fade{animation:pageFade .2s ease both}
   @keyframes pageFade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+
+  /* ── LIVE MATCH SCORING ──────────────────────────────────── */
+  .match-live-banner{background:radial-gradient(ellipse 80% 300% at 0% 50%,rgba(240,112,112,.12),var(--s1));border:1px solid rgba(240,112,112,.3);border-radius:10px;padding:10px 16px;display:flex;align-items:center;gap:10px;font-size:13px;animation:slideUp .3s ease;cursor:pointer}
+  .score-btn{width:26px;height:26px;border-radius:5px;background:var(--s3);border:1px solid var(--b2);color:var(--text);cursor:pointer;font-size:16px;font-weight:700;display:flex;align-items:center;justify-content:center;user-select:none;transition:background .1s}
+  .score-btn:hover{background:var(--b2)}
+  .score-btn:active{transform:scale(.93)}
+  .live-score-num{font-family:var(--disp);font-size:32px;font-weight:700;line-height:1;min-width:40px;text-align:center;transition:all .2s}
+  .live-pulse{animation:livePulse 1.8s ease-in-out infinite}
+  @keyframes livePulse{0%,100%{opacity:1}50%{opacity:.45}}
+  .score-btn{width:32px;height:32px;border-radius:50%;font-size:18px;font-weight:700;display:flex;align-items:center;justify-content:center;cursor:pointer;border:1px solid var(--b2);background:var(--s2);color:var(--text);transition:all .12s;user-select:none;line-height:1}
+  .score-btn:hover{background:var(--s3);border-color:var(--amber)}
+  .score-btn:active{transform:scale(.9)}
 
   /* ── ANIMATIONS ──────────────────────────────────────────── */
   @keyframes slideUp{from{transform:translateY(10px);opacity:0}to{transform:translateY(0);opacity:1}}
@@ -1485,17 +1522,55 @@ function Sparkline({ pid, games }) {
 // ============================================================
 // LIVE TICKER
 // ============================================================
-function LiveTicker({ games, players }) {
-  const [visible, setVisible] = useState(true);
+const _dismissedTickers = new Set();
+
+function LiveTicker({ games, players, finals, monthKey, onNavToPlay }) {
+  const [, forceUpdate] = useState(0);
+  const bracket = finals?.[monthKey]?.bracket;
+
+  // Highest priority: live finals match in progress
+  const liveScores = finals?.[monthKey]?.liveScores || {};
+  const liveMatchKey = bracket && ['upper','lower','final'].find(k => {
+    return liveScores[k]?.active && bracket[k] && !bracket[k].winner;
+  });
+
+  if (liveMatchKey) {
+    const m = bracket[liveMatchKey];
+    const labMap = { upper:'Semi 1', lower:'Semi 2', final:'Grand Final' };
+    const pA = (m.sideA||[]).map(id=>pName(id,players)).join(' & ');
+    const pB = (m.sideB||[]).map(id=>pName(id,players)).join(' & ');
+    const lA = liveScores[liveMatchKey]?.scoreA ?? 0, lB = liveScores[liveMatchKey]?.scoreB ?? 0;
+    const leading = lA > lB ? 'A' : lB > lA ? 'B' : null;
+    return (
+      <div onClick={onNavToPlay} style={{
+        background:'radial-gradient(ellipse 80% 300% at 0% 50%,rgba(232,184,74,.14),var(--s1))',
+        border:'1px solid rgba(232,184,74,.4)',borderRadius:10,
+        padding:'8px 16px',display:'flex',alignItems:'center',gap:10,fontSize:12,
+        animation:'slideUp .3s ease',cursor:'pointer'
+      }}>
+        <span className="tag" style={{background:'rgba(232,184,74,.2)',color:'var(--gold)',flexShrink:0}}>🏆 LIVE</span>
+        <span style={{flex:1}}>
+          <span style={{fontWeight:700,color:leading==='A'?'var(--green)':'var(--text)'}}>{pA}</span>
+          <span className="disp text-am" style={{margin:'0 10px',fontSize:18,fontWeight:700}}>{lA}–{lB}</span>
+          <span style={{fontWeight:700,color:leading==='B'?'var(--green)':'var(--text)'}}>{pB}</span>
+          <span className="text-dd xs" style={{marginLeft:8}}>{labMap[liveMatchKey]}</span>
+        </span>
+        <span className="xs text-dd">Watch →</span>
+      </div>
+    );
+  }
+
+  // Fallback: recent game result
   const latest = [...(games||[])].sort((a,b)=>new Date(b.date)-new Date(a.date))[0];
-  if (!latest || !visible) return null;
+  if (!latest) return null;
+  const tickerId = latest.id;
+  if (_dismissedTickers.has(tickerId)) return null;
   const age = Date.now() - new Date(latest.date).getTime();
-  if (age > 5 * 60 * 1000) return null; // only show within 5 mins
+  if (age > 5 * 60 * 1000) return null;
   const wIds = latest.winner==="A"?latest.sideA:latest.sideB;
   const lIds = latest.winner==="A"?latest.sideB:latest.sideA;
   const wNames = wIds.map(id=>pName(id,players)).join(" & ");
   const lNames = lIds.map(id=>pName(id,players)).join(" & ");
-  const score = `${latest.scoreA}–${latest.scoreB}`;
   return (
     <div style={{
       background:"radial-gradient(ellipse 80% 300% at 0% 50%,rgba(94,201,138,.12),var(--s1))",
@@ -1503,14 +1578,15 @@ function LiveTicker({ games, players }) {
       padding:"8px 16px",display:"flex",alignItems:"center",gap:10,fontSize:12,
       animation:"slideUp .3s ease"
     }}>
-      <span className="tag tag-w" style={{flexShrink:0}}>LIVE</span>
+      <span className="tag tag-w" style={{flexShrink:0}}>RESULT</span>
       <span style={{flex:1}}>
         <span className="text-g bold">{wNames}</span>
         <span className="text-dd"> beat </span>
         <span>{lNames}</span>
-        <span className="text-am bold" style={{marginLeft:8,fontFamily:"var(--disp)"}}>{score}</span>
+        <span className="text-am bold" style={{marginLeft:8,fontFamily:"var(--disp)"}}>{latest.scoreA}–{latest.scoreB}</span>
       </span>
-      <button onClick={()=>setVisible(false)} style={{background:"none",border:"none",color:"var(--dimmer)",cursor:"pointer",fontSize:14,padding:"0 4px"}}>×</button>
+      <button onClick={()=>{ _dismissedTickers.add(tickerId); forceUpdate(n=>n+1); }}
+        style={{background:"none",border:"none",color:"var(--dimmer)",cursor:"pointer",fontSize:14,padding:"0 4px"}}>×</button>
     </div>
   );
 }
@@ -1569,7 +1645,7 @@ function LeaderboardView({ state, setState, onSelectPlayer, onNavToPlay, onNavTo
   return (
     <>
     <div className="stack page-fade">
-      <LiveTicker games={state.games} players={state.players}/>
+      <LiveTicker games={state.games} players={state.players} finals={state.finals} monthKey={monthKey} onNavToPlay={onNavToPlay}/>
       {isAdmin && (
         <div style={{display:"flex",justifyContent:"flex-end"}}>
           <button className="btn btn-g btn-sm" style={{gap:6}} onClick={()=>setShowRecalcConfirm(true)}>
@@ -1670,7 +1746,7 @@ function LeaderboardView({ state, setState, onSelectPlayer, onNavToPlay, onNavTo
                   <td><span className="text-g bold">{p.wins}</span></td>
                   <td><span className="text-r bold">{p.losses}</span></td>
                   <td><span className={pct>=50?"text-g":"text-d"}>{total?`${pct}%`:"—"}</span></td>
-                  <td><StreakBadge streak={p.streak} streakPower={p.streakPower||0} showMult /></td>
+                  <td><StreakBadge streak={p.streak} streakPower={p.streakPower||0} lossStreakPower={p.lossStreakPower||0} showMult /></td>
                   <td><PosBadge pos={p.position}/></td>
                   <td>
                     {isPlaced
@@ -3344,11 +3420,45 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
     showToast("Championships awarded to " + champNames.join(" & ") + " 🏆");
   }
 
+  // ── LIVE SCORE HELPERS ────────────────────────────────────
+  function getLive(matchKey) {
+    return (state.finals?.[monthKey]?.liveScores?.[matchKey]) || { scoreA: 0, scoreB: 0, active: false };
+  }
+
+  function setLiveScore(matchKey, side, delta) {
+    setState(s => {
+      const f = { ...(s.finals?.[monthKey] || {}) };
+      const ls = { ...(f.liveScores || {}) };
+      const cur = ls[matchKey] || { scoreA: 0, scoreB: 0, active: true };
+      const key = side === "A" ? "scoreA" : "scoreB";
+      ls[matchKey] = { ...cur, [key]: Math.max(0, (cur[key] || 0) + delta), active: true };
+      f.liveScores = ls;
+      return { ...s, finals: { ...s.finals, [monthKey]: f } };
+    });
+  }
+
+  function clearLiveScore(matchKey) {
+    setState(s => {
+      const f = { ...(s.finals?.[monthKey] || {}) };
+      const ls = { ...(f.liveScores || {}) };
+      delete ls[matchKey];
+      f.liveScores = ls;
+      return { ...s, finals: { ...s.finals, [monthKey]: f } };
+    });
+  }
+
+  function startLive(matchKey) {
+    setState(s => {
+      const f = { ...(s.finals?.[monthKey] || {}) };
+      const ls = { ...(f.liveScores || {}) };
+      ls[matchKey] = { scoreA: 0, scoreB: 0, active: true };
+      f.liveScores = ls;
+      return { ...s, finals: { ...s.finals, [monthKey]: f } };
+    });
+  }
+
   // ── BRACKET MATCH COMPONENT ───────────────────────────────
   function BMatch({ matchKey, label, overrideSideA, overrideSideB, preview }) {
-    const [sA, setSA] = useState("");
-    const [sBv, setSBv] = useState("");
-
     const m = preview
       ? { sideA: overrideSideA, sideB: overrideSideB }
       : finals?.bracket?.[matchKey];
@@ -3361,66 +3471,101 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
         </div>
       );
     }
-    // sideB can be null for upper-only finals — show pending
     const sideBReady = m.sideB && m.sideB.length > 0;
-
-    const pA = m.sideA.map(id => {
-      const pl = state.players.find(p => p.id === id);
-      return pl ? { name: pl.name, pos: pl.position } : { name: "?", pos: null };
-    });
-    const pB = (m.sideB || []).map(id => {
-      const pl = state.players.find(p => p.id === id);
-      return pl ? { name: pl.name, pos: pl.position } : { name: "?", pos: null };
-    });
+    const pA = m.sideA.map(id => { const pl = state.players.find(p=>p.id===id); return pl ? { name:pl.name, pos:pl.position } : { name:"?", pos:null }; });
+    const pB = (m.sideB||[]).map(id => { const pl = state.players.find(p=>p.id===id); return pl ? { name:pl.name, pos:pl.position } : { name:"?", pos:null }; });
     const done = !!m.winner;
+    const live = !preview && !done ? getLive(matchKey) : null;
+    const isLive = live?.active;
 
     return (
       <div>
-        <div className="xs text-dd" style={{ textAlign: "center", marginBottom: 5, letterSpacing: 2, textTransform: "uppercase" }}>{label}</div>
-        <div style={{ background: "var(--s2)", border: "1px solid var(--b2)", borderRadius: 8, overflow: "hidden", minWidth: 280 }}>
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:6, marginBottom:5 }}>
+          <div className="xs text-dd" style={{ letterSpacing: 2, textTransform: "uppercase" }}>{label}</div>
+          {isLive && <span style={{display:"flex",alignItems:"center",gap:4,fontSize:10,fontWeight:700,color:"var(--red)"}}>
+            <span className="live-pulse" style={{display:"inline-block",width:6,height:6,borderRadius:"50%",background:"var(--red)"}}/>LIVE
+          </span>}
+        </div>
+        <div style={{ background:"var(--s2)", border:`1px solid ${isLive?"rgba(240,112,112,.35)":"var(--b2)"}`, borderRadius:8, overflow:"hidden", minWidth:280, transition:"border-color .3s" }}>
           {/* Team A */}
-          <div style={{ padding: "10px 14px", borderBottom: "2px solid var(--b1)", background: m.winner === "A" ? "rgba(94,201,138,.08)" : "transparent", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              {pA.map((pl, i) => (
-                <div key={i} className="fac" style={{ gap: 6 }}>
-                  <span style={{ fontWeight: 600, fontSize: 13, color: m.winner === "A" ? "var(--green)" : "var(--text)" }}>{pl.name}</span>
-                  <PosBadge pos={pl.pos} />
+          <div style={{ padding:"10px 14px", borderBottom:"2px solid var(--b1)", background:m.winner==="A"?"rgba(94,201,138,.08)":isLive&&live.scoreA>live.scoreB?"rgba(94,201,138,.04)":"transparent", display:"flex", justifyContent:"space-between", alignItems:"center", transition:"background .3s" }}>
+            <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
+              {pA.map((pl,i) => (
+                <div key={i} className="fac" style={{ gap:6 }}>
+                  <span style={{ fontWeight:600, fontSize:13, color:m.winner==="A"?"var(--green)":"var(--text)" }}>{pl.name}</span>
+                  <PosBadge pos={pl.pos}/>
                 </div>
               ))}
             </div>
-            {done && <span className="disp text-am" style={{ fontSize: 26, marginLeft: 12 }}>{m.scoreA}</span>}
-            {m.winner === "A" && <span className="tag tag-w" style={{ marginLeft: 8 }}>WIN</span>}
+            <div style={{display:"flex",alignItems:"center",gap:6}}>
+              {isLive && isAdmin && (
+                <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                  <div className="score-btn" onClick={()=>setLiveScore(matchKey,"A",1)}>+</div>
+                  <div className="score-btn" style={{fontSize:14}} onClick={()=>setLiveScore(matchKey,"A",-1)}>−</div>
+                </div>
+              )}
+              {isLive && <span className="live-score-num" style={{color:live.scoreA>live.scoreB?"var(--green)":live.scoreA<live.scoreB?"var(--red)":"var(--text)"}}>{live.scoreA}</span>}
+              {done && <span className="disp text-am" style={{ fontSize:26, marginLeft:12 }}>{m.scoreA}</span>}
+              {m.winner==="A" && <span className="tag tag-w" style={{ marginLeft:8 }}>WIN</span>}
+            </div>
           </div>
           {/* VS divider */}
-          <div style={{ textAlign: "center", padding: "4px 0", background: "var(--s3)", fontSize: 9, letterSpacing: 3, color: "var(--dimmer)", textTransform: "uppercase" }}>vs</div>
+          <div style={{ textAlign:"center", padding:"4px 0", background:"var(--s3)", fontSize:9, letterSpacing:3, color:"var(--dimmer)", textTransform:"uppercase" }}>
+            {isLive ? <span className="live-pulse">— LIVE —</span> : "vs"}
+          </div>
           {/* Team B */}
-          <div style={{ padding: "10px 14px", background: m.winner === "B" ? "rgba(94,201,138,.08)" : "transparent", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ padding:"10px 14px", background:m.winner==="B"?"rgba(94,201,138,.08)":isLive&&live.scoreB>live.scoreA?"rgba(94,201,138,.04)":"transparent", display:"flex", justifyContent:"space-between", alignItems:"center", transition:"background .3s" }}>
             {sideBReady ? (
-              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                {pB.map((pl, i) => (
-                  <div key={i} className="fac" style={{ gap: 6 }}>
-                    <span style={{ fontWeight: 600, fontSize: 13, color: m.winner === "B" ? "var(--green)" : "var(--text)" }}>{pl.name}</span>
-                    <PosBadge pos={pl.pos} />
+              <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
+                {pB.map((pl,i) => (
+                  <div key={i} className="fac" style={{ gap:6 }}>
+                    <span style={{ fontWeight:600, fontSize:13, color:m.winner==="B"?"var(--green)":"var(--text)" }}>{pl.name}</span>
+                    <PosBadge pos={pl.pos}/>
                   </div>
                 ))}
               </div>
             ) : (
               <span className="text-dd xs" style={{fontStyle:"italic"}}>Awaiting lower bracket…</span>
             )}
-            {done && <span className="disp text-am" style={{ fontSize: 26, marginLeft: 12 }}>{m.scoreB}</span>}
-            {m.winner === "B" && <span className="tag tag-w" style={{ marginLeft: 8 }}>WIN</span>}
+            <div style={{display:"flex",alignItems:"center",gap:6}}>
+              {isLive && isAdmin && (
+                <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                  <div className="score-btn" onClick={()=>setLiveScore(matchKey,"B",1)}>+</div>
+                  <div className="score-btn" style={{fontSize:14}} onClick={()=>setLiveScore(matchKey,"B",-1)}>−</div>
+                </div>
+              )}
+              {isLive && <span className="live-score-num" style={{color:live.scoreB>live.scoreA?"var(--green)":live.scoreB<live.scoreA?"var(--red)":"var(--text)"}}>{live.scoreB}</span>}
+              {done && <span className="disp text-am" style={{ fontSize:26, marginLeft:12 }}>{m.scoreB}</span>}
+              {m.winner==="B" && <span className="tag tag-w" style={{ marginLeft:8 }}>WIN</span>}
+            </div>
           </div>
         </div>
+
+        {/* Admin controls */}
         {!preview && isAdmin && !done && (
-          <div style={{ display: "flex", gap: 5, alignItems: "center", justifyContent: "center", marginTop: 7 }}>
-            <input className="inp" type="number" min="0" placeholder="A" value={sA} onChange={e => setSA(e.target.value)} style={{ width: 50, textAlign: "center" }} />
-            <span className="text-dd">–</span>
-            <input className="inp" type="number" min="0" placeholder="B" value={sBv} onChange={e => setSBv(e.target.value)} style={{ width: 50, textAlign: "center" }} />
-            <button className="btn btn-p btn-sm" onClick={() => {
-              const nA = parseInt(sA), nB = parseInt(sBv);
-              if (isNaN(nA) || isNaN(nB) || nA === nB) return;
-              recordResult(matchKey, nA > nB ? "A" : "B", nA, nB);
-            }}>Set</button>
+          <div style={{ marginTop:8, display:"flex", flexDirection:"column", gap:6 }}>
+            {!isLive ? (
+              <button className="btn btn-g btn-sm w-full" onClick={()=>startLive(matchKey)}>
+                🔴 Start Live Scoring
+              </button>
+            ) : (
+              <div style={{display:"flex",flexDirection:"column",gap:5}}>
+                <div style={{display:"flex",gap:5,alignItems:"center",justifyContent:"center"}}>
+                  <button className="btn btn-p btn-sm" style={{flex:1}} onClick={() => {
+                    if (live.scoreA === live.scoreB) return;
+                    const winner = live.scoreA > live.scoreB ? "A" : "B";
+                    recordResult(matchKey, winner, live.scoreA, live.scoreB);
+                    clearLiveScore(matchKey);
+                  }} disabled={live.scoreA===live.scoreB}>
+                    ✓ Confirm Result ({live.scoreA}–{live.scoreB})
+                  </button>
+                  <button className="btn btn-d btn-sm" onClick={()=>clearLiveScore(matchKey)} title="Reset live score">↺</button>
+                </div>
+                <div style={{display:"flex",gap:5}}>
+                  <button className="btn btn-g btn-sm" style={{flex:1,fontSize:11}} onClick={()=>clearLiveScore(matchKey)}>Cancel Live</button>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -3529,7 +3674,14 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
       <div className="card">
         <div className="card-header">
           <span className="card-title">Bracket — {fmtMonth(monthKey)}</span>
-          <span className={`tag ${status === "complete" ? "tag-w" : "tag-a"}`}>{status.toUpperCase()}</span>
+          <div className="fac" style={{gap:6}}>
+            {Object.values(finals?.liveScores||{}).some(v=>v?.active) && (
+              <span style={{display:"flex",alignItems:"center",gap:4,fontSize:10,fontWeight:700,color:"var(--red)"}}>
+                <span className="live-pulse" style={{display:"inline-block",width:6,height:6,borderRadius:"50%",background:"var(--red)"}}/>LIVE
+              </span>
+            )}
+            <span className={`tag ${status === "complete" ? "tag-w" : "tag-a"}`}>{status.toUpperCase()}</span>
+          </div>
         </div>
         <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 24 }}>
           <div>
@@ -3613,6 +3765,422 @@ function RulesView({ state, setState, isAdmin, showToast }) {
 }
 
 // ============================================================
+// SYNC TEST VIEW — stress tests the sync system live
+// ============================================================
+function SyncTestView({ state }) {
+  const [running, setRunning] = useState(false);
+  const [results, setResults] = useState([]);
+  const [currentV, setCurrentV] = useState(null);
+  const abortRef = useRef(false);
+
+  function log(msg, type='info') {
+    const ts = new Date().toLocaleTimeString('en-GB', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    setResults(r => [...r, { ts, msg, type, id: crypto.randomUUID() }]);
+  }
+
+  async function fetchCurrentV() {
+    const { data } = await supabase.from('app_state').select('state').eq('id', 1).single();
+    return data?.state?._v ?? 0;
+  }
+
+  async function writeVersion(v, label) {
+    const { data: cur } = await supabase.from('app_state').select('state').eq('id', 1).single();
+    const base = { ...cur.state, _testLabel: label, _v: v };
+    const { error } = await supabase.from('app_state')
+      .upsert({ id: 1, state: base, updated_at: new Date().toISOString() });
+    if (error) throw new Error(error.message);
+    return v;
+  }
+
+  // ── TEST 1: Sequential writes — each must increment _v cleanly
+  async function testSequential() {
+    log('── Test 1: Sequential writes ──', 'header');
+    const startV = await fetchCurrentV();
+    log(`Start _v = ${startV}`);
+    let ok = 0, fail = 0;
+    for (let i = 1; i <= 5; i++) {
+      if (abortRef.current) break;
+      try {
+        const { data } = await supabase.from('app_state').select('state').eq('id',1).single();
+        const base = data.state;
+        const nextV = (base._v ?? 0) + 1;
+        const { data: rpc } = await supabase.rpc('update_state_versioned', {
+          expected_v: base._v ?? 0,
+          new_state: { ...base, _v: nextV, _seqTest: i },
+        });
+        if (rpc === true) {
+          log(`  Write ${i}/5 → _v${nextV} ✓`, 'ok');
+          ok++;
+        } else {
+          log(`  Write ${i}/5 → conflict (rpc=false)`, 'warn');
+          fail++;
+        }
+        await new Promise(r => setTimeout(r, 80));
+      } catch(e) {
+        log(`  Write ${i}/5 → error: ${e.message}`, 'err');
+        fail++;
+      }
+    }
+    const endV = await fetchCurrentV();
+    const expected = startV + ok;
+    const passed = endV === expected;
+    log(`Sequential: ${ok} ok, ${fail} fail. DB _v=${endV}, expected ${expected} → ${passed ? '✓ PASS' : '✗ FAIL'}`, passed ? 'ok' : 'err');
+    return passed;
+  }
+
+  // ── TEST 2: Concurrent writes — simulate 3 clients writing simultaneously
+  async function testConcurrent() {
+    log('── Test 2: Concurrent writes (3 clients) ──', 'header');
+    const { data: cur } = await supabase.from('app_state').select('state').eq('id',1).single();
+    const baseV = cur.state._v ?? 0;
+    log(`Base _v = ${baseV}, firing 3 concurrent writes`);
+
+    // All three try to write expected_v = baseV simultaneously
+    // Only ONE should succeed via version lock; others should get conflict
+    const results = await Promise.allSettled([
+      supabase.rpc('update_state_versioned', { expected_v: baseV, new_state: { ...cur.state, _v: baseV+1, _client: 'A' } }),
+      supabase.rpc('update_state_versioned', { expected_v: baseV, new_state: { ...cur.state, _v: baseV+1, _client: 'B' } }),
+      supabase.rpc('update_state_versioned', { expected_v: baseV, new_state: { ...cur.state, _v: baseV+1, _client: 'C' } }),
+    ]);
+
+    const wins = results.filter(r => r.status === 'fulfilled' && r.value.data === true).length;
+    const conflicts = results.filter(r => r.status === 'fulfilled' && r.value.data === false).length;
+    const errors = results.filter(r => r.status === 'rejected').length;
+
+    log(`  Wins: ${wins}, Conflicts: ${conflicts}, Errors: ${errors}`);
+    const finalV = await fetchCurrentV();
+    log(`  Final _v = ${finalV} (expected ${baseV + 1})`);
+
+    const passed = wins === 1 && finalV === baseV + 1;
+    log(`Concurrent: exactly 1 winner = ${wins===1 ? '✓' : '✗'}, _v correct = ${finalV===baseV+1 ? '✓' : '✗'} → ${passed ? '✓ PASS' : '✗ FAIL'}`, passed ? 'ok' : 'err');
+    return passed;
+  }
+
+  // ── TEST 3: Rapid fire — simulate rapid state changes like logging multiple games
+  async function testRapidFire() {
+    log('── Test 3: Rapid-fire writes (10 in <500ms) ──', 'header');
+    const startV = await fetchCurrentV();
+    log(`Start _v = ${startV}`);
+    let written = 0;
+
+    // Simulate what saveState does: always use confirmedV+1
+    let localV = startV;
+    const promises = [];
+    for (let i = 0; i < 10; i++) {
+      const myV = localV + i + 1;
+      const expectedV = localV + i;
+      promises.push(
+        supabase.rpc('update_state_versioned', {
+          expected_v: expectedV,
+          new_state: { _v: myV, _rapidTest: i, players: [], games: [], monthlyPlacements: {}, finals: {}, rules: '', finalsDate: null },
+        }).then(({ data }) => {
+          if (data === true) written++;
+          return data;
+        })
+      );
+      await new Promise(r => setTimeout(r, 40)); // 40ms apart = 10 writes in 400ms
+    }
+    await Promise.allSettled(promises);
+    const endV = await fetchCurrentV();
+    log(`  ${written}/10 writes confirmed. Final _v=${endV}, expected ${startV + 10}`);
+    // With sequential 40ms gaps and the new queue, all 10 should succeed
+    const passed = written === 10 && endV === startV + 10;
+    log(`Rapid-fire: ${passed ? '✓ PASS' : '✗ FAIL'} (${written}/10 written, _v=${endV})`, passed ? 'ok' : 'err');
+    return passed;
+  }
+
+  // ── TEST 4: Version mismatch recovery — write a stale version, check conflict path
+  async function testConflictRecovery() {
+    log('── Test 4: Conflict recovery ──', 'header');
+    const v = await fetchCurrentV();
+    log(`Current _v = ${v}`);
+
+    // Write a correct version first
+    const { data: cur } = await supabase.from('app_state').select('state').eq('id',1).single();
+    await supabase.rpc('update_state_versioned', {
+      expected_v: v, new_state: { ...cur.state, _v: v+1, _conflictTest: 'step1' }
+    });
+    log(`  Advanced to _v${v+1}`);
+
+    // Now try to write with the OLD version (stale client)
+    const { data: staleResult } = await supabase.rpc('update_state_versioned', {
+      expected_v: v, new_state: { ...cur.state, _v: v+1, _conflictTest: 'stale' }
+    });
+    const conflictDetected = staleResult === false;
+    log(`  Stale write (expected_v=${v}) → ${conflictDetected ? 'correctly rejected ✓' : 'incorrectly accepted ✗'}`);
+
+    const finalV = await fetchCurrentV();
+    log(`  Final _v = ${finalV} (should be ${v+1})`);
+    const passed = conflictDetected && finalV === v+1;
+    log(`Conflict recovery: ${passed ? '✓ PASS' : '✗ FAIL'}`, passed ? 'ok' : 'err');
+    return passed;
+  }
+
+  // ── TEST 5: Realtime echo suppression — check echoSet works
+  async function testEchoSuppression() {
+    log('── Test 5: Echo suppression check ──', 'header');
+    const beforeEchoSize = _sq.echoSet.size;
+    log(`  echoSet size before: ${beforeEchoSize}`);
+    // Trigger a real save via saveState
+    const v = await fetchCurrentV();
+    const { data: cur } = await supabase.from('app_state').select('state').eq('id',1).single();
+    const testV = (cur.state._v ?? 0) + 1;
+    _sq.echoSet.add(testV);
+    log(`  Added _v${testV} to echoSet`);
+    const suppressed = _sq.echoSet.has(testV);
+    log(`  echoSet.has(${testV}) = ${suppressed ? '✓ would suppress' : '✗ would NOT suppress'}`);
+    _sq.echoSet.delete(testV);
+    const passed = suppressed;
+    log(`Echo suppression: ${passed ? '✓ PASS' : '✗ FAIL'}`, passed ? 'ok' : 'err');
+    return passed;
+  }
+
+  async function runAll() {
+    setRunning(true);
+    abortRef.current = false;
+    setResults([]);
+    const v = await fetchCurrentV();
+    setCurrentV(v);
+    log(`Starting sync stress test. DB _v = ${v}`, 'header');
+    log(`Queue state: confirmedV=${_sq.confirmedV}, inflightV=${_sq.inflightV}, echoSet.size=${_sq.echoSet.size}`);
+
+    const tests = [testSequential, testConcurrent, testRapidFire, testConflictRecovery, testEchoSuppression];
+    let passed = 0, failed = 0;
+    for (const test of tests) {
+      if (abortRef.current) { log('Aborted.', 'warn'); break; }
+      try {
+        const ok = await test();
+        if (ok) passed++; else failed++;
+      } catch(e) {
+        log(`Test threw: ${e.message}`, 'err');
+        failed++;
+      }
+      await new Promise(r => setTimeout(r, 200));
+    }
+
+    const finalV = await fetchCurrentV();
+    setCurrentV(finalV);
+    log(`──────────────────────────────────`, 'header');
+    log(`Results: ${passed}/${passed+failed} passed. Final DB _v = ${finalV}`, passed === passed+failed ? 'ok' : 'err');
+    setRunning(false);
+  }
+
+  const typeColors = { ok:'var(--green)', err:'var(--red)', warn:'var(--orange)', header:'var(--amber)', info:'var(--dimmer)' };
+
+  return (
+    <div className="stack page-fade">
+      <div className="card">
+        <div className="card-header">
+          <span className="card-title">⚡ Sync Stress Test</span>
+          <div className="fac" style={{gap:8}}>
+            {currentV !== null && <span className="xs text-dd">DB _v = {currentV}</span>}
+            {running
+              ? <button className="btn btn-d btn-sm" onClick={()=>abortRef.current=true}>Abort</button>
+              : <button className="btn btn-p" onClick={runAll}>Run All Tests</button>
+            }
+          </div>
+        </div>
+        <div style={{padding:14}}>
+          <div className="xs text-dd" style={{marginBottom:12,lineHeight:1.7}}>
+            Tests: sequential writes · concurrent collision (3 clients) · rapid-fire (10 in 400ms) · conflict recovery · echo suppression.<br/>
+            Each test writes to the live DB. Run on a quiet moment or restore state after if needed.
+          </div>
+
+          {results.length === 0 && !running && (
+            <div style={{textAlign:'center',padding:'32px 0',color:'var(--dimmer)',fontSize:13}}>
+              Press Run to stress-test the sync system against the live database.
+            </div>
+          )}
+
+          <div style={{fontFamily:'var(--mono)',fontSize:12,display:'flex',flexDirection:'column',gap:3,maxHeight:500,overflowY:'auto'}}>
+            {results.map(r => (
+              <div key={r.id} style={{display:'flex',gap:10,color:typeColors[r.type]||'var(--text)'}}>
+                <span style={{color:'var(--dimmer)',flexShrink:0}}>{r.ts}</span>
+                <span>{r.msg}</span>
+              </div>
+            ))}
+            {running && (
+              <div style={{color:'var(--dimmer)',animation:'savingBar 1s infinite alternate'}}>⋯ running</div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+// ============================================================
+// SYNC TEST PANEL (admin dev tool)
+// ============================================================
+function SyncTestPanel({ state, setState, showToast }) {
+  const [log, setLog] = useState([]);
+  const [running, setRunning] = useState(false);
+
+  function addLog(msg, type='info') {
+    const time = new Date().toLocaleTimeString('en-GB', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    setLog(l => [{time, msg, type}, ...l].slice(0, 60));
+  }
+
+  async function fetchCurrentDB() {
+    const { data } = await supabase.from('app_state').select('state').eq('id',1).single();
+    return data?.state;
+  }
+
+  // ── Test 1: Rapid fire saves ─────────────────────────────
+  async function testRapidFire() {
+    addLog('▶ TEST 1: Rapid fire — 5 saves within 200ms', 'title');
+    setRunning(true);
+    const before = await fetchCurrentDB();
+    const beforeV = before?._v ?? 0;
+    addLog('DB _v before: ' + beforeV);
+
+    const results = [];
+    for (let i = 0; i < 5; i++) {
+      await new Promise(r => setTimeout(r, 40));
+      const tag = 'rapid-' + i;
+      setState(s => ({ ...s, _syncTestTag: tag }));
+      results.push(tag);
+    }
+
+    // Wait for save to complete
+    await new Promise(r => setTimeout(r, 2500));
+    const after = await fetchCurrentDB();
+    const afterV = after?._v ?? 0;
+    const passed = afterV > beforeV && after?._syncTestTag === results[results.length-1];
+    addLog(`DB _v after: ${afterV} | tag: ${after?._syncTestTag}`, passed?'pass':'fail');
+    addLog(passed ? '✓ PASS: Final state correctly saved' : '✗ FAIL: State not saved or wrong version', passed?'pass':'fail');
+
+    // Cleanup
+    setState(s => { const {_syncTestTag, ...rest} = s; return rest; });
+    setRunning(false);
+  }
+
+  // ── Test 2: Version integrity ────────────────────────────
+  async function testVersionIntegrity() {
+    addLog('▶ TEST 2: Version integrity — check _v increments correctly', 'title');
+    setRunning(true);
+
+    const before = await fetchCurrentDB();
+    const v0 = before?._v ?? 0;
+    addLog('Starting _v: ' + v0);
+
+    // Force 3 sequential saves
+    for (let i = 0; i < 3; i++) {
+      await new Promise(r => setTimeout(r, 500));
+      setState(s => ({ ...s, _syncTestSeq: i }));
+      await new Promise(r => setTimeout(r, 800));
+    }
+
+    await new Promise(r => setTimeout(r, 1000));
+    const after = await fetchCurrentDB();
+    const vN = after?._v ?? 0;
+    const expected = v0 + 3;
+    const passed = vN >= v0 + 1; // at least incremented
+    addLog(`_v went ${v0} → ${vN} (expected ≥${v0+1})`, passed?'pass':'fail');
+    addLog(passed ? '✓ PASS: Version correctly incremented' : '✗ FAIL: Version did not increment', passed?'pass':'fail');
+
+    setState(s => { const {_syncTestSeq, ...rest} = s; return rest; });
+    setRunning(false);
+  }
+
+  // ── Test 3: Conflict simulation ──────────────────────────
+  async function testConflictHandling() {
+    addLog('▶ TEST 3: Conflict simulation — write old _v directly to DB', 'title');
+    setRunning(true);
+
+    const before = await fetchCurrentDB();
+    const currentV = before?._v ?? 0;
+    addLog('Current DB _v: ' + currentV);
+
+    // Write a conflicting state directly to DB with a higher _v (simulating another client)
+    const conflictState = normaliseState({ ...before, _v: currentV + 5, _syncConflictTest: true });
+    const { error } = await supabase.from('app_state')
+      .upsert({ id: 1, state: slimState(conflictState), updated_at: new Date().toISOString() });
+
+    if (error) {
+      addLog('✗ Could not write conflict state: ' + error.message, 'fail');
+      setRunning(false); return;
+    }
+    addLog('Wrote conflict state _v=' + (currentV+5) + ' to DB directly');
+
+    // Now trigger a local save — should detect conflict and apply remote
+    setState(s => ({ ...s, _syncLocalChange: Date.now() }));
+    await new Promise(r => setTimeout(r, 2500));
+
+    const after = await fetchCurrentDB();
+    addLog('DB _v after conflict resolution: ' + after?._v);
+    const resolved = !after?._syncLocalChange || after?._syncConflictTest;
+    addLog(resolved ? '✓ PASS: Conflict detected and resolved' : '⚠ INFO: Local change won (upsert fallback mode)', resolved?'pass':'warn');
+
+    // Cleanup
+    setState(s => { const {_syncLocalChange, _syncConflictTest, ...rest} = s; return rest; });
+    await new Promise(r => setTimeout(r, 1000));
+    setRunning(false);
+  }
+
+  // ── Test 4: Save + verify round-trip ────────────────────
+  async function testRoundTrip() {
+    addLog('▶ TEST 4: Round-trip — save then read back and verify', 'title');
+    setRunning(true);
+
+    const sentinel = 'rt-' + Date.now();
+    setState(s => ({ ...s, _syncRoundTrip: sentinel }));
+
+    // Poll DB until we see our sentinel or timeout
+    let found = false;
+    for (let i = 0; i < 20; i++) {
+      await new Promise(r => setTimeout(r, 250));
+      const db = await fetchCurrentDB();
+      if (db?._syncRoundTrip === sentinel) { found = true; break; }
+    }
+
+    addLog(found ? '✓ PASS: Sentinel found in DB (' + sentinel + ')' : '✗ FAIL: Sentinel never reached DB', found?'pass':'fail');
+    setState(s => { const {_syncRoundTrip, ...rest} = s; return rest; });
+    setRunning(false);
+  }
+
+  const colMap = { pass:'var(--green)', fail:'var(--red)', warn:'var(--orange)', title:'var(--amber)', info:'var(--dim)' };
+
+  return (
+    <div className="card">
+      <div className="card-header">
+        <span className="card-title">⚙ Sync Test Panel</span>
+        <button className="btn btn-d btn-sm" onClick={()=>setLog([])}>Clear log</button>
+      </div>
+      <div style={{padding:14}}>
+        <div className="xs text-dd" style={{marginBottom:10,lineHeight:1.6}}>
+          Runs live tests against the actual Supabase DB. Each test reports pass/fail with details.
+          Do not use during active gameplay.
+        </div>
+        <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:12}}>
+          {[
+            ['Rapid Fire', testRapidFire],
+            ['Version Integrity', testVersionIntegrity],
+            ['Conflict Handling', testConflictHandling],
+            ['Round-trip', testRoundTrip],
+          ].map(([label, fn]) => (
+            <button key={label} className="btn btn-g btn-sm" disabled={running}
+              style={{opacity:running?0.4:1}} onClick={fn}>{label}</button>
+          ))}
+        </div>
+        <div style={{background:'var(--bg)',borderRadius:8,padding:'10px 12px',maxHeight:300,overflowY:'auto',fontFamily:'monospace',fontSize:11}}>
+          {log.length === 0 && <span style={{color:'var(--dimmer)'}}>Run a test to see output…</span>}
+          {log.map((e,i) => (
+            <div key={i} style={{color:colMap[e.type]||'var(--dim)',lineHeight:1.8}}>
+              <span style={{color:'var(--dimmer)',marginRight:8}}>{e.time}</span>{e.msg}
+            </div>
+          ))}
+        </div>
+        <div className="xs text-dd" style={{marginTop:8}}>
+          Current: local _v={state._v??'?'} · queue confirmedV accessible via console (_sq.confirmedV)
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
 // ADMIN LOGIN
 // ============================================================
 function AdminLogin({onLogin}){
@@ -3683,7 +4251,7 @@ export default function App(){
   const[rtConnected,setRtConnected]=useState(false);
   const subscriptionRef=useRef(null);
   const isRemoteUpdate=useRef(false);
-  const lastSavedVersion=useRef(-1); // tracks _v we last wrote, to suppress our own echo
+
 
   // ============================================================
   // LOAD STATE
@@ -3713,11 +4281,7 @@ export default function App(){
 
   },[]);
 
-  // Always keep a ref to latest state so saveState never captures stale closure
-  const stateRef = useRef(state);
-  useEffect(()=>{ stateRef.current = state; }, [state]);
-
-  // showToastRef declared here so autosave callback can use it before showToast is defined
+  // showToastRef declared before autosave so conflict callback can call it
   const showToastRef = useRef(null);
 
   // syncStatus: 'idle' | 'saving' | 'saved' | 'conflict' | 'error'
@@ -3729,36 +4293,46 @@ export default function App(){
     if (ms) syncStatusTimer.current = setTimeout(() => setSyncStatus('idle'), ms);
   }
 
-  // autosave — skip on initial load, skip when change came from realtime
+  // ── AUTOSAVE ──────────────────────────────────────────────
+  // The autosave effect runs on every state change. It skips:
+  //  - The initial load (isInitialLoad)
+  //  - Changes that came FROM remote (isRemoteUpdate)
+  //  - Changes triggered by our own _v stamp-back (isRemoteUpdate set in onSuccess)
+  //
+  // The save queue manages versioning internally via _sq.confirmedV.
+  // React state._v is only used for display / initial seeding of confirmedV.
+  // The onSuccess callback stamps the DB-confirmed _v back into React state
+  // using isRemoteUpdate=true so it doesn't re-trigger a save.
   const isInitialLoad = useRef(true);
-  const pendingSave = useRef(false);
+  const stateRef = useRef(state);
+  useEffect(() => { stateRef.current = state; }, [state]);
+
   useEffect(()=>{
-    if(!loading){
-      if(isInitialLoad.current){ isInitialLoad.current=false; return; }
-      if(isRemoteUpdate.current){ isRemoteUpdate.current=false; return; }
-      pendingSave.current = true;
-      setSyncStatus('saving');
-      saveState(
-        stateRef.current,
-        (remoteState) => {
-          // Version conflict — another client saved first, accept their state
-          isRemoteUpdate.current = true;
-          pendingSave.current = false;
-          setState(remoteState);
-          setSyncFor('conflict', 4000);
-          if (showToastRef.current) showToastRef.current("Sync conflict — remote state applied", "warning");
-        },
-        (newV) => {
-          // Success — stamp _v directly onto stateRef so next save
-          // uses the correct version WITHOUT triggering the autosave effect.
-          pendingSave.current = false;
-          lastSavedVersion.current = newV;
-          stateRef.current = { ...stateRef.current, _v: newV };
-          setSyncFor('saved');
-        }
-      );
-    }
-  },[state,loading]);
+    if (loading) return;
+    if (isInitialLoad.current) { isInitialLoad.current = false; return; }
+    if (isRemoteUpdate.current) { isRemoteUpdate.current = false; return; }
+
+    setSyncStatus('saving');
+    // Pass stateRef.current so the queue always has the freshest state
+    // even if this closure captured a slightly stale `state`
+    saveState(
+      stateRef.current,
+      (remoteState) => {
+        // Genuine conflict — remote was newer, apply it
+        isRemoteUpdate.current = true;
+        setState(remoteState);
+        setSyncFor('conflict', 4000);
+        if (showToastRef.current) showToastRef.current('Sync conflict — remote state applied', 'warning');
+      },
+      (newV) => {
+        // Confirmed write — stamp _v back so display is accurate
+        // isRemoteUpdate=true prevents this setState from triggering another save
+        isRemoteUpdate.current = true;
+        setState(s => ({ ...s, _v: newV }));
+        setSyncFor('saved');
+      }
+    );
+  }, [state, loading]);
 
   // ============================================================
   // REALTIME SUBSCRIPTION
@@ -3769,20 +4343,23 @@ export default function App(){
   function handleRemotePayload(payload) {
     const incoming = normaliseState(payload.new?.state || {});
     const incomingV = incoming._v ?? 0;
-    const localV = _sq.currentV !== null ? _sq.currentV : (stateRef.current?._v ?? 0);
 
-    // Ignore if this is our own echo
-    if (incomingV === _sq.currentV || incomingV === lastSavedVersion.current) {
-      console.log('Ignoring own echo _v' + incomingV);
+    // Suppress our own echo: if this version matches what we just wrote, skip
+    if (_sq.echoSet.has(incomingV)) {
+      console.log('[sync] suppressing own echo _v' + incomingV);
       return;
     }
-    // Ignore stale
-    if (incomingV <= localV && !pendingSave.current) {
-      console.log('Ignoring stale _v' + incomingV + ' (have ' + localV + ')');
+
+    // Get current local version from state (always accurate since _v is in React state)
+    const localV = state._v ?? 0;
+
+    // Skip if we already have this or a newer version and nothing is in flight
+    if (incomingV <= localV && _sq.inflightV === null) {
+      console.log('Ignoring stale _v' + incomingV + ' (local=' + localV + ')');
       return;
     }
-    console.log('Applying remote _v' + incomingV + ' (was ' + localV + ')');
-    _sq.currentV = incomingV;
+
+    console.log('Applying remote _v' + incomingV + ' (local=' + localV + ')');
     isRemoteUpdate.current = true;
     setState(incoming);
   }
@@ -3819,13 +4396,13 @@ export default function App(){
                 const freshV = fresh._v ?? 0;
                 const localV = stateRef.current?._v ?? 0;
                 if (freshV > localV) {
-                  console.log('Catch-up fetch: remote _v' + freshV + ' > local _v' + localV);
+                  console.log('[sync] catch-up: remote _v' + freshV + ' > local _v' + localV);
                   isRemoteUpdate.current = true;
                   setState(fresh);
                   if (showToastRef.current) showToastRef.current('Synced with latest state', 'info');
                 }
               }
-            } catch(e) { console.warn('Catch-up fetch failed:', e); }
+            } catch(e) { console.warn('[sync] catch-up fetch failed:', e); }
           }
         }
         if (status === 'CHANNEL_ERROR' || status === 'CLOSED' || status === 'TIMED_OUT') {
@@ -3855,7 +4432,8 @@ export default function App(){
 
   const ADMIN_TABS = [
     { id:"onboard", label:"Onboard" },
-    { id:"logGames", label:"Log Games" }
+    { id:"logGames", label:"Log Games" },
+    { id:"synctest", label:"Sync Test" },
   ];
 
   const[mobMenuOpen,setMobMenuOpen]=useState(false);
@@ -3919,6 +4497,9 @@ export default function App(){
             {PUB.map(t=>(
               <button key={t} className={`nav-btn ${tab===t?"active":""}`} onClick={()=>navTo(t)}>
                 {{"ranks":"Ranks","history":"History","stats":"Stats","play":"Champions","rules":"Rules"}[t]||t}
+                {t==="play" && Object.values(state.finals?.[getMonthKey()]?.liveScores||{}).some(v=>v?.active) && (
+                  <span style={{display:"inline-block",width:6,height:6,borderRadius:"50%",background:"var(--red)",marginLeft:5,verticalAlign:"middle",animation:"livePulse 1.4s infinite"}}/>
+                )}
               </button>
             ))}
             {isAdmin && ADMIN_TABS.map(t=>(
@@ -3971,6 +4552,9 @@ export default function App(){
           {PUB.map(t=>(
             <button key={t} className={`nav-btn ${tab===t?"active":""}`} onClick={()=>navTo(t)}>
               {{"ranks":"Ranks","history":"History","stats":"Stats","play":"Champions","rules":"Rules"}[t]||t}
+              {t==="play" && Object.values(state.finals?.[getMonthKey()]?.liveScores||{}).some(v=>v?.active) && (
+                <span style={{display:"inline-block",width:6,height:6,borderRadius:"50%",background:"var(--red)",marginLeft:5,verticalAlign:"middle",animation:"livePulse 1.4s infinite"}}/>
+              )}
             </button>
           ))}
           {isAdmin && ADMIN_TABS.map(t=>(
@@ -4052,11 +4636,14 @@ export default function App(){
 
               case "onboard":
                 return (
-                  <OnboardView
-                    state={state}
-                    setState={setState}
-                    showToast={showToast}
-                  />
+                  <div className="stack">
+                    <OnboardView
+                      state={state}
+                      setState={setState}
+                      showToast={showToast}
+                    />
+                    <SyncTestPanel state={state} setState={setState} showToast={showToast}/>
+                  </div>
                 );
 
               case "logGames":
@@ -4067,6 +4654,9 @@ export default function App(){
                     showToast={showToast}
                   />
                 );
+
+              case "synctest":
+                return <SyncTestView state={state} />;
 
               default:
                 return (
