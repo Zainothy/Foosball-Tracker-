@@ -440,7 +440,7 @@ const _sq = {
   onSuccess: null,
 };
 
-let validationToast = null;
+let syncToast = null;
 
 // Queue a state for saving. Always uses confirmedV+1 as the next version,
 // regardless of what's in state._v — this prevents the stale-version bug
@@ -467,7 +467,7 @@ async function _flushSave() {
     validateState(stateToSave);
   } catch (err) {
     console.warn('[sync] validation failed, aborting save:', err.message);
-    validationToast?.("Refusing to write empty leaderboard state", "err");
+    syncToast?.("Refusing to write empty leaderboard state", "err");
     _sq.pending = null;
     _sq.retries = 0;
     _sq.onConflict = null;
@@ -521,13 +521,16 @@ async function _flushSave() {
     if (!rpcErr && rpcData === true) { await succeed(); return; }
     if (!rpcErr && rpcData === false) { await handleConflict(); return; }
 
-    // RPC unavailable — unconditional upsert (degraded mode, no version check)
-    console.warn('[sync] RPC unavailable, falling back to upsert:', rpcErr?.message);
-    const { error: upsertErr } = await supabase
-      .from('app_state')
-      .upsert({ id: 1, state: slimmed, updated_at: new Date().toISOString() });
-    if (upsertErr) throw new Error('upsert: ' + upsertErr.message);
-    await succeed();
+    // RPC unavailable — do NOT upsert to avoid clobbering remote state
+    console.warn('[sync] RPC unavailable, aborting save:', rpcErr?.message);
+    _sq.inflightV = null;
+    _sq.echoSet.delete(nextV);
+    _sq.pending = null;
+    _sq.retries = 0;
+    _sq.onConflict = null;
+    _sq.onSuccess = null;
+    syncToast?.("Sync unavailable (versioned RPC missing). No write performed.", "err");
+    return;
 
   } catch (err) {
     _sq.inflightV = null;
@@ -4609,8 +4612,8 @@ export default function App(){
   },[]);
   showToastRef.current = showToast;
   useEffect(()=>{
-    validationToast = showToast;
-    return ()=>{ validationToast = null; };
+    syncToast = showToast;
+    return ()=>{ syncToast = null; };
   },[showToast]);
 
   // ============================================================
