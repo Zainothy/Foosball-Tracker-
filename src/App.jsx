@@ -50,6 +50,10 @@ const CONFIG = {
   RED_CARD_PTS: 20,     // serious misconduct — abuse, repeated offences, cheating
 };
 
+// Enable extra verification after each save to detect silent sync failures.
+// Turn off once the issue is resolved.
+const SYNC_DEBUG = true;
+
 // ============================================================
 // DEFAULT RULEBOOK (markdown)
 // ============================================================
@@ -4454,6 +4458,34 @@ export default function App(){
 
   // showToastRef declared before autosave so conflict callback can call it
   const showToastRef = useRef(null);
+  async function verifyRemoteState(expectedV, expectedSnapshot) {
+    try {
+      const { data, error } = await supabase.from('app_state').select('state').eq('id',1).single();
+      if (error || !data?.state) {
+        setSyncFor('error', 6000);
+        if (showToastRef.current) showToastRef.current('Sync verify failed: could not read remote state', 'err');
+        return;
+      }
+      const remote = data.state;
+      const remoteV = remote._v ?? 0;
+      const localPlayers = expectedSnapshot?.players?.length ?? 0;
+      const localGames = expectedSnapshot?.games?.length ?? 0;
+      const remotePlayers = remote.players?.length ?? 0;
+      const remoteGames = remote.games?.length ?? 0;
+
+      if (remoteV !== expectedV || remotePlayers !== localPlayers || remoteGames !== localGames) {
+        console.warn('[sync] verify mismatch', { expectedV, remoteV, localPlayers, remotePlayers, localGames, remoteGames });
+        setSyncFor('error', 6000);
+        if (showToastRef.current) showToastRef.current('Sync verify mismatch: refresh did not match saved data', 'err');
+        return;
+      }
+
+      console.log('[sync] verify ok _v' + remoteV);
+    } catch (e) {
+      setSyncFor('error', 6000);
+      if (showToastRef.current) showToastRef.current('Sync verify failed: unexpected error', 'err');
+    }
+  }
 
   // syncStatus: 'idle' | 'saving' | 'saved' | 'conflict' | 'error'
   const [syncStatus, setSyncStatus] = useState('idle');
@@ -4484,10 +4516,11 @@ export default function App(){
     if (isRemoteUpdate.current) { isRemoteUpdate.current = false; return; }
 
     setSyncStatus('saving');
+    const pendingSnapshot = stateRef.current;
     // Pass stateRef.current so the queue always has the freshest state
     // even if this closure captured a slightly stale `state`
     saveState(
-      stateRef.current,
+      pendingSnapshot,
       (remoteState) => {
         // Genuine conflict — remote was newer, apply it
         isRemoteUpdate.current = true;
@@ -4501,6 +4534,7 @@ export default function App(){
         isRemoteUpdate.current = true;
         setState(s => ({ ...s, _v: newV }));
         setSyncFor('saved');
+        if (SYNC_DEBUG) verifyRemoteState(newV, pendingSnapshot);
       }
     );
   }, [state, loading]);
