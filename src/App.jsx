@@ -59,6 +59,7 @@ const BACKUP_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const CLIENT_ID_KEY = "ft_client_id";
 const LAST_BACKUP_KEY = "ft_last_backup_at";
 const LAST_BACKUP_CLEANUP_KEY = "ft_last_backup_cleanup_at";
+const ANN_DISMISS_PREFIX = "ft_ann_dismissed_";
 
 function readLocalNumber(key, fallback = 0) {
   if (typeof localStorage === "undefined") return fallback;
@@ -83,6 +84,71 @@ function getClientId() {
     localStorage.setItem(CLIENT_ID_KEY, id);
   }
   return id;
+}
+
+function isAnnouncementActive(ann, now = Date.now()) {
+  if (!ann?.body || !ann?.startsAt || !ann?.endsAt) return false;
+  const start = Date.parse(ann.startsAt);
+  const end = Date.parse(ann.endsAt);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
+  return now >= start && now <= end;
+}
+
+function downloadText(filename, text, mime = "text/plain") {
+  if (typeof document === "undefined") return;
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function toCsv(rows) {
+  return rows.map(row => row.map(cell => {
+    const safe = String(cell ?? "").replace(/"/g, '""');
+    return `"${safe}"`;
+  }).join(",")).join("\n");
+}
+
+function exportStateJson(state) {
+  const stamp = new Date().toISOString().slice(0,10);
+  const payload = { exportedAt: new Date().toISOString(), state };
+  downloadText(`foosball-state-${stamp}.json`, JSON.stringify(payload, null, 2), "application/json");
+}
+
+function exportPlayersCsv(state) {
+  const rows = [
+    ["id", "name", "pts", "mmr", "wins", "losses", "streak"],
+    ...(state.players || []).map(p => [
+      p.id, p.name, p.pts ?? 0, p.mmr ?? 0, p.wins ?? 0, p.losses ?? 0, p.streak ?? 0
+    ])
+  ];
+  const stamp = new Date().toISOString().slice(0,10);
+  downloadText(`foosball-players-${stamp}.csv`, toCsv(rows), "text/csv");
+}
+
+function exportGamesCsv(state) {
+  const nameById = new Map((state.players || []).map(p => [p.id, p.name]));
+  const rows = [
+    ["id", "date", "winner", "scoreA", "scoreB", "sideA", "sideB", "ptsGain", "ptsLoss"],
+    ...(state.games || []).map(g => [
+      g.id,
+      g.date,
+      g.winner,
+      g.scoreA,
+      g.scoreB,
+      (g.sideA || []).map(id => nameById.get(id) || id).join(" & "),
+      (g.sideB || []).map(id => nameById.get(id) || id).join(" & "),
+      g.ptsGain ?? "",
+      g.ptsLoss ?? ""
+    ])
+  ];
+  const stamp = new Date().toISOString().slice(0,10);
+  downloadText(`foosball-games-${stamp}.csv`, toCsv(rows), "text/csv");
 }
 
 // ============================================================
@@ -189,14 +255,18 @@ function computePlacements(games) {
 }
 
 // Recalculate pts/mmr/streaks/wins/losses from scratch using per-player deltas.
+// Season start limits which games affect pts/mmr/streak, but preserves all-time wins/losses.
 // Returns { players, games } — caller must update both.
-function replayGames(basePlayers, games) {
+function replayGames(basePlayers, games, seasonStart) {
   let players = basePlayers.map(p => ({
     ...p, mmr: CONFIG.STARTING_MMR, pts: CONFIG.STARTING_PTS,
     wins: 0, losses: 0, streak: 0, streakPower: 0,
   }));
+  const seasonStartDate = seasonStart ? new Date(seasonStart) : null;
   const sorted = [...games].sort((a, b) => new Date(a.date) - new Date(b.date));
   const updatedGames = sorted.map(g => {
+    const gameDate = g.date ? new Date(g.date) : null;
+    const inSeason = !seasonStartDate || !gameDate || gameDate >= seasonStartDate;
     const winIds = g.winner === "A" ? g.sideA : g.sideB;
     const losIds = g.winner === "A" ? g.sideB : g.sideA;
     const ranked = [...players].sort((a,b)=>(b.pts||0)-(a.pts||0));
@@ -233,12 +303,16 @@ function replayGames(basePlayers, games) {
       if (!d) return p;
       const isWin = winIds.includes(p.id);
       if (isWin) {
+        const base = { ...p, wins: p.wins + 1 };
+        if (!inSeason) return base;
         const ns = (p.streak||0) >= 0 ? (p.streak||0)+1 : 1;
         const newPower = updateStreakPower(p.streakPower||0, true, d.qualityScore||1);
-        return { ...p, mmr: p.mmr+d.gain, pts: (p.pts||0)+d.gain, wins: p.wins+1, streak: ns, streakPower: newPower };
+        return { ...base, mmr: p.mmr+d.gain, pts: (p.pts||0)+d.gain, streak: ns, streakPower: newPower };
       }
+      const base = { ...p, losses: p.losses + 1 };
+      if (!inSeason) return base;
       const ns = (p.streak||0) <= 0 ? (p.streak||0)-1 : -1;
-      return { ...p, mmr: Math.max(0,p.mmr-d.loss), pts: Math.max(0,(p.pts||0)-d.loss), losses: p.losses+1, streak: ns, streakPower: 0 };
+      return { ...base, mmr: Math.max(0,p.mmr-d.loss), pts: Math.max(0,(p.pts||0)-d.loss), streak: ns, streakPower: 0 };
     });
 
     // Flat per-player gain/loss maps — persisted, not stripped by slimState
@@ -252,7 +326,7 @@ function replayGames(basePlayers, games) {
     const avgLoss = Math.round(losIds.reduce((s,id)=>s+(playerDeltas[id]?.loss||0),0)/Math.max(losIds.length,1));
 
     // Apply penalties AFTER normal pts — they survive recalc
-    if (g.penalties) {
+    if (g.penalties && inSeason) {
       players = players.map(p => {
         const pen = g.penalties[p.id];
         if (!pen) return p;
@@ -370,6 +444,9 @@ const SEED = {
   monthlyPlacements: {},
   finals: {},
   rules: DEFAULT_RULES,
+  seasonStart: null,
+  _meta: {},
+  announcement: null,
 };
 
 // ============================================================
@@ -413,6 +490,9 @@ function normaliseState(s) {
     finals: normFinals,
     rules: s.rules || DEFAULT_RULES,
     finalsDate: s.finalsDate || null,
+    seasonStart: s.seasonStart || null,
+    _meta: s._meta || {},
+    announcement: s.announcement || null,
     _v: typeof s._v === 'number' ? s._v : 0,
   };
 }
@@ -562,7 +642,7 @@ async function _flushSave() {
     setTimeout(() => _sq.echoSet.delete(nextV), 10000);
     const cb = _sq.onSuccess;
     _sq.pending = null; _sq.retries = 0; _sq.onSuccess = null; _sq.onConflict = null;
-    cb?.(nextV);
+    cb?.(nextV, enriched._meta);
     void maybeBackupState(slimmed);
   }
 
@@ -1084,6 +1164,20 @@ function ConfirmDialog({ title, msg, onConfirm, onCancel, danger=false }) {
   );
 }
 
+function AnnouncementModal({ announcement, onClose }) {
+  if (!announcement) return null;
+  return (
+    <Modal onClose={onClose} large>
+      <div className="modal-title">Announcement</div>
+      <div className="md" style={{marginTop:8}}
+        dangerouslySetInnerHTML={{__html: renderMd(announcement.body || "")}}/>
+      <div className="fac" style={{justifyContent:"flex-end",marginTop:14}}>
+        <button className="btn btn-g" onClick={onClose}>Close</button>
+      </div>
+    </Modal>
+  );
+}
+
 // ============================================================
 // PLAYER PROFILE MODAL
 // ============================================================
@@ -1269,7 +1363,7 @@ function EditPlayerModal({ player, state, setState, showToast, onClose }) {
       title:"Recalculate from Games?",
       msg:`This will recalculate ${player.name}'s pts, mmr, wins, losses, and streak from the game log. Manual edits will be overwritten.`,
       onConfirm: () => {
-        const { players, games } = replayGames(state.players, state.games);
+        const { players, games } = replayGames(state.players, state.games, state.seasonStart);
         setState(s => ({...s, players, games}));
         showToast("All stats recalculated from game log");
         setConfirm(null);
@@ -1376,7 +1470,7 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
     const updatedGame = {...game, penalties};
     const editedGames = state.games.map(g=>g.id===game.id ? updatedGame : g);
     const basePlayers = state.players.map(p=>({...p, mmr:CONFIG.STARTING_MMR, pts:CONFIG.STARTING_PTS, wins:0, losses:0, streak:0, streakPower:0, lossStreakPower:0}));
-    const { players: newPlayers, games: newGames } = replayGames(basePlayers, editedGames);
+    const { players: newPlayers, games: newGames } = replayGames(basePlayers, editedGames, state.seasonStart);
     const mergedPlayers = newPlayers.map(p => {
       const orig = state.players.find(x=>x.id===p.id);
       return {...p, name:orig?.name||p.name, championships:orig?.championships||[], position:orig?.position||p.position};
@@ -1396,7 +1490,7 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
     const updatedGame = {...game, scoreA:nA, scoreB:nB, winner, penalties};
     const editedGames = state.games.map(g=>g.id===game.id ? updatedGame : g);
     const basePlayers = state.players.map(p=>({...p, mmr:CONFIG.STARTING_MMR, pts:CONFIG.STARTING_PTS, wins:0, losses:0, streak:0, streakPower:0, lossStreakPower:0}));
-    const { players: newPlayers, games: newGames } = replayGames(basePlayers, editedGames);
+    const { players: newPlayers, games: newGames } = replayGames(basePlayers, editedGames, state.seasonStart);
     const mergedPlayers = newPlayers.map(p => {
       const orig = state.players.find(x=>x.id===p.id);
       return {...p, name:orig?.name||p.name, championships:orig?.championships||[], position:orig?.position||p.position};
@@ -1416,7 +1510,7 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
       onConfirm:()=>{
         const filteredGames = state.games.filter(g=>g.id!==game.id);
         const basePlayers = state.players.map(p=>({...p, mmr:CONFIG.STARTING_MMR, pts:CONFIG.STARTING_PTS, wins:0, losses:0, streak:0, streakPower:0, lossStreakPower:0}));
-        const { players: newPlayers, games: newGames } = replayGames(basePlayers, filteredGames);
+        const { players: newPlayers, games: newGames } = replayGames(basePlayers, filteredGames, state.seasonStart);
         const mergedPlayers = newPlayers.map(p => {
           const orig = state.players.find(x=>x.id===p.id);
           return {...p, name:orig?.name||p.name, championships:orig?.championships||[], position:orig?.position||p.position};
@@ -1698,7 +1792,7 @@ function LeaderboardView({ state, setState, onSelectPlayer, onNavToPlay, onNavTo
   const [showRecalcConfirm, setShowRecalcConfirm] = useState(false);
 
   function doRecalc() {
-    const { players, games } = replayGames(state.players, state.games);
+    const { players, games } = replayGames(state.players, state.games, state.seasonStart);
     const monthlyPlacements = computePlacements(games);
     setState(s => ({ ...s, players, games, monthlyPlacements }));
     showToast("All stats recalculated from game log");
@@ -4120,6 +4214,17 @@ function AdvancedPanel({ state, setState, showToast }) {
   const [loading, setLoading] = useState(false);
   const [history, setHistory] = useState([]);
   const [selected, setSelected] = useState(null);
+  const clientId = getClientId();
+  const lastWriterId = state?._meta?.lastWriterId || "—";
+  const lastWriteAt = state?._meta?.lastWriteAt ? new Date(state._meta.lastWriteAt).toLocaleString("en-GB") : "—";
+  const lastBackupAt = readLocalNumber(LAST_BACKUP_KEY, 0);
+  const lastBackupLabel = lastBackupAt ? new Date(lastBackupAt).toLocaleString("en-GB") : "—";
+  const [annBody, setAnnBody] = useState(state.announcement?.body || "");
+  const [annHours, setAnnHours] = useState(24);
+
+  useEffect(() => {
+    setAnnBody(state.announcement?.body || "");
+  }, [state.announcement?.id]);
 
   const loadHistory = useCallback(async () => {
     const { data, error } = await supabase
@@ -4188,6 +4293,36 @@ function AdvancedPanel({ state, setState, showToast }) {
     }
   }
 
+  function resetSeasonPoints() {
+    const ok = confirm("Start a new season? Points, MMR, and streaks reset. History and stats stay.");
+    if (!ok) return;
+    const seasonStart = new Date().toISOString();
+    const { players, games } = replayGames(state.players, state.games, seasonStart);
+    const monthlyPlacements = computePlacements(games);
+    setState(s => ({ ...s, players, games, monthlyPlacements, seasonStart }));
+    showToast("New season started — points reset", "ok");
+  }
+
+  function publishAnnouncement() {
+    if (!annBody.trim()) { showToast("Announcement body required", "err"); return; }
+    const start = new Date();
+    const end = new Date(start.getTime() + Math.max(1, Number(annHours) || 24) * 60 * 60 * 1000);
+    const announcement = {
+      id: `ann_${Date.now()}`,
+      body: annBody.trim(),
+      startsAt: start.toISOString(),
+      endsAt: end.toISOString(),
+      createdBy: clientId,
+    };
+    setState(s => ({ ...s, announcement }));
+    showToast("Announcement published", "ok");
+  }
+
+  function clearAnnouncement() {
+    setState(s => ({ ...s, announcement: null }));
+    showToast("Announcement cleared", "ok");
+  }
+
   return (
     <div className="card" style={{ marginBottom: 12 }}>
       <div className="card-header">
@@ -4197,6 +4332,9 @@ function AdvancedPanel({ state, setState, showToast }) {
         <div className="fac" style={{ gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
           <button className="btn btn-g" onClick={restoreLatest} disabled={loading}>
             Restore Previous State
+          </button>
+          <button className="btn btn-g" onClick={resetSeasonPoints} disabled={loading}>
+            New Season (Reset Points)
           </button>
           <button className="btn btn-d" onClick={hardReset}>
             Hard Reset
@@ -4236,6 +4374,89 @@ function AdvancedPanel({ state, setState, showToast }) {
                 Restore Selected
               </button>
             </div>
+            {selected?.state?._meta && (
+              <div className="xs text-dd" style={{ marginTop: 8 }}>
+                Backup writer: {selected.state._meta.lastWriterId || "—"} · {selected.state._meta.lastWriteAt ? new Date(selected.state._meta.lastWriteAt).toLocaleString("en-GB") : "—"}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="card" style={{ marginTop: 12 }}>
+          <div className="card-header">
+            <span className="card-title">Announcement</span>
+            {state.announcement && (
+              <span className={`tag ${isAnnouncementActive(state.announcement) ? "tag-w" : "tag-a"}`}>
+                {isAnnouncementActive(state.announcement) ? "Active" : "Inactive"}
+              </span>
+            )}
+          </div>
+          <div style={{ padding: 14, display: "grid", gap: 10 }}>
+            <textarea
+              className="inp"
+              rows={6}
+              placeholder="Markdown announcement..."
+              value={annBody}
+              onChange={e => setAnnBody(e.target.value)}
+            />
+            <div className="fac" style={{ gap: 8, flexWrap: "wrap" }}>
+              <div className="field" style={{ minWidth: 160 }}>
+                <label className="lbl">Duration (hours)</label>
+                <input
+                  className="inp"
+                  type="number"
+                  min="1"
+                  value={annHours}
+                  onChange={e => setAnnHours(e.target.value)}
+                />
+              </div>
+              <div className="fac" style={{ gap: 8, alignSelf: "flex-end" }}>
+                <button className="btn btn-p" onClick={publishAnnouncement}>
+                  Publish
+                </button>
+                <button className="btn btn-d" onClick={clearAnnouncement}>
+                  Clear
+                </button>
+              </div>
+            </div>
+            {state.announcement && (
+              <div className="xs text-dd">
+                Window: {new Date(state.announcement.startsAt).toLocaleString("en-GB")} → {new Date(state.announcement.endsAt).toLocaleString("en-GB")}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="card" style={{ marginTop: 12 }}>
+          <div className="card-header">
+            <span className="card-title">Exports</span>
+          </div>
+          <div style={{ padding: 14, display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button className="btn btn-g" onClick={() => exportStateJson(state)}>
+              Export State (JSON)
+            </button>
+            <button className="btn btn-g" onClick={() => exportPlayersCsv(state)}>
+              Export Players (CSV)
+            </button>
+            <button className="btn btn-g" onClick={() => exportGamesCsv(state)}>
+              Export Games (CSV)
+            </button>
+          </div>
+        </div>
+
+        <div className="card" style={{ marginTop: 12 }}>
+          <div className="card-header">
+            <span className="card-title">Audit</span>
+          </div>
+          <div style={{ padding: 14, display: "grid", gap: 6 }}>
+            <div className="xs text-dd">Last write: {lastWriteAt}</div>
+            <div className="xs text-dd">Last writer: {lastWriterId}</div>
+            <div className="xs text-dd">This client: {clientId}</div>
+            <div className="xs text-dd">Last backup (local): {lastBackupLabel}</div>
+            <div className="xs text-dd">Loaded backups: {history.length}</div>
+            {state.seasonStart && (
+              <div className="xs text-dd">Season start: {new Date(state.seasonStart).toLocaleString("en-GB")}</div>
+            )}
           </div>
         </div>
       </div>
@@ -4488,6 +4709,7 @@ export default function App(){
   const[adminTab,setAdminTab]=useState("onboard");
   const[showLogin,setShowLogin]=useState(false);
   const[toast,setToast]=useState(null);
+  const[showAnnouncement,setShowAnnouncement]=useState(false);
   const[selPlayer,setSelPlayer]=useState(null);
   const[editPlayer,setEditPlayer]=useState(null);
 
@@ -4598,11 +4820,11 @@ export default function App(){
         setSyncFor('conflict', 4000);
         if (showToastRef.current) showToastRef.current('Sync conflict — remote state applied', 'warning');
       },
-      (newV) => {
+      (newV, meta) => {
         // Confirmed write — stamp _v back so display is accurate
         // isRemoteUpdate=true prevents this setState from triggering another save
         isRemoteUpdate.current = true;
-        setState(s => ({ ...s, _v: newV }));
+        setState(s => ({ ...s, _v: newV, _meta: meta || s._meta }));
         setSyncFor('saved');
         if (SYNC_DEBUG) verifyRemoteState(newV, pendingSnapshot);
       }
@@ -4703,6 +4925,22 @@ export default function App(){
     syncToast = showToast;
     return ()=>{ syncToast = null; };
   },[showToast]);
+
+  const activeAnnouncement = isAnnouncementActive(state.announcement) ? state.announcement : null;
+  useEffect(() => {
+    if (!activeAnnouncement) { setShowAnnouncement(false); return; }
+    const dismissKey = `${ANN_DISMISS_PREFIX}${activeAnnouncement.id}`;
+    const dismissedAt = readLocalNumber(dismissKey, 0);
+    if (dismissedAt) return;
+    setShowAnnouncement(true);
+  }, [activeAnnouncement?.id, activeAnnouncement?.startsAt, activeAnnouncement?.endsAt, activeAnnouncement?.body]);
+
+  function dismissAnnouncement() {
+    if (!activeAnnouncement) return;
+    const dismissKey = `${ANN_DISMISS_PREFIX}${activeAnnouncement.id}`;
+    writeLocalNumber(dismissKey, Date.now());
+    setShowAnnouncement(false);
+  }
 
   // ============================================================
   // NAV
@@ -5024,6 +5262,13 @@ export default function App(){
         {/* ============================================================ */}
         {/* TOAST */}
         {/* ============================================================ */}
+
+        {showAnnouncement && activeAnnouncement && (
+          <AnnouncementModal
+            announcement={activeAnnouncement}
+            onClose={dismissAnnouncement}
+          />
+        )}
 
         <Toast t={toast} />
 
