@@ -2238,7 +2238,7 @@ function LeaderboardView({ state, setState, onSelectPlayer, onNavToPlay, onNavTo
           <span className="card-title">Season Overview</span>
         </div>
         <div className="grid-2">
-          <div className="stat-box"><div className="stat-lbl">Season Start</div><div className="stat-val xs">{new Date(currentSeason?.startDate).toLocaleDateString(LOCALE, {weekday:'short',month:'short',day:'numeric'})}</div></div>
+          <div className="stat-box"><div className="stat-lbl">Season Start</div><div className="stat-val xs">{new Date(currentSeason?.startAt).toLocaleDateString(LOCALE, {weekday:'short',month:'short',day:'numeric'})}</div></div>
           <div className="stat-box"><div className="stat-lbl">Games</div><div className="stat-val">{seasonGames.length}</div></div>
           <div className="stat-box"><div className="stat-lbl">Points In Play</div><div className="stat-val xs">{seasonGames.reduce((s,g)=>s+(g.ptsGain+g.ptsLoss),0)}</div></div>
           <div className="stat-box"><div className="stat-lbl">7-Day Active</div><div className="stat-val xs">{(() => {
@@ -2931,15 +2931,15 @@ function SeasonsArchiveView({ state, onNavToHistory, onNavToStats }) {
           const seasonStats = computeWindowPlayerStats(state.players, seasonGames);
           const ranked = [...(state.players || [])].sort((a,b)=>(seasonStats[b.id]?.pts || 0) - (seasonStats[a.id]?.pts || 0));
           const topPlayer = ranked[0];
-          const startDate = new Date(season.startDate).toLocaleDateString(LOCALE, {month:'short',day:'numeric'});
-          const endDate = season.archived ? new Date(season.archived).toLocaleDateString(LOCALE, {month:'short',day:'numeric'}) : 'Ongoing';
+          const startDate = new Date(season.startAt).toLocaleDateString(LOCALE, {month:'short',day:'numeric'});
+          const endDate = season.endAt ? new Date(season.endAt).toLocaleDateString(LOCALE, {month:'short',day:'numeric'}) : 'Ongoing';
 
           return (
             <div key={season.id} className="card" style={{cursor:"pointer"}}>
               <div className="card-header">
                 <div>
                   <div className="card-title" style={{marginBottom:4}}>{season.label || `Season ${idx+1}`}</div>
-                  <div className="xs text-dd">{startDate} {season.archived ? `— ${endDate}` : '— Ongoing'}</div>
+                  <div className="xs text-dd">{startDate} {season.endAt ? `— ${endDate}` : '— Ongoing'}</div>
                 </div>
               </div>
               <div className="fac" style={{gap:16,marginBottom:8}}>
