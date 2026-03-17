@@ -415,6 +415,56 @@ function getMonthKey() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
+function getCurrentSeason(state) {
+  const seasons = state?.seasons || [];
+  return seasons[seasons.length - 1] || null;
+}
+
+function gameInSeason(game, season) {
+  if (!season) return true;
+  const t = Date.parse(game?.date || "");
+  if (!Number.isFinite(t)) return true;
+  const start = Date.parse(season.startAt || "");
+  const end = season.endAt ? Date.parse(season.endAt) : null;
+  if (Number.isFinite(start) && t < start) return false;
+  if (Number.isFinite(end) && t >= end) return false;
+  return true;
+}
+
+function computeWindowPlayerStats(players, games) {
+  const stats = Object.fromEntries((players || []).map(p => [p.id, { wins: 0, losses: 0, pts: 0, streak: 0 }]));
+  const sorted = [...(games || [])].sort((a, b) => new Date(a.date) - new Date(b.date));
+  for (const g of sorted) {
+    const winIds = g.winner === "A" ? g.sideA : g.sideB;
+    const losIds = g.winner === "A" ? g.sideB : g.sideA;
+    for (const id of winIds) {
+      const s = stats[id];
+      if (!s) continue;
+      const gain = g.perPlayerGains?.[id] ?? g.playerDeltas?.[id]?.gain ?? g.ptsGain ?? 0;
+      s.wins += 1;
+      s.pts += gain;
+      s.streak = s.streak >= 0 ? s.streak + 1 : 1;
+    }
+    for (const id of losIds) {
+      const s = stats[id];
+      if (!s) continue;
+      const loss = g.perPlayerLosses?.[id] ?? g.playerDeltas?.[id]?.loss ?? g.ptsLoss ?? 0;
+      s.losses += 1;
+      s.pts = Math.max(0, s.pts - loss);
+      s.streak = s.streak <= 0 ? s.streak - 1 : -1;
+    }
+    if (g.penalties) {
+      Object.entries(g.penalties).forEach(([pid, pen]) => {
+        const s = stats[pid];
+        if (!s) return;
+        const deduct = (pen?.yellow || 0) * CONFIG.YELLOW_CARD_PTS + (pen?.red || 0) * CONFIG.RED_CARD_PTS;
+        if (deduct > 0) s.pts = Math.max(0, s.pts - deduct);
+      });
+    }
+  }
+  return stats;
+}
+
 // ============================================================
 // DATA SHAPES
 // Player: { id, name, mmr, pts, wins, losses, streak,
@@ -445,6 +495,7 @@ const SEED = {
   finals: {},
   rules: DEFAULT_RULES,
   seasonStart: null,
+  seasons: [],
   _meta: {},
   announcement: null,
 };
@@ -491,6 +542,7 @@ function normaliseState(s) {
     rules: s.rules || DEFAULT_RULES,
     finalsDate: s.finalsDate || null,
     seasonStart: s.seasonStart || null,
+    seasons: s.seasons || (s.seasonStart ? [{ id: "season_1", label: "Season 1", startAt: s.seasonStart, endAt: null, createdAt: s.seasonStart }] : []),
     _meta: s._meta || {},
     announcement: s.announcement || null,
     _v: typeof s._v === 'number' ? s._v : 0,
@@ -935,6 +987,15 @@ const CSS = `
   .pip-u{background:var(--dimmer)}.pip-f{background:var(--amber)}
   .divider{height:1px;background:var(--b1);margin:16px 0}
 
+
+  .season-launch{position:relative;overflow:hidden;background:radial-gradient(circle at 20% 20%,rgba(232,184,74,.18),rgba(94,201,138,.08) 40%,var(--s2) 80%);border-color:rgba(232,184,74,.35)}
+  .season-launch::before,.season-launch::after{content:"";position:absolute;inset:-120px;background:conic-gradient(from 0deg,rgba(232,184,74,.0),rgba(232,184,74,.24),rgba(94,201,138,.0),rgba(232,184,74,.2),rgba(232,184,74,.0));animation:spinGlow 9s linear infinite;pointer-events:none}
+  .season-launch::after{animation-direction:reverse;animation-duration:13s;opacity:.5}
+  .season-title{position:relative;display:inline-flex;align-items:center;gap:8px;font-size:24px;text-transform:uppercase;letter-spacing:1.2px;color:var(--gold);text-shadow:0 0 16px rgba(232,184,74,.45)}
+  .season-pill{position:relative;display:inline-flex;padding:4px 10px;border-radius:999px;border:1px solid rgba(232,184,74,.5);background:rgba(232,184,74,.14);font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--gold)}
+  .season-msg{position:relative;margin-top:10px}
+  @keyframes spinGlow{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+
   /* ── MARKDOWN ────────────────────────────────────────────── */
   .md h1{font-family:var(--disp);font-size:30px;font-weight:800;color:var(--amber);margin-bottom:16px;letter-spacing:1px}
   .md h2{font-family:var(--disp);font-size:20px;font-weight:700;color:var(--text);margin:20px 0 8px;letter-spacing:1px;border-bottom:1px solid var(--b1);padding-bottom:6px}
@@ -1166,11 +1227,17 @@ function ConfirmDialog({ title, msg, onConfirm, onCancel, danger=false }) {
 
 function AnnouncementModal({ announcement, onClose }) {
   if (!announcement) return null;
+  const isSeasonLaunch = announcement.type === "seasonLaunch";
   return (
     <Modal onClose={onClose} large>
-      <div className="modal-title">Announcement</div>
-      <div className="md" style={{marginTop:8}}
-        dangerouslySetInnerHTML={{__html: renderMd(announcement.body || "")}}/>
+      <div className={isSeasonLaunch ? "season-launch" : ""} style={{padding:isSeasonLaunch?"18px 18px 8px":"0",borderRadius:isSeasonLaunch?12:0}}>
+        <div className="modal-title" style={{marginBottom: isSeasonLaunch ? 8 : 20}}>
+          {isSeasonLaunch ? <span className="season-title">🎉 New Season Live</span> : "Announcement"}
+        </div>
+        {isSeasonLaunch && <span className="season-pill">Fresh leaderboard</span>}
+        <div className="md season-msg" style={{marginTop:8}}
+          dangerouslySetInnerHTML={{__html: renderMd(announcement.body || "")}}/>
+      </div>
       <div className="fac" style={{justifyContent:"flex-end",marginTop:14}}>
         <button className="btn btn-g" onClick={onClose}>Close</button>
       </div>
@@ -1181,13 +1248,22 @@ function AnnouncementModal({ announcement, onClose }) {
 // ============================================================
 // PLAYER PROFILE MODAL
 // ============================================================
-function PlayerProfile({ player, state, onClose, isAdmin, onEdit }) {
+function PlayerProfile({ player, state, onClose, isAdmin, onEdit, seasonMode, onSeasonModeChange, selectedSeasonId, onSelectedSeasonIdChange }) {
   const monthKey = getMonthKey();
   const placements = (state.monthlyPlacements[monthKey]||{})[player.id]||0;
+  const currentSeason = getCurrentSeason(state);
+  const selectedSeason = seasonMode === "all" ? null : (state.seasons || []).find(s => s.id === selectedSeasonId) || currentSeason || null;
   const myGames = [...state.games]
-    .filter(g=>g.sideA.includes(player.id)||g.sideB.includes(player.id))
+    .filter(g=>(g.sideA.includes(player.id)||g.sideB.includes(player.id)) && gameInSeason(g, selectedSeason))
     .sort((a,b)=>new Date(b.date)-new Date(a.date));
-  const rank = [...state.players].sort((a,b)=>(b.pts||0)-(a.pts||0)).findIndex(p=>p.id===player.id)+1;
+  const rankBase = [...state.players].sort((a,b)=>(b.pts||0)-(a.pts||0));
+  const rank = rankBase.findIndex(p=>p.id===player.id)+1;
+  const seasonWindowStats = computeWindowPlayerStats(state.players, state.games.filter(g => gameInSeason(g, selectedSeason)));
+  const scopedStats = seasonWindowStats[player.id] || { wins: 0, losses: 0, pts: 0, streak: 0 };
+  const displayWins = seasonMode === "all" ? player.wins : scopedStats.wins;
+  const displayLosses = seasonMode === "all" ? player.losses : scopedStats.losses;
+  const displayPts = seasonMode === "all" ? (player.pts||0) : scopedStats.pts;
+  const displayStreak = seasonMode === "all" ? player.streak : scopedStats.streak;
   const champs = player.championships || [];
 
   return (
@@ -1213,7 +1289,16 @@ function PlayerProfile({ player, state, onClose, isAdmin, onEdit }) {
         <div className="prof-av">{player.name[0].toUpperCase()}</div>
         <div style={{flex:1}}>
           <div className="prof-name">{player.name}</div>
-          <div className="prof-sub">Rank #{rank} · {player.pts||0} pts</div>
+          <div className="prof-sub">Rank #{rank} · {displayPts||0} pts</div>
+          <div className="fac" style={{gap:6,marginTop:8,flexWrap:"wrap"}}>
+            <button className={`btn btn-sm ${seasonMode==="all"?"btn-p":"btn-g"}`} onClick={()=>onSeasonModeChange("all")}>All-time</button>
+            <button className={`btn btn-sm ${seasonMode==="season"?"btn-p":"btn-g"}`} onClick={()=>onSeasonModeChange("season")}>Season</button>
+            {seasonMode==="season" && (
+              <select className="inp" style={{padding:"4px 8px",fontSize:11,minWidth:130}} value={selectedSeasonId||""} onChange={e=>onSelectedSeasonIdChange(e.target.value)}>
+                {(state.seasons||[]).map(se => <option key={se.id} value={se.id}>{se.label}</option>)}
+              </select>
+            )}
+          </div>
         </div>
         <div className="fac" style={{gap:6}}>
           {isAdmin && !champs.length && (
@@ -1228,21 +1313,21 @@ function PlayerProfile({ player, state, onClose, isAdmin, onEdit }) {
           <div className="stat-lbl">Points</div>
           <div className="stat-val am">
             {placements >= CONFIG.MAX_PLACEMENTS_PER_MONTH
-              ? (player.pts||0)
+              ? (displayPts||0)
               : <span className="text-dd" title="Complete placements to reveal points">?</span>}
           </div>
         </div>
         <div className="stat-box">
           <div className="stat-lbl">Record</div>
           <div className="stat-val" style={{fontSize:20}}>
-            <span className="text-g">{player.wins}</span>
+            <span className="text-g">{displayWins}</span>
             <span className="text-dd" style={{fontSize:13}}>/</span>
-            <span className="text-r">{player.losses}</span>
+            <span className="text-r">{displayLosses}</span>
           </div>
         </div>
         <div className="stat-box">
           <div className="stat-lbl">Streak</div>
-          <div className="stat-val" style={{fontSize:20}}><StreakBadge streak={player.streak} streakPower={player.streakPower||0} showMult /></div>
+          <div className="stat-val" style={{fontSize:20}}><StreakBadge streak={displayStreak} streakPower={player.streakPower||0} showMult /></div>
         </div>
       </div>
 
@@ -1250,9 +1335,9 @@ function PlayerProfile({ player, state, onClose, isAdmin, onEdit }) {
         <div className="stat-box">
           <div className="stat-lbl">Win Rate</div>
           <div className="stat-val" style={{fontSize:20}}>
-            {player.wins+player.losses>0
-              ? <span className={player.wins/(player.wins+player.losses)>=.5?"text-g":"text-r"}>
-                  {Math.round(player.wins/(player.wins+player.losses)*100)}%
+            {displayWins+displayLosses>0
+              ? <span className={displayWins/(displayWins+displayLosses)>=.5?"text-g":"text-r"}>
+                  {Math.round(displayWins/(displayWins+displayLosses)*100)}%
                 </span>
               : <span className="text-dd">—</span>}
           </div>
@@ -1788,6 +1873,9 @@ function LiveTicker({ games, players, finals, monthKey, onNavToPlay }) {
 // ============================================================
 function LeaderboardView({ state, setState, onSelectPlayer, onNavToPlay, onNavToHistory, rtConnected, isAdmin, showToast, syncStatus }) {
   const monthKey = getMonthKey();
+  const currentSeason = getCurrentSeason(state);
+  const seasonGames = (state.games || []).filter(g => gameInSeason(g, currentSeason));
+  const seasonStats = computeWindowPlayerStats(state.players, seasonGames);
   const ranked = [...(state.players ?? [])].sort((a,b)=>(b.pts||0)-(a.pts||0));
   const [showRecalcConfirm, setShowRecalcConfirm] = useState(false);
 
@@ -1885,7 +1973,7 @@ function LeaderboardView({ state, setState, onSelectPlayer, onNavToPlay, onNavTo
       )}
       <div className="card">
         <div className="card-header">
-          <span className="card-title">Rankings — {fmtMonth(monthKey)}</span>
+          <span className="card-title">Rankings — {currentSeason?.label || fmtMonth(monthKey)}</span>
           <div className="fac" style={{gap:8}}>
             <span className={`rt-dot ${rtConnected?"live":""}`} title={rtConnected?"Live":"Connecting…"}/>
             <span className="xs text-dd">{rtConnected?"Live":"…"}</span>
@@ -1910,8 +1998,9 @@ function LeaderboardView({ state, setState, onSelectPlayer, onNavToPlay, onNavTo
               const placements=(state.monthlyPlacements[monthKey]||{})[p.id]||0;
               const isPlaced=placements>=CONFIG.MAX_PLACEMENTS_PER_MONTH;
               const rankNum=isPlaced?++placedCount:null;
-              const total=p.wins+p.losses;
-              const pct=total?Math.round(p.wins/total*100):0;
+              const sStat = seasonStats[p.id] || {wins:0, losses:0, streak:0};
+              const total=sStat.wins+sStat.losses;
+              const pct=total?Math.round(sStat.wins/total*100):0;
               const anim=animMap[p.id]||"";
               return (
                 <tr key={p.id} className={`lb-row ${anim}`} style={{animationDelay:`${i*28}ms`,opacity:isPlaced?1:0.6}} onClick={()=>onSelectPlayer(p)}>
@@ -1923,7 +2012,7 @@ function LeaderboardView({ state, setState, onSelectPlayer, onNavToPlay, onNavTo
                     <div style={{display:"flex",alignItems:"center",gap:8}}>
                       <span className="bold">{p.name}</span>
                       {(p.championships||[]).length>0&&<span style={{fontSize:13}}>🏆</span>}
-                      <Sparkline pid={p.id} games={state.games}/>
+                      <Sparkline pid={p.id} games={seasonGames}/>
                     </div>
                   </td>
                   <td>
@@ -1935,10 +2024,10 @@ function LeaderboardView({ state, setState, onSelectPlayer, onNavToPlay, onNavTo
                       : <span className="text-dd" style={{fontSize:10,fontFamily:"var(--sans)",fontWeight:500,letterSpacing:.3}}>—</span>
                     }
                   </td>
-                  <td><span className="text-g bold">{p.wins}</span></td>
-                  <td><span className="text-r bold">{p.losses}</span></td>
+                  <td><span className="text-g bold">{sStat.wins}</span></td>
+                  <td><span className="text-r bold">{sStat.losses}</span></td>
                   <td><span className={pct>=50?"text-g":"text-d"}>{total?`${pct}%`:"—"}</span></td>
-                  <td><StreakBadge streak={p.streak} streakPower={p.streakPower||0} lossStreakPower={p.lossStreakPower||0} showMult /></td>
+                  <td><StreakBadge streak={sStat.streak} streakPower={p.streakPower||0} lossStreakPower={p.lossStreakPower||0} showMult /></td>
                   <td><PosBadge pos={p.position}/></td>
                   <td>
                     {isPlaced
@@ -1961,8 +2050,9 @@ function LeaderboardView({ state, setState, onSelectPlayer, onNavToPlay, onNavTo
             const placements=(state.monthlyPlacements[monthKey]||{})[p.id]||0;
             const isPlaced=placements>=CONFIG.MAX_PLACEMENTS_PER_MONTH;
             const rankNum=isPlaced?++placedCount:null;
-            const total=p.wins+p.losses;
-            const pct=total?Math.round(p.wins/total*100):0;
+            const sStat = seasonStats[p.id] || {wins:0, losses:0, streak:0};
+            const total=sStat.wins+sStat.losses;
+            const pct=total?Math.round(sStat.wins/total*100):0;
             return (
               <div key={p.id} className="lb-card" onClick={()=>onSelectPlayer(p)}>
                 <div className="lb-card-rank">
@@ -1977,13 +2067,13 @@ function LeaderboardView({ state, setState, onSelectPlayer, onNavToPlay, onNavTo
                   <div style={{display:"flex",alignItems:"center",gap:6}}>
                     <span className="lb-card-name">{p.name}</span>
                     {(p.championships||[]).length>0&&<span style={{fontSize:12}}>🏆</span>}
-                    <Sparkline pid={p.id} games={state.games}/>
+                    <Sparkline pid={p.id} games={seasonGames}/>
                   </div>
                   <div className="lb-card-meta">
-                    <span className="text-g">{p.wins}W</span>
-                    {" "}<span className="text-r">{p.losses}L</span>
+                    <span className="text-g">{sStat.wins}W</span>
+                    {" "}<span className="text-r">{sStat.losses}L</span>
                     {" · "}{total?`${pct}%`:"—"}
-                    {" · "}<StreakBadge streak={p.streak} streakPower={p.streakPower||0} lossStreakPower={p.lossStreakPower||0} showMult />
+                    {" · "}<StreakBadge streak={sStat.streak} streakPower={p.streakPower||0} lossStreakPower={p.lossStreakPower||0} showMult />
                   </div>
                 </div>
                 <div className="lb-card-pts">{isPlaced?p.pts||0:"—"}</div>
@@ -2015,8 +2105,15 @@ function HistoryView({ state, setState, isAdmin, showToast }) {
   const [showFilters, setShowFilters] = useState(false);
   const [selectedGameId, setSelectedGameId] = useState(null);
   const [visibleDays, setVisibleDays] = useState(5);
+  const [seasonFilter, setSeasonFilter] = useState("current");
 
-  const allGames = [...(state.games ?? [])].sort((a, b) => new Date(b.date) - new Date(a.date));
+  const currentSeason = getCurrentSeason(state);
+  const scopedGames = (state.games ?? []).filter(g => {
+    if (seasonFilter === "all") return true;
+    const season = seasonFilter === "current" ? currentSeason : (state.seasons || []).find(s => s.id === seasonFilter) || null;
+    return gameInSeason(g, season);
+  });
+  const allGames = [...scopedGames].sort((a, b) => new Date(b.date) - new Date(a.date));
 
   const filtered = allGames.filter(g => {
     if (playerFilter) {
@@ -2106,6 +2203,11 @@ function HistoryView({ state, setState, isAdmin, showToast }) {
           <span className="card-title">Match History ({allGames.length})</span>
           <div className="fac" style={{gap:6}}>
             {hasFilters && <span className="xs tag tag-a">{filtered.length} shown</span>}
+            <select className="inp" value={seasonFilter} onChange={e=>setSeasonFilter(e.target.value)} style={{fontSize:11,padding:"4px 8px",maxWidth:170}}>
+              <option value="current">Current season</option>
+              <option value="all">All seasons</option>
+              {(state.seasons||[]).map(se => <option key={se.id} value={se.id}>{se.label}</option>)}
+            </select>
             <button className={`btn btn-sm ${showFilters?"btn-p":"btn-g"}`}
               onClick={()=>setShowFilters(f=>!f)}>⚡ Filter</button>
           </div>
@@ -2559,12 +2661,17 @@ function WinDonut({ wins, losses }) {
 function StatsView({ state, onSelectPlayer }) {
   const [selectedId, setSelectedId] = useState(null);
   const [search, setSearch] = useState("");
+  const [seasonFilter, setSeasonFilter] = useState("current");
 
-  const sorted = [...state.players].sort((a,b)=>(b.pts||0)-(a.pts||0));
+  const currentSeason = getCurrentSeason(state);
+  const activeSeason = seasonFilter === "all" ? null : (seasonFilter === "current" ? currentSeason : (state.seasons||[]).find(s=>s.id===seasonFilter) || null);
+  const scopedGames = (state.games || []).filter(g => gameInSeason(g, activeSeason));
+  const scopedStats = computeWindowPlayerStats(state.players, scopedGames);
+  const sorted = [...state.players].sort((a,b)=>( (scopedStats[b.id]?.pts||0) - (scopedStats[a.id]?.pts||0) ));
   const selected = state.players.find(p=>p.id===selectedId);
 
   function getH2H(pidA, pidB) {
-    const shared = state.games.filter(g =>
+    const shared = scopedGames.filter(g =>
       (g.sideA.includes(pidA)||g.sideB.includes(pidA)) &&
       (g.sideA.includes(pidB)||g.sideB.includes(pidB))
     );
@@ -2578,7 +2685,7 @@ function StatsView({ state, onSelectPlayer }) {
   }
 
   function getStats(p) {
-    const playerGames = [...state.games]
+    const playerGames = [...scopedGames]
       .filter(g=>g.sideA.includes(p.id)||g.sideB.includes(p.id))
       .sort((a,b)=>new Date(a.date)-new Date(b.date));
     const wins = playerGames.filter(g=>{const onA=g.sideA.includes(p.id);return(onA&&g.winner==="A")||(!onA&&g.winner==="B");});
@@ -2604,7 +2711,7 @@ function StatsView({ state, onSelectPlayer }) {
       <div className="grid-2" style={{alignItems:"start"}}>
         {/* Player selector */}
         <div className="card">
-          <div className="card-header"><span className="card-title">Player Stats</span></div>
+          <div className="card-header"><span className="card-title">Player Stats</span><select className="inp" value={seasonFilter} onChange={e=>setSeasonFilter(e.target.value)} style={{fontSize:11,padding:"4px 8px",maxWidth:180}}><option value="current">Current season</option><option value="all">All seasons</option>{(state.seasons||[]).map(se => <option key={se.id} value={se.id}>{se.label}</option>)}</select></div>
           <div style={{padding:14}}>
             <input className="inp" placeholder="Search…" value={search}
               onChange={e=>setSearch(e.target.value)} style={{marginBottom:10,fontSize:12}}/>
@@ -2614,8 +2721,8 @@ function StatsView({ state, onSelectPlayer }) {
                   onClick={()=>setSelectedId(p.id)}>
                   <span style={{fontWeight:600}}>{p.name}</span>
                   <div style={{display:"flex",alignItems:"center",gap:6}}>
-                    <Sparkline pid={p.id} games={state.games}/>
-                    <span className="xs text-dd">{p.pts||0}pts</span>
+                    <Sparkline pid={p.id} games={scopedGames}/>
+                    <span className="xs text-dd">{scopedStats[p.id]?.pts||0}pts</span>
                   </div>
                 </div>
               ))}
@@ -2642,7 +2749,7 @@ function StatsView({ state, onSelectPlayer }) {
                 <div>
                   <div className="xs text-dd" style={{marginBottom:6,letterSpacing:.5,textTransform:"uppercase",fontWeight:600}}>Points over time</div>
                   <div style={{background:"var(--s2)",borderRadius:8,padding:"10px 12px"}}>
-                    <PtsChart pid={selected.id} games={state.games} players={state.players}/>
+                    <PtsChart pid={selected.id} games={scopedGames} players={state.players}/>
                   </div>
                 </div>
 
@@ -4221,6 +4328,7 @@ function AdvancedPanel({ state, setState, showToast }) {
   const lastBackupLabel = lastBackupAt ? new Date(lastBackupAt).toLocaleString("en-GB") : "—";
   const [annBody, setAnnBody] = useState(state.announcement?.body || "");
   const [annHours, setAnnHours] = useState(24);
+  const [autoSeasonAnnouncement, setAutoSeasonAnnouncement] = useState(true);
 
   useEffect(() => {
     setAnnBody(state.announcement?.body || "");
@@ -4299,7 +4407,30 @@ function AdvancedPanel({ state, setState, showToast }) {
     const seasonStart = new Date().toISOString();
     const { players, games } = replayGames(state.players, state.games, seasonStart);
     const monthlyPlacements = computePlacements(games);
-    setState(s => ({ ...s, players, games, monthlyPlacements, seasonStart }));
+    setState(s => {
+      const prevSeasons = [...(s.seasons || [])];
+      const now = new Date().toISOString();
+      if (prevSeasons.length && !prevSeasons[prevSeasons.length - 1].endAt) {
+        prevSeasons[prevSeasons.length - 1] = { ...prevSeasons[prevSeasons.length - 1], endAt: seasonStart };
+      }
+      const nextSeason = {
+        id: `season_${Date.now()}`,
+        label: `Season ${prevSeasons.length + 1}`,
+        startAt: seasonStart,
+        endAt: null,
+        createdAt: now,
+      };
+      const announcement = autoSeasonAnnouncement ? {
+        id: `ann_${Date.now()}`,
+        type: "seasonLaunch",
+        body: annBody.trim() || `## ${nextSeason.label} has started!
+Climb the fresh leaderboard and set the tone early.`,
+        startsAt: now,
+        endsAt: new Date(Date.now() + Math.max(1, Number(annHours) || 24) * 60 * 60 * 1000).toISOString(),
+        createdBy: clientId,
+      } : s.announcement;
+      return { ...s, players, games, monthlyPlacements, seasonStart, seasons: [...prevSeasons, nextSeason], announcement };
+    });
     showToast("New season started — points reset", "ok");
   }
 
@@ -4313,6 +4444,7 @@ function AdvancedPanel({ state, setState, showToast }) {
       startsAt: start.toISOString(),
       endsAt: end.toISOString(),
       createdBy: clientId,
+      type: "standard",
     };
     setState(s => ({ ...s, announcement }));
     showToast("Announcement published", "ok");
@@ -4336,6 +4468,10 @@ function AdvancedPanel({ state, setState, showToast }) {
           <button className="btn btn-g" onClick={resetSeasonPoints} disabled={loading}>
             New Season (Reset Points)
           </button>
+          <label className="fac xs text-d" style={{gap:6,padding:"0 6px"}}>
+            <input type="checkbox" checked={autoSeasonAnnouncement} onChange={e=>setAutoSeasonAnnouncement(e.target.checked)} />
+            Auto flashy season announcement
+          </label>
           <button className="btn btn-d" onClick={hardReset}>
             Hard Reset
           </button>
@@ -4395,7 +4531,7 @@ function AdvancedPanel({ state, setState, showToast }) {
             <textarea
               className="inp"
               rows={6}
-              placeholder="Markdown announcement..."
+              placeholder="Markdown announcement... (also used as default new-season message when auto enabled)"
               value={annBody}
               onChange={e => setAnnBody(e.target.value)}
             />
@@ -4712,6 +4848,8 @@ export default function App(){
   const[showAnnouncement,setShowAnnouncement]=useState(false);
   const[selPlayer,setSelPlayer]=useState(null);
   const[editPlayer,setEditPlayer]=useState(null);
+  const[profileSeasonMode,setProfileSeasonMode]=useState("all");
+  const[profileSeasonId,setProfileSeasonId]=useState("");
 
   // realtime + loading
   const[loading,setLoading]=useState(true);
@@ -5103,6 +5241,8 @@ export default function App(){
               onSelectPlayer={p=>{
                 setSelPlayer(p);
                 setEditPlayer(null);
+                const cur = getCurrentSeason(state);
+                setProfileSeasonId(cur?.id || "");
               }}
             />
           )}
@@ -5119,7 +5259,7 @@ export default function App(){
           {tab==="stats" && (
             <StatsView
               state={state}
-              onSelectPlayer={p=>{setSelPlayer(p);setEditPlayer(null);}}
+              onSelectPlayer={p=>{setSelPlayer(p);setEditPlayer(null);const cur=getCurrentSeason(state);setProfileSeasonId(cur?.id||"");}}
             />
           )}
 
@@ -5240,6 +5380,10 @@ export default function App(){
               setEditPlayer(currentSelPlayer);
               setSelPlayer(null);
             }}
+            seasonMode={profileSeasonMode}
+            onSeasonModeChange={setProfileSeasonMode}
+            selectedSeasonId={profileSeasonId || getCurrentSeason(state)?.id || ""}
+            onSelectedSeasonIdChange={setProfileSeasonId}
           />
         )}
 
