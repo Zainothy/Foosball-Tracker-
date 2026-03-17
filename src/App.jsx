@@ -4115,74 +4115,58 @@ function AdvancedPanel({ state, setState, showToast }) {
   }
 
   return (
-    <div className="card adv-card">
-
-      <div className="card-title">⚙ Advanced Controls</div>
-
-      <div className="fac adv-buttons">
-
-        <button className="btn btn-w"
-          onClick={restoreLatest}
-          disabled={loading}>
-          Restore Previous State
-        </button>
-
-        <button className="btn btn-d"
-          onClick={hardReset}>
-          Hard Reset
-        </button>
-
-        <button className="btn"
-          onClick={loadHistory}>
-          Refresh Backups
-        </button>
-
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div className="card-header">
+        <span className="card-title">Advanced Controls</span>
       </div>
+      <div style={{ padding: 16 }}>
+        <div className="fac" style={{ gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+          <button className="btn btn-g" onClick={restoreLatest} disabled={loading}>
+            Restore Previous State
+          </button>
+          <button className="btn btn-d" onClick={hardReset}>
+            Hard Reset
+          </button>
+          <button className="btn btn-g" onClick={loadHistory}>
+            Refresh Backups
+          </button>
+        </div>
 
-      <div className="tm-box">
+        <div className="card">
+          <div className="card-header">
+            <span className="card-title">Time Machine</span>
+          </div>
+          <div style={{ padding: 14 }}>
+            <select
+              className="inp"
+              onChange={e => {
+                const id = e.target.value;
+                const row = history.find(h => String(h.id) === id);
+                setSelected(row);
+              }}
+            >
+              <option value="">Select backup</option>
+              {history.map(h => (
+                <option key={h.id} value={h.id}>
+                  {new Date(h.saved_at).toLocaleString()}
+                </option>
+              ))}
+            </select>
 
-        <div className="tm-title">🕒 Time Machine</div>
-
-        <select
-          className="tm-select"
-          onChange={e => {
-            const id = e.target.value;
-            const row = history.find(h => String(h.id) === id);
-            setSelected(row);
-          }}
-        >
-          <option value="">Select backup</option>
-          {history.map(h => (
-            <option key={h.id} value={h.id}>
-              {new Date(h.saved_at).toLocaleString()}
-            </option>
-          ))}
-        </select>
-
-        <button
-          className="btn btn-w"
-          disabled={!selected || loading}
-          onClick={() => restoreState(selected)}>
-          Restore Selected
-        </button>
-
+            <div className="fac" style={{ gap: 8, marginTop: 10 }}>
+              <button
+                className="btn btn-g"
+                disabled={!selected || loading}
+                onClick={() => restoreState(selected)}
+              >
+                Restore Selected
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
-
     </div>
   );
-}
-
-if (typeof document !== "undefined" && !document.head.querySelector('[data-adv-panel]')) {
-  const style = document.createElement("style");
-  style.dataset.advPanel = "1";
-  style.textContent = `
-.adv-card{margin-top:16px}
-.adv-buttons{gap:10px;flex-wrap:wrap;margin-bottom:10px}
-.tm-box{margin-top:14px;padding:12px;border:1px solid #333;border-radius:8px}
-.tm-title{font-weight:600;margin-bottom:6px}
-.tm-select{width:100%;padding:6px;margin-bottom:8px}
-`;
-  document.head.appendChild(style);
 }
 
 // ============================================================
