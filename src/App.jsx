@@ -381,6 +381,12 @@ function normaliseState(s) {
   };
 }
 
+function validateState(next) {
+  if (!next?.players?.length && !next?.games?.length) {
+    throw new Error("Refusing to write empty leaderboard state");
+  }
+}
+
 // Duplicate game check: same players + same score on same day
 function isDuplicateGame(candidate, existing) {
   const day = candidate.date.slice(0,10);
@@ -434,6 +440,8 @@ const _sq = {
   onSuccess: null,
 };
 
+let validationToast = null;
+
 // Queue a state for saving. Always uses confirmedV+1 as the next version,
 // regardless of what's in state._v — this prevents the stale-version bug
 // where two rapid saves both send expected_v=N.
@@ -454,6 +462,19 @@ async function _flushSave() {
   // This ensures rapid sequential saves don't collide
   const baseV = _sq.confirmedV >= 0 ? _sq.confirmedV : (stateToSave._v ?? 0);
   const nextV = baseV + 1;
+
+  try {
+    validateState(stateToSave);
+  } catch (err) {
+    console.warn('[sync] validation failed, aborting save:', err.message);
+    validationToast?.("Refusing to write empty leaderboard state", "err");
+    _sq.pending = null;
+    _sq.retries = 0;
+    _sq.onConflict = null;
+    _sq.onSuccess = null;
+    _sq.inflightV = null;
+    return;
+  }
 
   _sq.inflightV = nextV;
   _sq.echoSet.add(nextV);
@@ -4010,6 +4031,157 @@ function SyncTestView({ state }) {
 }
 
 
+function safeTestMutation(cur) {
+  return {
+    ...cur,
+    _rapidTest: Math.random(),
+    _v: (cur._v ?? 0) + 1,
+  };
+}
+
+function AdvancedPanel({ state, setState, showToast }) {
+  const [loading, setLoading] = useState(false);
+  const [history, setHistory] = useState([]);
+  const [selected, setSelected] = useState(null);
+
+  const loadHistory = useCallback(async () => {
+    const { data, error } = await supabase
+      .from("app_state_history")
+      .select("id,state,saved_at")
+      .order("saved_at", { ascending: false })
+      .limit(25);
+    if (!error) {
+      setHistory(data || []);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadHistory();
+  }, [loadHistory]);
+
+  async function restoreState(row) {
+    if (!row) return;
+    setLoading(true);
+
+    const { error } = await supabase
+      .from("app_state")
+      .update({ state: row.state })
+      .eq("id", 1);
+
+    if (error) {
+      showToast("Restore failed", "err");
+    } else {
+      setState(row.state);
+      showToast("State restored", "ok");
+    }
+
+    setLoading(false);
+  }
+
+  async function restoreLatest() {
+    if (!history.length) {
+      showToast("No backups found", "err");
+      return;
+    }
+    await restoreState(history[0]);
+  }
+
+  async function hardReset() {
+    if (!confirm("Hard reset leaderboard?")) return;
+
+    const next = {
+      ...state,
+      players: [],
+      games: [],
+      monthlyPlacements: {},
+      finals: {},
+      finalsDate: null,
+    };
+
+    const { error } = await supabase
+      .from("app_state")
+      .update({ state: next })
+      .eq("id", 1);
+
+    if (!error) {
+      setState(next);
+      showToast("Leaderboard reset", "ok");
+    } else {
+      showToast("Reset failed", "err");
+    }
+  }
+
+  return (
+    <div className="card adv-card">
+
+      <div className="card-title">⚙ Advanced Controls</div>
+
+      <div className="fac adv-buttons">
+
+        <button className="btn btn-w"
+          onClick={restoreLatest}
+          disabled={loading}>
+          Restore Previous State
+        </button>
+
+        <button className="btn btn-d"
+          onClick={hardReset}>
+          Hard Reset
+        </button>
+
+        <button className="btn"
+          onClick={loadHistory}>
+          Refresh Backups
+        </button>
+
+      </div>
+
+      <div className="tm-box">
+
+        <div className="tm-title">🕒 Time Machine</div>
+
+        <select
+          className="tm-select"
+          onChange={e => {
+            const id = e.target.value;
+            const row = history.find(h => String(h.id) === id);
+            setSelected(row);
+          }}
+        >
+          <option value="">Select backup</option>
+          {history.map(h => (
+            <option key={h.id} value={h.id}>
+              {new Date(h.saved_at).toLocaleString()}
+            </option>
+          ))}
+        </select>
+
+        <button
+          className="btn btn-w"
+          disabled={!selected || loading}
+          onClick={() => restoreState(selected)}>
+          Restore Selected
+        </button>
+
+      </div>
+
+    </div>
+  );
+}
+
+if (typeof document !== "undefined" && !document.head.querySelector('[data-adv-panel]')) {
+  const style = document.createElement("style");
+  style.dataset.advPanel = "1";
+  style.textContent = `
+.adv-card{margin-top:16px}
+.adv-buttons{gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.tm-box{margin-top:14px;padding:12px;border:1px solid #333;border-radius:8px}
+.tm-title{font-weight:600;margin-bottom:6px}
+.tm-select{width:100%;padding:6px;margin-bottom:8px}
+`;
+  document.head.appendChild(style);
+}
+
 // ============================================================
 // SYNC TEST PANEL (admin dev tool)
 // ============================================================
@@ -4039,7 +4211,7 @@ function SyncTestPanel({ state, setState, showToast }) {
     for (let i = 0; i < 5; i++) {
       await new Promise(r => setTimeout(r, 40));
       const tag = 'rapid-' + i;
-      setState(s => ({ ...s, _syncTestTag: tag }));
+      setState(s => safeTestMutation({ ...s, _syncTestTag: tag }));
       results.push(tag);
     }
 
@@ -4052,7 +4224,10 @@ function SyncTestPanel({ state, setState, showToast }) {
     addLog(passed ? '✓ PASS: Final state correctly saved' : '✗ FAIL: State not saved or wrong version', passed?'pass':'fail');
 
     // Cleanup
-    setState(s => { const {_syncTestTag, ...rest} = s; return rest; });
+    setState(s => {
+      const {_syncTestTag, ...rest} = s;
+      return safeTestMutation(rest);
+    });
     setRunning(false);
   }
 
@@ -4068,7 +4243,7 @@ function SyncTestPanel({ state, setState, showToast }) {
     // Force 3 sequential saves
     for (let i = 0; i < 3; i++) {
       await new Promise(r => setTimeout(r, 500));
-      setState(s => ({ ...s, _syncTestSeq: i }));
+      setState(s => safeTestMutation({ ...s, _syncTestSeq: i }));
       await new Promise(r => setTimeout(r, 800));
     }
 
@@ -4080,7 +4255,10 @@ function SyncTestPanel({ state, setState, showToast }) {
     addLog(`_v went ${v0} → ${vN} (expected ≥${v0+1})`, passed?'pass':'fail');
     addLog(passed ? '✓ PASS: Version correctly incremented' : '✗ FAIL: Version did not increment', passed?'pass':'fail');
 
-    setState(s => { const {_syncTestSeq, ...rest} = s; return rest; });
+    setState(s => {
+      const {_syncTestSeq, ...rest} = s;
+      return safeTestMutation(rest);
+    });
     setRunning(false);
   }
 
@@ -4105,7 +4283,7 @@ function SyncTestPanel({ state, setState, showToast }) {
     addLog('Wrote conflict state _v=' + (currentV+5) + ' to DB directly');
 
     // Now trigger a local save — should detect conflict and apply remote
-    setState(s => ({ ...s, _syncLocalChange: Date.now() }));
+    setState(s => safeTestMutation({ ...s, _syncLocalChange: Date.now() }));
     await new Promise(r => setTimeout(r, 2500));
 
     const after = await fetchCurrentDB();
@@ -4114,7 +4292,10 @@ function SyncTestPanel({ state, setState, showToast }) {
     addLog(resolved ? '✓ PASS: Conflict detected and resolved' : '⚠ INFO: Local change won (upsert fallback mode)', resolved?'pass':'warn');
 
     // Cleanup
-    setState(s => { const {_syncLocalChange, _syncConflictTest, ...rest} = s; return rest; });
+    setState(s => {
+      const {_syncLocalChange, _syncConflictTest, ...rest} = s;
+      return safeTestMutation(rest);
+    });
     await new Promise(r => setTimeout(r, 1000));
     setRunning(false);
   }
@@ -4125,7 +4306,7 @@ function SyncTestPanel({ state, setState, showToast }) {
     setRunning(true);
 
     const sentinel = 'rt-' + Date.now();
-    setState(s => ({ ...s, _syncRoundTrip: sentinel }));
+    setState(s => safeTestMutation({ ...s, _syncRoundTrip: sentinel }));
 
     // Poll DB until we see our sentinel or timeout
     let found = false;
@@ -4136,7 +4317,10 @@ function SyncTestPanel({ state, setState, showToast }) {
     }
 
     addLog(found ? '✓ PASS: Sentinel found in DB (' + sentinel + ')' : '✗ FAIL: Sentinel never reached DB', found?'pass':'fail');
-    setState(s => { const {_syncRoundTrip, ...rest} = s; return rest; });
+    setState(s => {
+      const {_syncRoundTrip, ...rest} = s;
+      return safeTestMutation(rest);
+    });
     setRunning(false);
   }
 
@@ -4424,6 +4608,10 @@ export default function App(){
     setTimeout(()=>setToast(null),4500);
   },[]);
   showToastRef.current = showToast;
+  useEffect(()=>{
+    validationToast = showToast;
+    return ()=>{ validationToast = null; };
+  },[showToast]);
 
   // ============================================================
   // NAV
@@ -4433,7 +4621,7 @@ export default function App(){
   const ADMIN_TABS = [
     { id:"onboard", label:"Onboard" },
     { id:"logGames", label:"Log Games" },
-    { id:"synctest", label:"Sync Test" },
+    { id:"advanced", label:"Advanced" },
   ];
 
   const[mobMenuOpen,setMobMenuOpen]=useState(false);
@@ -4642,7 +4830,6 @@ export default function App(){
                       setState={setState}
                       showToast={showToast}
                     />
-                    <SyncTestPanel state={state} setState={setState} showToast={showToast}/>
                   </div>
                 );
 
@@ -4655,8 +4842,21 @@ export default function App(){
                   />
                 );
 
-              case "synctest":
-                return <SyncTestView state={state} />;
+              case "advanced":
+                return (
+                  <>
+                    <AdvancedPanel
+                      state={state}
+                      setState={setState}
+                      showToast={showToast}
+                    />
+                    <SyncTestPanel
+                      state={state}
+                      setState={setState}
+                      showToast={showToast}
+                    />
+                  </>
+                );
 
               default:
                 return (
