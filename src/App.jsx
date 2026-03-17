@@ -1191,24 +1191,52 @@ const CSS = `
   .divider{height:1px;background:var(--b1);margin:16px 0}
 
 
-  .season-launch{position:relative;overflow:hidden;background:radial-gradient(circle at 20% 20%,rgba(232,184,74,.18),rgba(94,201,138,.08) 40%,var(--s2) 80%);border-color:rgba(232,184,74,.35)}
-  .season-launch::before,.season-launch::after{content:"";position:absolute;inset:-120px;background:conic-gradient(from 0deg,rgba(232,184,74,.0),rgba(232,184,74,.24),rgba(94,201,138,.0),rgba(232,184,74,.2),rgba(232,184,74,.0));animation:spinGlow 9s linear infinite;pointer-events:none}
-  .season-launch::after{animation-direction:reverse;animation-duration:13s;opacity:.5}
-  .season-title{position:relative;display:inline-flex;align-items:center;gap:8px;font-size:24px;text-transform:uppercase;letter-spacing:1.2px;color:var(--gold);text-shadow:0 0 16px rgba(232,184,74,.45)}
-  .season-pill{position:relative;display:inline-flex;padding:4px 10px;border-radius:999px;border:1px solid rgba(232,184,74,.5);background:rgba(232,184,74,.14);font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--gold)}
-  .season-msg{position:relative;margin-top:10px}
-  @keyframes spinGlow{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+  /* ── Flashy announcement — subtle mode ── */
+  .season-launch{position:relative;overflow:hidden;background:var(--s2)}
+  .season-launch::before{content:"";position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,var(--gold),var(--amber),var(--gold),transparent);animation:shimmerLine 2.4s ease-in-out infinite;pointer-events:none}
+  @keyframes shimmerLine{0%,100%{opacity:.4;transform:scaleX(.5)}50%{opacity:1;transform:scaleX(1)}}
+
+  /* ── Flashy announcement — hype mode ── */
+  .season-launch.hype{
+    background:radial-gradient(ellipse 80% 120% at 10% 0%,rgba(232,184,74,.13) 0%,rgba(88,200,130,.07) 50%,var(--s2) 100%);
+    border:1px solid rgba(232,184,74,.45) !important;
+    box-shadow:0 0 0 1px rgba(232,184,74,.1),inset 0 1px 0 rgba(232,184,74,.2);
+    animation:hypePulse 3s ease-in-out infinite;
+  }
+  @keyframes hypePulse{
+    0%,100%{box-shadow:0 0 0 1px rgba(232,184,74,.1),0 0 20px rgba(232,184,74,.06),inset 0 1px 0 rgba(232,184,74,.2)}
+    50%{box-shadow:0 0 0 1px rgba(232,184,74,.25),0 0 40px rgba(232,184,74,.14),inset 0 1px 0 rgba(232,184,74,.35)}
+  }
+  .season-launch.hype::before{height:3px;background:linear-gradient(90deg,transparent 0%,var(--gold) 20%,#fff8e0 50%,var(--gold) 80%,transparent 100%);animation:hypeSweep 2s ease-in-out infinite;filter:blur(.4px)}
+  @keyframes hypeSweep{0%{opacity:0;transform:translateX(-100%)}30%{opacity:1}70%{opacity:1}100%{opacity:0;transform:translateX(100%)}}
+  .season-launch.hype::after{content:"";position:absolute;inset:0;background:radial-gradient(ellipse 40% 60% at 90% 100%,rgba(232,184,74,.08),transparent 60%);pointer-events:none;animation:hypeCorner 4s ease-in-out infinite alternate}
+  @keyframes hypeCorner{0%{opacity:.4}100%{opacity:1}}
+
+  .season-title{display:inline-flex;align-items:center;gap:8px;font-family:var(--disp);font-size:22px;font-weight:800;color:var(--gold)}
+  .season-title.hype{font-size:26px;letter-spacing:.5px;text-shadow:0 0 20px rgba(232,184,74,.4),0 2px 4px rgba(0,0,0,.5)}
+  .season-pill{display:inline-flex;padding:3px 10px;border-radius:999px;border:1px solid rgba(232,184,74,.4);background:rgba(232,184,74,.1);font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--gold);font-family:var(--sans)}
+  .season-pill.hype{background:rgba(232,184,74,.18);border-color:rgba(232,184,74,.6);animation:pillPop .6s cubic-bezier(.34,1.56,.64,1) both .3s}
+  @keyframes pillPop{from{transform:scale(.7);opacity:0}to{transform:scale(1);opacity:1}}
+  .season-msg{margin-top:10px}
 
   /* ── MARKDOWN ────────────────────────────────────────────── */
-  .md h1{font-family:var(--disp);font-size:30px;font-weight:800;color:var(--amber);margin-bottom:16px;letter-spacing:1px}
-  .md h2{font-family:var(--disp);font-size:20px;font-weight:700;color:var(--text);margin:20px 0 8px;letter-spacing:1px;border-bottom:1px solid var(--b1);padding-bottom:6px}
-  .md h3{font-family:var(--disp);font-size:16px;font-weight:700;color:var(--text);margin:14px 0 6px}
-  .md p{line-height:1.7;color:var(--dim);margin-bottom:10px;font-size:13px}
-  .md ul,.md ol{padding-left:20px;margin-bottom:10px}
-  .md li{line-height:1.7;color:var(--dim);font-size:13px;margin-bottom:3px}
+  .md h1{font-family:var(--disp);font-size:28px;font-weight:800;color:var(--amber);margin-bottom:14px}
+  .md h2{font-family:var(--disp);font-size:18px;font-weight:700;color:var(--text);margin:18px 0 8px;border-bottom:1px solid var(--b1);padding-bottom:5px}
+  .md h3{font-family:var(--disp);font-size:15px;font-weight:700;color:var(--text);margin:12px 0 5px}
+  .md h4,.md h5,.md h6{font-family:var(--disp);font-size:13px;font-weight:600;color:var(--dim);margin:10px 0 4px}
+  .md p{line-height:1.7;color:var(--dim);margin-bottom:8px;font-size:13px}
+  .md ul,.md ol{padding-left:20px;margin-bottom:8px}
+  .md li{line-height:1.7;color:var(--dim);font-size:13px;margin-bottom:2px}
   .md strong{color:var(--text);font-weight:600}
-  .md code{background:var(--s2);border:1px solid var(--b2);padding:1px 5px;border-radius:3px;font-size:11px;color:var(--amber)}
-  .md hr{border:none;border-top:1px solid var(--b2);margin:16px 0}
+  .md em{font-style:italic;color:var(--dim)}
+  .md del{text-decoration:line-through;opacity:.5}
+  .md code{background:var(--s2);border:1px solid var(--b2);padding:1px 5px;border-radius:3px;font-size:11px;color:var(--amber);font-family:var(--mono)}
+  .md pre{background:var(--s2);border:1px solid var(--b2);border-radius:6px;padding:12px 14px;overflow-x:auto;margin:8px 0}
+  .md blockquote{border-left:3px solid var(--b2);padding:6px 14px;color:var(--dim);font-style:italic;margin:6px 0}
+  .md hr{border:none;border-top:1px solid var(--b2);margin:14px 0}
+  .md table{width:100%;border-collapse:collapse;font-size:12px;margin:8px 0}
+  .md mark{background:rgba(232,184,74,.25);color:var(--gold);padding:1px 3px;border-radius:3px}
+  .md a{color:var(--amber);text-decoration:underline}
 
   /* ── UNDO BAR ────────────────────────────────────────────── */
   .undo-bar{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--s2);border:1px solid var(--b2);border-radius:6px;padding:10px 16px;display:flex;align-items:center;gap:12px;font-size:12px;z-index:150;box-shadow:0 8px 32px rgba(0,0,0,.5);animation:slideUp .2s ease}
@@ -1267,6 +1295,7 @@ const CSS = `
 
   /* ── ANIMATIONS ──────────────────────────────────────────── */
   @keyframes slideUp{from{transform:translateY(10px);opacity:0}to{transform:translateY(0);opacity:1}}
+  @keyframes fadeInUp{from{transform:translateY(12px);opacity:0}to{transform:translateY(0);opacity:1}}
   @keyframes savingBar{from{opacity:.4}to{opacity:1}}
   @keyframes countUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
 
@@ -1402,18 +1431,138 @@ function Modal({ onClose, children, large=false }) {
 // Simple markdown renderer
 function renderMd(md) {
   if (!md) return "";
-  return md
-    .replace(/^### (.+)$/gm, "<h3>$1</h3>")
-    .replace(/^## (.+)$/gm, "<h2>$1</h2>")
-    .replace(/^# (.+)$/gm, "<h1>$1</h1>")
-    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-    .replace(/`(.+?)`/g, "<code>$1</code>")
-    .replace(/^---$/gm, "<hr>")
-    .replace(/^\- (.+)$/gm, "<li>$1</li>")
-    .replace(/(<li>.*<\/li>)/gs, m => `<ul>${m}</ul>`)
-    .replace(/^\d+\. (.+)$/gm, "<li>$1</li>")
-    .replace(/^(?!<[h|u|o|l|h]|$)(.+)$/gm, "<p>$1</p>")
-    .replace(/<\/ul>\s*<ul>/g, "");
+  const lines = md.split("\n");
+  const out = [];
+  let i = 0;
+
+  function inlineFormat(text) {
+    return text
+      .replace(/\*\*\*(.+?)\*\*\*/g, "<strong><em>$1</em></strong>")
+      .replace(/___(.+?)___/g, "<strong><em>$1</em></strong>")
+      .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+      .replace(/__(.+?)__/g, "<strong>$1</strong>")
+      .replace(/\*([^*\n]+?)\*/g, "<em>$1</em>")
+      .replace(/_([^_\n]+?)_/g, "<em>$1</em>")
+      .replace(/~~(.+?)~~/g, "<del>$1</del>")
+      .replace(/==(.+?)==/g, "<mark style='background:rgba(232,184,74,.25);color:var(--gold);padding:1px 3px;border-radius:3px'>$1</mark>")
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "<a href='$2' target='_blank' rel='noopener' style='color:var(--amber);text-decoration:underline'>$1</a>")
+      .replace(/\[\[([^\]]+)\]\]/g, "<span style='color:var(--amber)'>$1</span>");
+  }
+
+  const calloutColors = {
+    note:"var(--blue)",info:"var(--blue)",tip:"var(--green)",hint:"var(--green)",
+    success:"var(--green)",check:"var(--green)",done:"var(--green)",
+    warning:"var(--orange)",caution:"var(--orange)",attention:"var(--orange)",
+    danger:"var(--red)",error:"var(--red)",bug:"var(--red)",
+    important:"var(--amber)",quote:"var(--dimmer)",example:"var(--purple)",
+  };
+  const calloutIcons = {
+    note:"ℹ",info:"ℹ",tip:"💡",hint:"💡",success:"✓",check:"✓",done:"✓",
+    warning:"⚠",caution:"⚠",attention:"⚠",danger:"✕",error:"✕",bug:"🐛",
+    important:"!",quote:'"',example:"≡",
+  };
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // Fenced code block
+    if (/^```/.test(line)) {
+      const lang = line.slice(3).trim();
+      const codeLines = [];
+      i++;
+      while (i < lines.length && !/^```/.test(lines[i])) {
+        codeLines.push(lines[i].replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"));
+        i++;
+      }
+      out.push(`<pre style="background:var(--s2);border:1px solid var(--b2);border-radius:6px;padding:12px 14px;overflow-x:auto;font-family:var(--mono);font-size:12px;line-height:1.7;margin:8px 0">${lang?`<span style="font-size:10px;color:var(--dimmer);display:block;margin-bottom:6px;letter-spacing:1px;text-transform:uppercase">${lang}</span>`:""}${codeLines.join("\n")}</pre>`);
+      i++; continue;
+    }
+
+    // Obsidian callout > [!type]
+    if (/^> \[!(\w+)\]/.test(line)) {
+      const match = line.match(/^> \[!(\w+)\]\s*(.*)$/);
+      const type = (match[1]||"note").toLowerCase();
+      const title = match[2] || (type.charAt(0).toUpperCase()+type.slice(1));
+      const color = calloutColors[type]||"var(--blue)";
+      const icon = calloutIcons[type]||"ℹ";
+      const bodyLines = [];
+      i++;
+      while (i < lines.length && /^> /.test(lines[i])) { bodyLines.push(lines[i].slice(2)); i++; }
+      out.push(`<div style="border-left:3px solid ${color};background:color-mix(in srgb,${color} 8%,var(--s2));border-radius:0 6px 6px 0;padding:10px 14px;margin:8px 0"><div style="font-weight:700;color:${color};font-size:12px;margin-bottom:4px">${icon} ${inlineFormat(title)}</div><div style="color:var(--dim);font-size:13px;line-height:1.7">${bodyLines.map(inlineFormat).join("<br>")}</div></div>`);
+      continue;
+    }
+
+    // Regular blockquote
+    if (/^> /.test(line)) {
+      const bqLines = [];
+      while (i < lines.length && /^> /.test(lines[i])) { bqLines.push(lines[i].slice(2)); i++; }
+      out.push(`<blockquote style="border-left:3px solid var(--b2);padding:6px 14px;margin:6px 0;color:var(--dim);font-style:italic">${bqLines.map(inlineFormat).join("<br>")}</blockquote>`);
+      continue;
+    }
+
+    // Headings
+    if (/^#{1,6} /.test(line)) {
+      const m = line.match(/^(#{1,6}) (.+)$/);
+      const lvl = m[1].length;
+      const sizes = [28,18,15,13,13,13];
+      const colors = ["var(--amber)","var(--text)","var(--text)","var(--dim)","var(--dim)","var(--dim)"];
+      out.push(`<div style="font-family:var(--disp);font-size:${sizes[lvl-1]}px;font-weight:${lvl<=2?700:600};color:${colors[lvl-1]};margin:${lvl===1?"0 0 12px":"14px 0 5px"};${lvl===2?"border-bottom:1px solid var(--b1);padding-bottom:4px":""}">${inlineFormat(m[2])}</div>`);
+      i++; continue;
+    }
+
+    // Horizontal rule
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(line.trim())) {
+      out.push('<hr style="border:none;border-top:1px solid var(--b2);margin:14px 0">');
+      i++; continue;
+    }
+
+    // Table
+    if (/^\|.+\|/.test(line)) {
+      const tableLines = [];
+      while (i < lines.length && /^\|/.test(lines[i])) { tableLines.push(lines[i]); i++; }
+      if (tableLines.length >= 2) {
+        const headers = tableLines[0].split("|").filter((_,j,a)=>j>0&&j<a.length-1).map(h=>h.trim());
+        const alignRow = tableLines[1].split("|").filter((_,j,a)=>j>0&&j<a.length-1);
+        const aligns = alignRow.map(c=>{ const t=c.trim(); return t.startsWith(":")&&t.endsWith(":")?"center":t.endsWith(":")?"right":"left"; });
+        const rows = tableLines.slice(2).map(r=>r.split("|").filter((_,j,a)=>j>0&&j<a.length-1).map(c=>c.trim()));
+        out.push(`<div style="overflow-x:auto;margin:8px 0"><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr>${headers.map((h,ci)=>`<th style="text-align:${aligns[ci]||"left"};padding:6px 10px;border-bottom:2px solid var(--b2);color:var(--dimmer);font-weight:600;font-size:10px;letter-spacing:.5px;text-transform:uppercase;background:var(--s2)">${inlineFormat(h)}</th>`).join("")}</tr></thead><tbody>${rows.map((row,ri)=>`<tr style="${ri%2?"background:rgba(255,255,255,.015)":""}">${row.map((cell,ci)=>`<td style="text-align:${aligns[ci]||"left"};padding:6px 10px;border-bottom:1px solid var(--b1)">${inlineFormat(cell)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`);
+      }
+      continue;
+    }
+
+    // Lists
+    if (/^(\s*)([-*+]|\d+\.) /.test(line)) {
+      const listLines = [];
+      while (i < lines.length && (/^(\s*)([-*+]|\d+\.) /.test(lines[i]) || /^\s{2,}\S/.test(lines[i]))) {
+        listLines.push(lines[i]); i++;
+      }
+      const isOrdered = /^\s*\d+\./.test(listLines[0]);
+      const items = listLines.map(item => {
+        const m = item.match(/^(\s*)([-*+]|\d+\.) (.*)$/);
+        if (!m) return "";
+        const text = m[3];
+        if (/^\[[ xX]\] /.test(text)) {
+          const checked = /^\[[xX]\] /.test(text);
+          const label = text.replace(/^\[[ xX]\] /,"");
+          return `<li style="list-style:none;margin-left:-18px"><label style="display:flex;align-items:flex-start;gap:6px"><input type="checkbox" ${checked?"checked":""} disabled style="margin-top:2px;accent-color:var(--amber)"><span style="${checked?"text-decoration:line-through;opacity:.5":""}">${inlineFormat(label)}</span></label></li>`;
+        }
+        return `<li>${inlineFormat(text)}</li>`;
+      }).join("");
+      out.push(isOrdered
+        ? `<ol style="padding-left:20px;margin:6px 0">${items}</ol>`
+        : `<ul style="padding-left:20px;margin:6px 0">${items}</ul>`);
+      continue;
+    }
+
+    // Empty line
+    if (line.trim() === "") { i++; continue; }
+
+    // Paragraph
+    out.push(`<p style="margin-bottom:8px;line-height:1.7;color:var(--dim);font-size:13px">${inlineFormat(line)}</p>`);
+    i++;
+  }
+  return out.join("\n");
 }
 
 function ConfirmDialog({ title, msg, onConfirm, onCancel, danger=false }) {
@@ -1433,19 +1582,55 @@ function ConfirmDialog({ title, msg, onConfirm, onCancel, danger=false }) {
 
 function AnnouncementModal({ announcement, onClose }) {
   if (!announcement) return null;
-  const isSeasonLaunch = announcement.type === "seasonLaunch";
+  const isFlashy = announcement.type === "seasonLaunch" || announcement.type === "flashy";
+  const isHype   = announcement.type === "hype";
+  const isSpecial = isFlashy || isHype;
+  const title = announcement.title || (isSpecial ? "New Season" : "Announcement");
+  const subtitle = announcement.subtitle || (announcement.type === "seasonLaunch" ? "Fresh leaderboard" : null);
+
+  const headerClass = isHype ? "season-launch hype" : isFlashy ? "season-launch" : "";
+  const titleClass  = isHype ? "season-title hype"  : isFlashy ? "season-title"  : "";
+  const pillClass   = isHype ? "season-pill hype"   : "season-pill";
+
   return (
     <Modal onClose={onClose} large>
-      <div className={isSeasonLaunch ? "season-launch" : ""} style={{padding:isSeasonLaunch?"18px 18px 8px":"0",borderRadius:isSeasonLaunch?12:0}}>
-        <div className="modal-title" style={{marginBottom: isSeasonLaunch ? 8 : 20}}>
-          {isSeasonLaunch ? <span className="season-title">🎉 New Season Live</span> : "Announcement"}
+      {/* Header */}
+      <div className={headerClass} style={{
+        margin:"-28px -28px 0", padding: isHype ? "24px 28px 20px" : "20px 28px 16px",
+        borderBottom:"1px solid var(--b1)", marginBottom: isHype ? 20 : 16,
+        borderRadius:"14px 14px 0 0",
+      }}>
+        {isHype && (
+          <div className="xs" style={{
+            letterSpacing:2,textTransform:"uppercase",color:"var(--gold)",
+            opacity:.7, marginBottom:8, fontWeight:600,
+            animation:"fadeInUp .4s ease both"
+          }}>
+            ✦ &nbsp;Announcement&nbsp; ✦
+          </div>
+        )}
+        <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+          {isSpecial
+            ? <span className={titleClass} style={{animation:isHype?"fadeInUp .5s ease both .1s":"none"}}>{title}</span>
+            : <span className="modal-title" style={{marginBottom:0}}>{title}</span>
+          }
+          {subtitle && <span className={isSpecial ? pillClass : "tag tag-a"}>{subtitle}</span>}
         </div>
-        {isSeasonLaunch && <span className="season-pill">Fresh leaderboard</span>}
-        <div className="md season-msg" style={{marginTop:8}}
-          dangerouslySetInnerHTML={{__html: renderMd(announcement.body || "")}}/>
       </div>
-      <div className="fac" style={{justifyContent:"flex-end",marginTop:14}}>
-        <button className="btn btn-g" onClick={onClose}>Close</button>
+
+      {/* Body */}
+      <div className="md" style={{animation:isHype?"fadeInUp .5s ease both .2s":"none"}}
+        dangerouslySetInnerHTML={{__html: renderMd(announcement.body || "")}}/>
+
+      {/* Footer */}
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginTop:isHype?20:14,flexWrap:"wrap",gap:8}}>
+        {announcement.endsAt
+          ? <span className="xs text-dd">Visible until {new Date(announcement.endsAt).toLocaleString("en-GB",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"})}</span>
+          : <span/>
+        }
+        <button className={isHype ? "btn btn-p" : "btn btn-g"} onClick={onClose}>
+          {isHype ? "Let's go 🔥" : "Close"}
+        </button>
       </div>
     </Modal>
   );
@@ -2235,20 +2420,6 @@ function LeaderboardView({ state, setState, onSelectPlayer, onNavToPlay, onNavTo
       })()}
       <div className="card">
         <div className="card-header">
-          <span className="card-title">Season Overview</span>
-        </div>
-        <div className="grid-2">
-          <div className="stat-box"><div className="stat-lbl">Season Start</div><div className="stat-val xs">{new Date(currentSeason?.startAt).toLocaleDateString(LOCALE, {weekday:'short',month:'short',day:'numeric'})}</div></div>
-          <div className="stat-box"><div className="stat-lbl">Games</div><div className="stat-val">{seasonGames.length}</div></div>
-          <div className="stat-box"><div className="stat-lbl">Points In Play</div><div className="stat-val xs">{seasonGames.reduce((s,g)=>s+(g.ptsGain+g.ptsLoss),0)}</div></div>
-          <div className="stat-box"><div className="stat-lbl">7-Day Active</div><div className="stat-val xs">{(() => {
-  const sevenDaysAgo = new Date(Date.now() - 7 * MS_PER_DAY);
-  return seasonGames.filter(g => new Date(g.date) >= sevenDaysAgo).length;
-})()}</div></div>
-        </div>
-      </div>
-      <div className="card">
-        <div className="card-header">
           <span className="card-title">Rankings — {currentSeason?.label || fmtMonth(monthKey)}</span>
           <div className="fac" style={{gap:8}}>
             <span className={`rt-dot ${rtConnected?"live":""}`} title={rtConnected?"Live":"Connecting…"}/>
@@ -2964,6 +3135,30 @@ function SeasonsArchiveView({ state, onNavToHistory, onNavToStats }) {
   );
 }
 
+function WinDonut({ wins, losses }) {
+  const total = wins + losses;
+  if (!total) return (
+    <div style={{width:64,height:64,display:"flex",alignItems:"center",justifyContent:"center"}}>
+      <span className="xs text-dd">—</span>
+    </div>
+  );
+  const pct = wins / total;
+  const R = 28, CX = 32, CY = 32, CIRC = 2 * Math.PI * R;
+  const dash = pct * CIRC;
+  return (
+    <svg width="64" height="64" viewBox="0 0 64 64">
+      <circle cx={CX} cy={CY} r={R} fill="none" stroke="var(--b2)" strokeWidth="6"/>
+      <circle cx={CX} cy={CY} r={R} fill="none" stroke="#5ec98a" strokeWidth="6"
+        strokeDasharray={`${dash} ${CIRC}`} strokeDashoffset={CIRC / 4}
+        strokeLinecap="round" style={{transition:"stroke-dasharray .6s ease"}}/>
+      <text x={CX} y={CY + 1} textAnchor="middle" dominantBaseline="middle"
+        fill="var(--text)" fontSize="11" fontWeight="700" fontFamily="var(--disp)">
+        {Math.round(pct * 100)}%
+      </text>
+    </svg>
+  );
+}
+
 function StatsView({ state, onSelectPlayer }) {
   const [selectedId, setSelectedId] = useState(null);
   const [search, setSearch] = useState("");
@@ -3012,8 +3207,48 @@ function StatsView({ state, onSelectPlayer }) {
     return { avgGain, avgLoss, biggestMargin, longestStreak, totalGames: playerGames.length, wins: wins.length, losses: losses.length };
   }
 
+  function calcNetPts(pid, pgames) {
+    return pgames.reduce((acc, g) => {
+      const won = (g.sideA.includes(pid) && g.winner==="A") || (g.sideB.includes(pid) && g.winner==="B");
+      return acc + (won
+        ? (g.perPlayerGains?.[pid] ?? g.ptsGain ?? 0)
+        : -(g.perPlayerLosses?.[pid] ?? g.ptsLoss ?? 0));
+    }, 0);
+  }
+
   return (
     <div className="stack page-fade">
+
+      {activeSeason && (
+        <div className="card">
+          <div className="card-header">
+            <span className="card-title">Season Overview — {activeSeason.label}</span>
+          </div>
+          <div className="grid-2" style={{gap:0}}>
+            <div className="stat-box" style={{borderRadius:0,border:"none",borderRight:"1px solid var(--b1)",borderBottom:"1px solid var(--b1)"}}>
+              <div className="stat-lbl">Season Start</div>
+              <div className="stat-val" style={{fontSize:16}}>
+                {activeSeason.startAt && !isNaN(Date.parse(activeSeason.startAt))
+                  ? new Date(activeSeason.startAt).toLocaleDateString("en-GB",{weekday:"short",month:"short",day:"numeric"})
+                  : <span className="text-dd">—</span>}
+              </div>
+            </div>
+            <div className="stat-box" style={{borderRadius:0,border:"none",borderBottom:"1px solid var(--b1)"}}>
+              <div className="stat-lbl">Games This Season</div>
+              <div className="stat-val">{scopedGames.length}</div>
+            </div>
+            <div className="stat-box" style={{borderRadius:0,border:"none",borderRight:"1px solid var(--b1)"}}>
+              <div className="stat-lbl">Points In Play</div>
+              <div className="stat-val">{scopedGames.reduce((s,g)=>s+(g.ptsGain||0)+(g.ptsLoss||0),0)}</div>
+            </div>
+            <div className="stat-box" style={{borderRadius:0,border:"none"}}>
+              <div className="stat-lbl">7-Day Active</div>
+              <div className="stat-val">{(()=>{const d=new Date(Date.now()-7*86400000);return scopedGames.filter(g=>new Date(g.date)>=d).length;})()}</div>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="grid-2" style={{alignItems:"start"}}>
         {/* Player selector */}
         <div className="card">
@@ -3059,22 +3294,77 @@ function StatsView({ state, onSelectPlayer }) {
                   </div>
                 </div>
 
-                {/* Stats row */}
-                <div style={{display:"grid",gridTemplateColumns:"64px 1fr 1fr 1fr",gap:10,alignItems:"center"}}>
-                  <WinDonut wins={st.wins} losses={st.losses}/>
-                  <div className="stat-box" style={{padding:"8px 12px"}}>
-                    <div className="stat-lbl">Avg gain</div>
-                    <div className="stat-val am" style={{fontSize:20}}>+{st.avgGain}</div>
-                  </div>
-                  <div className="stat-box" style={{padding:"8px 12px"}}>
-                    <div className="stat-lbl">Avg loss</div>
-                    <div className="stat-val" style={{fontSize:20,color:"var(--red)"}}>−{st.avgLoss}</div>
-                  </div>
-                  <div className="stat-box" style={{padding:"8px 12px"}}>
-                    <div className="stat-lbl">Best streak</div>
-                    <div className="stat-val" style={{fontSize:20}}>▲{st.longestStreak}</div>
-                  </div>
-                </div>
+                {/* Stats rows */}
+                {(() => {
+                  const pGames = scopedGames.filter(g=>g.sideA.includes(selected.id)||g.sideB.includes(selected.id));
+                  const netPts = calcNetPts(selected.id, pGames);
+                  const ppg = pGames.length ? (netPts/pGames.length).toFixed(1) : null;
+                  return (
+                    <>
+                      <div style={{display:"grid",gridTemplateColumns:"64px 1fr 1fr 1fr",gap:10,alignItems:"center"}}>
+                        <WinDonut wins={st.wins} losses={st.losses}/>
+                        <div className="stat-box" style={{padding:"8px 12px"}}>
+                          <div className="stat-lbl">Avg gain</div>
+                          <div className="stat-val am" style={{fontSize:20}}>+{st.avgGain}</div>
+                        </div>
+                        <div className="stat-box" style={{padding:"8px 12px"}}>
+                          <div className="stat-lbl">Avg loss</div>
+                          <div className="stat-val" style={{fontSize:20,color:"var(--red)"}}>−{st.avgLoss}</div>
+                        </div>
+                        <div className="stat-box" style={{padding:"8px 12px"}}>
+                          <div className="stat-lbl">Best streak</div>
+                          <div className="stat-val" style={{fontSize:20}}>▲{st.longestStreak}</div>
+                        </div>
+                      </div>
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10}}>
+                        <div className="stat-box" style={{padding:"8px 12px"}}>
+                          <div className="stat-lbl">Biggest win</div>
+                          <div className="stat-val" style={{fontSize:20}}>+{st.biggestMargin}</div>
+                        </div>
+                        <div className="stat-box" style={{padding:"8px 12px"}}>
+                          <div className="stat-lbl">Net pts</div>
+                          <div className="stat-val" style={{fontSize:20,color:netPts>=0?"var(--green)":"var(--red)"}}>{netPts>=0?"+":""}{netPts}</div>
+                        </div>
+                        <div className="stat-box" style={{padding:"8px 12px"}}>
+                          <div className="stat-lbl">Pts / game</div>
+                          <div className="stat-val" style={{fontSize:20,color:!ppg?"var(--dimmer)":Number(ppg)>=0?"var(--green)":"var(--red)"}}>
+                            {ppg===null?"—":`${Number(ppg)>=0?"+":""}${ppg}`}
+                          </div>
+                        </div>
+                      </div>
+                    </>
+                  );
+                })()}
+
+                {/* Recent form bar — last 10 games */}
+                {(() => {
+                  const recent = scopedGames
+                    .filter(g=>g.sideA.includes(selected.id)||g.sideB.includes(selected.id))
+                    .sort((a,b)=>new Date(b.date)-new Date(a.date))
+                    .slice(0,10).reverse();
+                  if (!recent.length) return null;
+                  return (
+                    <div>
+                      <div className="xs text-dd" style={{marginBottom:6,letterSpacing:.5,textTransform:"uppercase",fontWeight:600}}>Recent form</div>
+                      <div style={{display:"flex",gap:3}}>
+                        {recent.map(g=>{
+                          const won=(g.sideA.includes(selected.id)&&g.winner==="A")||(g.sideB.includes(selected.id)&&g.winner==="B");
+                          const opps=(g.sideA.includes(selected.id)?g.sideB:g.sideA).map(id=>pName(id,state.players)).join(" & ");
+                          const delta=won?(g.perPlayerGains?.[selected.id]??g.ptsGain??0):-(g.perPlayerLosses?.[selected.id]??g.ptsLoss??0);
+                          return (
+                            <div key={g.id} title={`${won?"W":"L"} vs ${opps} · ${delta>=0?"+":""}${delta}pts`} style={{
+                              flex:1,height:28,borderRadius:4,
+                              background:won?"rgba(94,201,138,.18)":"rgba(240,112,112,.14)",
+                              border:`1px solid ${won?"rgba(94,201,138,.45)":"rgba(240,112,112,.35)"}`,
+                              display:"flex",alignItems:"center",justifyContent:"center",
+                              fontSize:9,fontWeight:700,color:won?"var(--green)":"var(--red)",cursor:"default"
+                            }}>{won?"W":"L"}</div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {/* H2H */}
                 <div>
@@ -4656,11 +4946,22 @@ function AdvancedPanel({ state, setState, showToast }) {
   const lastBackupAt = readLocalNumber(LAST_BACKUP_KEY, 0);
   const lastBackupLabel = lastBackupAt ? new Date(lastBackupAt).toLocaleString("en-GB") : "—";
   const [annBody, setAnnBody] = useState(state.announcement?.body || "");
-  const [annHours, setAnnHours] = useState(24);
+  const [annTitle, setAnnTitle] = useState(state.announcement?.title || "");
+  const [annSubtitle, setAnnSubtitle] = useState(state.announcement?.subtitle || "");
+  const [annFlashy, setAnnFlashy] = useState(false);
+  const [annHype, setAnnHype] = useState(false);
+  const [annScheduleStart, setAnnScheduleStart] = useState("");
+  const [annScheduleEnd, setAnnScheduleEnd] = useState("");
+  const [annPreview, setAnnPreview] = useState(false);
   const [autoSeasonAnnouncement, setAutoSeasonAnnouncement] = useState(true);
 
   useEffect(() => {
-    setAnnBody(state.announcement?.body || "");
+    const ann = state.announcement;
+    setAnnBody(ann?.body || "");
+    setAnnTitle(ann?.title || "");
+    setAnnSubtitle(ann?.subtitle || "");
+    setAnnFlashy(ann?.type === "flashy" || ann?.type === "seasonLaunch");
+    setAnnHype(ann?.type === "hype");
   }, [state.announcement?.id]);
 
   const loadHistory = useCallback(async () => {
@@ -4752,10 +5053,13 @@ function AdvancedPanel({ state, setState, showToast }) {
       const announcement = autoSeasonAnnouncement ? {
         id: `ann_${Date.now()}`,
         type: "seasonLaunch",
-        body: annBody.trim() || `## ${nextSeason.label} has started!
-Climb the fresh leaderboard and set the tone early.`,
+        title: `🎉 ${nextSeason.label} is live`,
+        subtitle: "Fresh leaderboard",
+        body: annBody.trim() || `## The slate is clean.
+
+Points reset. History preserved. May the best player rise.`,
         startsAt: now,
-        endsAt: new Date(Date.now() + Math.max(1, Number(annHours) || 24) * 60 * 60 * 1000).toISOString(),
+        endsAt: new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString(),
         createdBy: clientId,
       } : s.announcement;
       return { ...s, players, games, monthlyPlacements, seasonStart, seasons: [...prevSeasons, nextSeason], announcement };
@@ -4765,18 +5069,27 @@ Climb the fresh leaderboard and set the tone early.`,
 
   function publishAnnouncement() {
     if (!annBody.trim()) { showToast("Announcement body required", "err"); return; }
-    const start = new Date();
-    const end = new Date(start.getTime() + Math.max(1, Number(annHours) || 24) * 60 * 60 * 1000);
+    const now = new Date();
+    const start = annScheduleStart ? new Date(annScheduleStart) : now;
+    const end = annScheduleEnd
+      ? new Date(annScheduleEnd)
+      : new Date(start.getTime() + 24 * 60 * 60 * 1000);
+    if (end <= start) { showToast("End time must be after start time", "err"); return; }
     const announcement = {
       id: `ann_${Date.now()}`,
+      title: annTitle.trim() || undefined,
+      subtitle: annSubtitle.trim() || undefined,
       body: annBody.trim(),
       startsAt: start.toISOString(),
       endsAt: end.toISOString(),
       createdBy: clientId,
-      type: "standard",
+      type: annHype ? "hype" : annFlashy ? "flashy" : "standard",
     };
     setState(s => ({ ...s, announcement }));
-    showToast("Announcement published", "ok");
+    const scheduled = start > now;
+    showToast(scheduled
+      ? `Scheduled for ${start.toLocaleString("en-GB",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"})}`
+      : "Announcement published", "ok");
   }
 
   function clearAnnouncement() {
@@ -4891,45 +5204,118 @@ Climb the fresh leaderboard and set the tone early.`,
         <div className="card" style={{ marginTop: 12 }}>
           <div className="card-header">
             <span className="card-title">Announcement</span>
-            {state.announcement && (
-              <span className={`tag ${isAnnouncementActive(state.announcement) ? "tag-w" : "tag-a"}`}>
-                {isAnnouncementActive(state.announcement) ? "Active" : "Inactive"}
-              </span>
-            )}
+            <div className="fac" style={{gap:6}}>
+              {state.announcement && (
+                <span className={`tag ${isAnnouncementActive(state.announcement) ? "tag-w" : new Date(state.announcement.startsAt) > new Date() ? "tag-b" : "tag-a"}`}>
+                  {isAnnouncementActive(state.announcement) ? "Active" : new Date(state.announcement.startsAt) > new Date() ? "Scheduled" : "Expired"}
+                </span>
+              )}
+              <button className={`btn btn-sm ${annPreview ? "btn-p" : "btn-g"}`} onClick={()=>setAnnPreview(v=>!v)}>
+                {annPreview ? "Edit" : "Preview"}
+              </button>
+            </div>
           </div>
-          <div style={{ padding: 14, display: "grid", gap: 10 }}>
-            <textarea
-              className="inp"
-              rows={6}
-              placeholder="Markdown announcement... (also used as default new-season message when auto enabled)"
-              value={annBody}
-              onChange={e => setAnnBody(e.target.value)}
-            />
-            <div className="fac" style={{ gap: 8, flexWrap: "wrap" }}>
-              <div className="field" style={{ minWidth: 160 }}>
-                <label className="lbl">Duration (hours)</label>
-                <input
-                  className="inp"
-                  type="number"
-                  min="1"
-                  value={annHours}
-                  onChange={e => setAnnHours(e.target.value)}
-                />
+          <div style={{ padding: 14 }}>
+            {annPreview ? (
+              <div style={{border:"1px solid var(--b2)",borderRadius:8,padding:16,background:"var(--bg)",marginBottom:12}}>
+                <div className="xs text-dd" style={{marginBottom:8,letterSpacing:.5,textTransform:"uppercase"}}>Preview</div>
+                {(() => {
+                  const isSpec = annFlashy || annHype;
+                  const cls = annHype ? "season-launch hype" : annFlashy ? "season-launch" : "";
+                  return (
+                    <div className={cls} style={{padding:isSpec?(annHype?"18px 14px 14px":"14px"):0,borderRadius:isSpec?8:0,marginBottom:8}}>
+                      {annHype && <div className="xs" style={{letterSpacing:2,textTransform:"uppercase",color:"var(--gold)",opacity:.7,marginBottom:6,fontWeight:600}}>✦ &nbsp;Announcement&nbsp; ✦</div>}
+                      <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:8}}>
+                        <span className={annHype?"season-title hype":annFlashy?"season-title":""} style={isSpec?{}:{fontFamily:"var(--disp)",fontSize:18,fontWeight:700,color:"var(--amber)"}}>
+                          {annTitle || (isSpec ? "New Season" : "Announcement")}
+                        </span>
+                        {annSubtitle && <span className={annHype?"season-pill hype":isSpec?"season-pill":"tag tag-a"}>{annSubtitle}</span>}
+                      </div>
+                      <div className="md" dangerouslySetInnerHTML={{__html:renderMd(annBody||"*No content yet…*")}}/>
+                    </div>
+                  );
+                })()}
               </div>
-              <div className="fac" style={{ gap: 8, alignSelf: "flex-end" }}>
+            ) : (
+              <div style={{display:"grid",gap:10}}>
+                <div className="grid-2">
+                  <div>
+                    <label className="lbl">Title (optional)</label>
+                    <input className="inp" placeholder="e.g. Tournament Update"
+                      value={annTitle} onChange={e=>setAnnTitle(e.target.value)}/>
+                  </div>
+                  <div>
+                    <label className="lbl">Subtitle / pill (optional)</label>
+                    <input className="inp" placeholder="e.g. Season 2 live"
+                      value={annSubtitle} onChange={e=>setAnnSubtitle(e.target.value)}/>
+                  </div>
+                </div>
+                <div>
+                  <label className="lbl">Body — Obsidian Markdown</label>
+                  <textarea className="inp" rows={8}
+                    placeholder="## Heading&#10;**bold**, *italic*, ==highlight==&#10;&gt; [!tip] This is a callout&#10;&gt; Callout body&#10;- [ ] checkbox item&#10;| A | B |&#10;|---|---|&#10;| 1 | 2 |"
+                    value={annBody} onChange={e=>setAnnBody(e.target.value)}
+                    style={{fontFamily:"var(--mono)",fontSize:12,lineHeight:1.7}}/>
+                </div>
+                <div>
+                  <label className="lbl">Style</label>
+                  <div style={{display:"flex",gap:6}}>
+                    {[
+                      ["standard", "Standard",  "Plain announcement, no animation"],
+                      ["flashy",   "✦ Flashy",  "Gold shimmer stripe on header"],
+                      ["hype",     "🔥 Hype",   "Full glow, sweep, pulse — season launches"],
+                    ].map(([val, label, desc]) => {
+                      const cur = annHype ? "hype" : annFlashy ? "flashy" : "standard";
+                      const active = cur === val;
+                      return (
+                        <div key={val}
+                          onClick={()=>{ setAnnFlashy(val==="flashy"); setAnnHype(val==="hype"); }}
+                          style={{
+                            flex:1, padding:"8px 10px", borderRadius:8, cursor:"pointer",
+                            border:`1px solid ${active ? "rgba(232,184,74,.6)" : "var(--b2)"}`,
+                            background: active ? "rgba(232,184,74,.08)" : "var(--s2)",
+                            transition:"all .15s",
+                          }}>
+                          <div style={{fontWeight:600,fontSize:12,color:active?"var(--gold)":"var(--text)",marginBottom:2}}>{label}</div>
+                          <div className="xs text-dd" style={{lineHeight:1.4}}>{desc}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="grid-2">
+                  <div>
+                    <label className="lbl">Scheduled start (blank = now)</label>
+                    <input className="inp" type="datetime-local"
+                      value={annScheduleStart} onChange={e=>setAnnScheduleStart(e.target.value)}/>
+                  </div>
+                  <div>
+                    <label className="lbl">Scheduled end (blank = +24h)</label>
+                    <input className="inp" type="datetime-local"
+                      value={annScheduleEnd} onChange={e=>setAnnScheduleEnd(e.target.value)}/>
+                  </div>
+                </div>
+              </div>
+            )}
+            <div className="fac" style={{gap:8,marginTop:12,justifyContent:"space-between",flexWrap:"wrap"}}>
+              <div>
+                {state.announcement && (
+                  <div className="xs text-dd" style={{display:"flex",alignItems:"center",gap:6}}>
+                    {new Date(state.announcement.startsAt).toLocaleString("en-GB",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"})}
+                    {" → "}
+                    {new Date(state.announcement.endsAt).toLocaleString("en-GB",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"})}
+                    {state.announcement.type==="flashy"&&<span className="tag tag-a" style={{fontSize:9,padding:"1px 5px"}}>FLASHY</span>}
+                    {state.announcement.type==="hype"&&<span className="tag" style={{fontSize:9,padding:"1px 5px",background:"rgba(240,112,112,.15)",color:"var(--orange)",border:"1px solid rgba(240,112,112,.3)"}}>HYPE 🔥</span>}
+                  </div>
+                )}
+              </div>
+              <div className="fac" style={{gap:8}}>
                 <button className="btn btn-p" onClick={publishAnnouncement}>
-                  Publish
+                  {annScheduleStart && new Date(annScheduleStart) > new Date() ? "Schedule" : "Publish"}
                 </button>
-                <button className="btn btn-d" onClick={clearAnnouncement}>
-                  Clear
-                </button>
+                {state.announcement && <button className="btn btn-d" onClick={clearAnnouncement}>Clear</button>}
               </div>
             </div>
-            {state.announcement && (
-              <div className="xs text-dd">
-                Window: {new Date(state.announcement.startsAt).toLocaleString("en-GB")} → {new Date(state.announcement.endsAt).toLocaleString("en-GB")}
-              </div>
-            )}
           </div>
         </div>
 
@@ -5448,6 +5834,9 @@ export default function App(){
     return ()=>{ syncToast = null; };
   },[showToast]);
 
+  // Poll every 30s so scheduled announcements appear without page refresh
+  const [annTick, setAnnTick] = useState(0);
+  useEffect(() => { const id = setInterval(()=>setAnnTick(t=>t+1), 30000); return ()=>clearInterval(id); }, []);
   const activeAnnouncement = isAnnouncementActive(state.announcement) ? state.announcement : null;
   useEffect(() => {
     if (!activeAnnouncement) { setShowAnnouncement(false); return; }
@@ -5455,7 +5844,7 @@ export default function App(){
     const dismissedAt = readLocalNumber(dismissKey, 0);
     if (dismissedAt) return;
     setShowAnnouncement(true);
-  }, [activeAnnouncement?.id, activeAnnouncement?.startsAt, activeAnnouncement?.endsAt, activeAnnouncement?.body]);
+  }, [activeAnnouncement?.id, activeAnnouncement?.startsAt, activeAnnouncement?.endsAt, activeAnnouncement?.body, annTick]);
 
   function dismissAnnouncement() {
     if (!activeAnnouncement) return;
