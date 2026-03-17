@@ -61,6 +61,12 @@ const LAST_BACKUP_KEY = "ft_last_backup_at";
 const LAST_BACKUP_CLEANUP_KEY = "ft_last_backup_cleanup_at";
 const ANN_DISMISS_PREFIX = "ft_ann_dismissed_";
 
+// ── NAVIGATION & UI CONSTANTS ────────────────────────────────
+const TABS = ["ranks", "history", "stats", "seasons", "play", "rules"];
+const TAB_LABELS = { ranks: "Ranks", history: "History", stats: "Stats", seasons: "Seasons", play: "Champions", rules: "Rules" };
+const LOCALE = "en-GB";
+const MS_PER_DAY = 86400000;
+
 function readLocalNumber(key, fallback = 0) {
   if (typeof localStorage === "undefined") return fallback;
   const raw = localStorage.getItem(key);
@@ -71,6 +77,56 @@ function readLocalNumber(key, fallback = 0) {
 function writeLocalNumber(key, value) {
   if (typeof localStorage === "undefined") return;
   localStorage.setItem(key, String(value));
+}
+
+// ── HELPER FUNCTIONS ─────────────────────────────────────────
+function getDateStamp() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function getPlayerById(playerId, players) {
+  return players?.find(p => p.id === playerId);
+}
+
+function getWinnerAndLoserSides(game) {
+  const winners = game.winner === "A" ? game.sideA : game.sideB;
+  const losers = game.winner === "A" ? game.sideB : game.sideA;
+  return { winners, losers };
+}
+
+function isPlayerOnSideA(playerId, game) {
+  return game.sideA?.includes(playerId);
+}
+
+function didPlayerWin(playerId, game) {
+  const onA = isPlayerOnSideA(playerId, game);
+  return (onA && game.winner === "A") || (!onA && game.winner === "B");
+}
+
+function sortByDate(items, descending = false) {
+  return [...items].sort((a, b) =>
+    descending
+      ? new Date(b.date) - new Date(a.date)
+      : new Date(a.date) - new Date(b.date)
+  );
+}
+
+function sortByPoints(players, descending = true) {
+  return [...players].sort((a, b) =>
+    descending
+      ? (b.pts || 0) - (a.pts || 0)
+      : (a.pts || 0) - (b.pts || 0)
+  );
+}
+
+function getSelectedSeason(filter, currentSeason, allSeasons) {
+  if (filter === "all") return null;
+  if (filter === "current") return currentSeason;
+  return (allSeasons || []).find(s => s.id === filter) || null;
+}
+
+function buildPlayerNameMap(players) {
+  return new Map((players || []).map(p => [p.id, p.name]));
 }
 
 function getClientId() {
@@ -92,6 +148,28 @@ function isAnnouncementActive(ann, now = Date.now()) {
   const end = Date.parse(ann.endsAt);
   if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
   return now >= start && now <= end;
+}
+
+// Get highest-priority active announcement from queue or legacy field
+function getActiveAnnouncement(state, dismissedIds = [], now = Date.now()) {
+  const all = [
+    ...(state.announcementQueue || []),
+    ...(state.announcement ? [state.announcement] : [])
+  ];
+
+  const actives = all.filter(ann => {
+    if (dismissedIds.includes(ann.id)) return false; // Skip dismissed
+    if (ann.sticky) return true; // Sticky ignores time
+    return isAnnouncementActive(ann, now);
+  });
+
+  if (!actives.length) return null;
+
+  // Sort by priority (lower number = higher priority) then by creation time
+  return actives.sort((a, b) =>
+    (a.priority || 3) - (b.priority || 3) ||
+    new Date(a.createdAt || 0) - new Date(b.createdAt || 0)
+  )[0];
 }
 
 function downloadText(filename, text, mime = "text/plain") {
@@ -120,22 +198,29 @@ function exportStateJson(state) {
   downloadText(`foosball-state-${stamp}.json`, JSON.stringify(payload, null, 2), "application/json");
 }
 
-function exportPlayersCsv(state) {
+function exportPlayersCsv(state, seasonFilter = null) {
+  const currentSeason = seasonFilter === null ? getCurrentSeason(state) : seasonFilter;
+  const scopedGames = (state.games || []).filter(g => seasonFilter === "all" ? true : gameInSeason(g, currentSeason));
+  const scopedStats = computeWindowPlayerStats(state.players, scopedGames);
   const rows = [
     ["id", "name", "pts", "mmr", "wins", "losses", "streak"],
-    ...(state.players || []).map(p => [
-      p.id, p.name, p.pts ?? 0, p.mmr ?? 0, p.wins ?? 0, p.losses ?? 0, p.streak ?? 0
-    ])
+    ...(state.players || []).map(p => {
+      const stats = scopedStats[p.id] || {wins:0,losses:0,streak:0,pts:0};
+      return [p.id, p.name, stats.pts || 0, p.mmr ?? 0, stats.wins || 0, stats.losses || 0, stats.streak || 0];
+    })
   ];
+  const seasonLabel = seasonFilter === "all" ? "all-time" : (currentSeason?.label || "current");
   const stamp = new Date().toISOString().slice(0,10);
-  downloadText(`foosball-players-${stamp}.csv`, toCsv(rows), "text/csv");
+  downloadText(`foosball-players-${seasonLabel}-${stamp}.csv`, toCsv(rows), "text/csv");
 }
 
-function exportGamesCsv(state) {
+function exportGamesCsv(state, seasonFilter = null) {
+  const currentSeason = seasonFilter === null ? getCurrentSeason(state) : seasonFilter;
+  const scopedGames = (state.games || []).filter(g => seasonFilter === "all" ? true : gameInSeason(g, currentSeason));
   const nameById = new Map((state.players || []).map(p => [p.id, p.name]));
   const rows = [
     ["id", "date", "winner", "scoreA", "scoreB", "sideA", "sideB", "ptsGain", "ptsLoss"],
-    ...(state.games || []).map(g => [
+    ...scopedGames.map(g => [
       g.id,
       g.date,
       g.winner,
@@ -147,8 +232,9 @@ function exportGamesCsv(state) {
       g.ptsLoss ?? ""
     ])
   ];
+  const seasonLabel = seasonFilter === "all" ? "all-time" : (currentSeason?.label || "current");
   const stamp = new Date().toISOString().slice(0,10);
-  downloadText(`foosball-games-${stamp}.csv`, toCsv(rows), "text/csv");
+  downloadText(`foosball-games-${seasonLabel}-${stamp}.csv`, toCsv(rows), "text/csv");
 }
 
 // ============================================================
@@ -240,6 +326,13 @@ function avg(ids, players, key) {
   return found.reduce((s, p) => s + (p[key] || 0), 0) / found.length;
 }
 
+// Optimized avg using a pre-built player map
+function avgWithMap(ids, playerMap, key) {
+  const found = ids.map(id => playerMap.get(id)).filter(Boolean);
+  if (!found.length) return key === "mmr" ? CONFIG.STARTING_MMR : 0;
+  return found.reduce((s, p) => s + (p[key] || 0), 0) / found.length;
+}
+
 // Recompute monthlyPlacements from game list (used after delete/edit)
 function computePlacements(games) {
   const placements = {};
@@ -263,15 +356,19 @@ function replayGames(basePlayers, games, seasonStart) {
     wins: 0, losses: 0, streak: 0, streakPower: 0,
   }));
   const seasonStartDate = seasonStart ? new Date(seasonStart) : null;
-  const sorted = [...games].sort((a, b) => new Date(a.date) - new Date(b.date));
+  const sorted = sortByDate(games); // Use helper for consistency
+  // Pre-build player map for O(1) lookups (updated as players change during game iteration)
+  let playerMap = new Map(basePlayers.map(p => [p.id, p]));
   const updatedGames = sorted.map(g => {
     const gameDate = g.date ? new Date(g.date) : null;
     const inSeason = !seasonStartDate || !gameDate || gameDate >= seasonStartDate;
     const winIds = g.winner === "A" ? g.sideA : g.sideB;
     const losIds = g.winner === "A" ? g.sideB : g.sideA;
-    const ranked = [...players].sort((a,b)=>(b.pts||0)-(a.pts||0));
+    const ranked = sortByPoints(players); // Use helper for consistency
     const rankOf = id => { const i = ranked.findIndex(p=>p.id===id); return i === -1 ? ranked.length : i; };
-    const oppAvgMMR  = ids => avg(ids, players, "mmr");
+    // Update playerMap with current player state (changes as players are updated)
+    playerMap = new Map(players.map(p => [p.id, p]));
+    const oppAvgMMR  = ids => avgWithMap(ids, playerMap, "mmr");
     const oppAvgRank = ids => ids.reduce((s,id)=>s+rankOf(id),0)/ids.length;
     const winnerScore = Math.max(g.scoreA, g.scoreB);
     const loserScore  = Math.min(g.scoreA, g.scoreB);
@@ -283,7 +380,7 @@ function replayGames(basePlayers, games, seasonStart) {
     // Per-player deltas
     const playerDeltas = {};
     [...winIds, ...losIds].forEach(pid => {
-      const p = players.find(x => x.id === pid);
+      const p = playerMap.get(pid); // Use map instead of .find()
       if (!p) return;
       const isWinner = winIds.includes(pid);
       const d = calcPlayerDelta({
@@ -433,10 +530,9 @@ function gameInSeason(game, season) {
 
 function computeWindowPlayerStats(players, games) {
   const stats = Object.fromEntries((players || []).map(p => [p.id, { wins: 0, losses: 0, pts: 0, streak: 0 }]));
-  const sorted = [...(games || [])].sort((a, b) => new Date(a.date) - new Date(b.date));
+  const sorted = sortByDate(games || []); // Use helper for consistency
   for (const g of sorted) {
-    const winIds = g.winner === "A" ? g.sideA : g.sideB;
-    const losIds = g.winner === "A" ? g.sideB : g.sideA;
+    const { winners: winIds, losers: losIds } = getWinnerAndLoserSides(g); // Use helper
     for (const id of winIds) {
       const s = stats[id];
       if (!s) continue;
@@ -463,6 +559,90 @@ function computeWindowPlayerStats(players, games) {
     }
   }
   return stats;
+}
+
+// ── SEASON & PROFILE ANALYTICS HELPERS ─────────────────────────
+// Season summary: matches, points, 7-day climber, most active
+function getSeasonSummary(state, season) {
+  const seasonGames = state.games.filter(g => gameInSeason(g, season));
+  const matchCount = seasonGames.length;
+  const totalPts = seasonGames.reduce((s, g) => s + (g.ptsGain || 0) + (g.ptsLoss || 0), 0);
+
+  const sevenDaysAgo = new Date(Date.now() - 7 * MS_PER_DAY);
+  const sevenDayGames = seasonGames.filter(g => new Date(g.date) >= sevenDaysAgo);
+  const sevenDayStats = computeWindowPlayerStats(state.players, sevenDayGames);
+
+  const topClimber = [...state.players].sort((a, b) =>
+    (sevenDayStats[b.id]?.pts || 0) - (sevenDayStats[a.id]?.pts || 0)
+  )[0];
+  const topClimberPts = topClimber ? (sevenDayStats[topClimber.id]?.pts || 0) : 0;
+
+  const mostActive = [...state.players].sort((a, b) =>
+    sevenDayGames.filter(g => g.sideA.includes(b.id) || g.sideB.includes(b.id)).length -
+    sevenDayGames.filter(g => g.sideA.includes(a.id) || g.sideB.includes(a.id)).length
+  )[0];
+  const activeCount = mostActive ? sevenDayGames.filter(g => g.sideA.includes(mostActive.id) || g.sideB.includes(mostActive.id)).length : 0;
+
+  return { matchCount, totalPts, topClimber, topClimberPts, mostActive, activeCount };
+}
+
+// Best teammate: teammate with highest win% on same team
+function getBestTeammate(playerId, games) {
+  if (!games.length) return null;
+  const teammates = {};
+  games.forEach(g => {
+    const onA = g.sideA.includes(playerId);
+    const teamIds = onA ? g.sideA : g.sideB;
+    const won = (onA && g.winner === "A") || (!onA && g.winner === "B");
+    teamIds.forEach(tid => {
+      if (tid === playerId) return;
+      if (!teammates[tid]) teammates[tid] = { wins: 0, total: 0 };
+      teammates[tid].total++;
+      if (won) teammates[tid].wins++;
+    });
+  });
+  if (!Object.keys(teammates).length) return null;
+  const best = Object.entries(teammates).sort((a, b) =>
+    (b[1].wins / Math.max(b[1].total, 1)) - (a[1].wins / Math.max(a[1].total, 1))
+  )[0];
+  return { id: best[0], wins: best[1].wins, total: best[1].total };
+}
+
+// Toughest opponent: opponent with lowest win% vs
+function getToughestOpponent(playerId, games) {
+  if (!games.length) return null;
+  const opponents = {};
+  games.forEach(g => {
+    const onA = g.sideA.includes(playerId);
+    const oppIds = onA ? g.sideB : g.sideA;
+    const won = (onA && g.winner === "A") || (!onA && g.winner === "B");
+    oppIds.forEach(oid => {
+      if (!opponents[oid]) opponents[oid] = { wins: 0, total: 0 };
+      opponents[oid].total++;
+      if (won) opponents[oid].wins++;
+    });
+  });
+  if (!Object.keys(opponents).length) return null;
+  const toughest = Object.entries(opponents).sort((a, b) =>
+    (a[1].wins / Math.max(a[1].total, 1)) - (b[1].wins / Math.max(b[1].total, 1))
+  )[0];
+  return { id: toughest[0], wins: toughest[1].wins, total: toughest[1].total };
+}
+
+// Average goals for/against based on which side player was on
+function getAvgGoals(playerId, games) {
+  if (!games.length) return { goalsFor: 0, goalsAgainst: 0 };
+  let goalsFor = 0, goalsAgainst = 0;
+  games.forEach(g => {
+    const onA = g.sideA.includes(playerId);
+    const [scoreFor, scoreAgainst] = onA ? [g.scoreA, g.scoreB] : [g.scoreB, g.scoreA];
+    goalsFor += scoreFor;
+    goalsAgainst += scoreAgainst;
+  });
+  return {
+    goalsFor: (goalsFor / games.length).toFixed(1),
+    goalsAgainst: (goalsAgainst / games.length).toFixed(1)
+  };
 }
 
 // ============================================================
@@ -498,6 +678,8 @@ const SEED = {
   seasons: [],
   _meta: {},
   announcement: null,
+  announcementQueue: [],  // New: queue of announcements with priority/sticky
+  adminActions: [],  // New: audit trail for undo capability (last N actions)
 };
 
 // ============================================================
@@ -545,6 +727,8 @@ function normaliseState(s) {
     seasons: s.seasons || (s.seasonStart ? [{ id: "season_1", label: "Season 1", startAt: s.seasonStart, endAt: null, createdAt: s.seasonStart }] : []),
     _meta: s._meta || {},
     announcement: s.announcement || null,
+    announcementQueue: s.announcementQueue || [],  // New: announcement queue
+    adminActions: (s.adminActions || []).slice(-5),  // New: last 5 admin actions (keep recent only)
     _v: typeof s._v === 'number' ? s._v : 0,
   };
 }
@@ -566,6 +750,25 @@ function isDuplicateGame(candidate, existing) {
     for (const id of cSet) if (!gSet.has(id)) return false;
     return g.scoreA === candidate.scoreA && g.scoreB === candidate.scoreB;
   });
+}
+
+// Data integrity: Check for suspicious/impossible scores
+function checkSuspiciousGame(game) {
+  const total = game.scoreA + game.scoreB;
+  const margin = Math.abs(game.scoreA - game.scoreB);
+  const warnings = [];
+
+  if (total > 50) warnings.push({ type: "totalScore", value: total, msg: "Total score unusually high (>50)" });
+  if (margin > 15) warnings.push({ type: "margin", value: margin, msg: "Score margin unusually large (>15)" });
+  if (total === 0) warnings.push({ type: "zeroScore", msg: "Both teams scored 0" });
+  if (game.scoreA === game.scoreB) warnings.push({ type: "draw", msg: "Draw - game should have a winner" });
+
+  return warnings;
+}
+
+// Check for duplicate player names in onboarding
+function checkDuplicatePlayerName(name, existingPlayers) {
+  return existingPlayers.some(p => p.name.toLowerCase() === name.toLowerCase());
 }
 
 // ── SUPABASE SQL REQUIRED (run once) ─────────────────────────
@@ -1090,7 +1293,7 @@ const CSS = `
   .lb-card-pts{font-family:var(--disp);font-size:18px;font-weight:700;color:var(--amber);min-width:40px;text-align:right}
   .lb-card-meta{font-size:11px;color:var(--dimmer);margin-top:1px}
 
-  @media(max-width:640px){
+  @media(max-width:980px){
     .tbl-wrap{display:none}
     .lb-cards{display:flex}
     .topbar{padding:0 14px;gap:8px;height:52px}
@@ -1117,6 +1320,9 @@ const CSS = `
     .card-header{padding:10px 12px}
     .bracket{padding:12px;gap:12px}
     .b-match{width:160px}
+    .player-chip{padding:12px;min-height:48px}
+    .btn{padding:10px 16px;min-height:48px}
+    .tbl td,.tbl th{padding:10px 10px;min-height:48px}
   }
   @media(max-width:380px){
     .grid-3{grid-template-columns:1fr}
@@ -1351,6 +1557,59 @@ function PlayerProfile({ player, state, onClose, isAdmin, onEdit, seasonMode, on
           <div style={{marginTop:10}}><Pips used={placements}/></div>
         </div>
       </div>
+
+      {seasonMode === "season" && myGames.length > 0 && (
+        <div style={{marginBottom:16,padding:12,borderRadius:8,background:"var(--s2)",border:"1px solid var(--b1)"}}>
+          <div className="sec" style={{marginBottom:8}}>Season Insights</div>
+          <div className="grid-2" style={{gap:12}}>
+            {(() => {
+              const best = getBestTeammate(player.id, myGames);
+              return (
+                <div>
+                  <div className="xs text-dd">Best Teammate</div>
+                  {best ? (
+                    <div><span style={{fontWeight:600}}>{pName(best.id, state.players)}</span> <span className="xs text-g">{Math.round(best.wins/best.total*100)}% ({best.wins}W)</span></div>
+                  ) : (<div className="xs text-dd">—</div>)}
+                </div>
+              );
+            })()}
+            {(() => {
+              const tough = getToughestOpponent(player.id, myGames);
+              return (
+                <div>
+                  <div className="xs text-dd">Toughest Opponent</div>
+                  {tough ? (
+                    <div><span style={{fontWeight:600}}>{pName(tough.id, state.players)}</span> <span className="xs text-r">{Math.round(tough.wins/tough.total*100)}% ({tough.wins}W)</span></div>
+                  ) : (<div className="xs text-dd">—</div>)}
+                </div>
+              );
+            })()}
+            {(() => {
+              const { goalsFor, goalsAgainst } = getAvgGoals(player.id, myGames);
+              return (
+                <div>
+                  <div className="xs text-dd">Avg Goals</div>
+                  <div><span className="text-g">{goalsFor}</span> <span className="xs text-dd">For</span> / <span className="text-r">{goalsAgainst}</span> <span className="xs text-dd">Against</span></div>
+                </div>
+              );
+            })()}
+            <div>
+              <div className="xs text-dd">PPG (Pts/Game)</div>
+              {(() => {
+                let totalPts = 0;
+                myGames.forEach(g => {
+                  const won = didPlayerWin(player.id, g);
+                  const delta = won
+                    ? (g.perPlayerGains?.[player.id] ?? g.ptsGain)
+                    : -(g.perPlayerLosses?.[player.id] ?? g.ptsLoss);
+                  totalPts += delta;
+                });
+                return <div style={{fontWeight:600}}>{(totalPts / myGames.length).toFixed(2)}</div>;
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="sec">Match History</div>
       {myGames.length===0 && <div className="text-d sm">No games yet</div>}
@@ -1943,16 +2202,18 @@ function LeaderboardView({ state, setState, onSelectPlayer, onNavToPlay, onNavTo
         </div>
         <div className="stat-box"><div className="stat-lbl">Top Points</div><div className="stat-val am">{ranked[0]?.pts??0}</div></div>
       </div>
-      {ranked.filter(p=>(state.monthlyPlacements[monthKey]||{})[p.id]>=CONFIG.MAX_PLACEMENTS_PER_MONTH).slice(0,4).length >= 2 && (
-        <div className="card" style={{cursor:"pointer",transition:"border-color .15s"}}
-          onClick={()=>onNavToPlay()} onMouseEnter={e=>e.currentTarget.style.borderColor="var(--amber-d)"}
-          onMouseLeave={e=>e.currentTarget.style.borderColor=""}>
-          <div className="card-header">
-            <span className="card-title">Championship Race</span>
-            <span className="tag tag-a" style={{cursor:"pointer"}}>View Finals →</span>
-          </div>
-          <div style={{padding:"10px 16px",display:"flex",gap:8,flexWrap:"wrap"}}>
-            {ranked.filter(p=>(state.monthlyPlacements[monthKey]||{})[p.id]>=CONFIG.MAX_PLACEMENTS_PER_MONTH).slice(0,4).map((p,i)=>(
+      {(() => {
+        const placedRanked = ranked.filter(p=>(state.monthlyPlacements[monthKey]||{})[p.id]>=CONFIG.MAX_PLACEMENTS_PER_MONTH).slice(0,4);
+        return placedRanked.length >= 2 && (
+          <div className="card" style={{cursor:"pointer",transition:"border-color .15s"}}
+            onClick={()=>onNavToPlay()} onMouseEnter={e=>e.currentTarget.style.borderColor="var(--amber-d)"}
+            onMouseLeave={e=>e.currentTarget.style.borderColor=""}>
+            <div className="card-header">
+              <span className="card-title">Championship Race</span>
+              <span className="tag tag-a" style={{cursor:"pointer"}}>View Finals →</span>
+            </div>
+            <div style={{padding:"10px 16px",display:"flex",gap:8,flexWrap:"wrap"}}>
+              {placedRanked.map((p,i)=>(
               <div key={p.id} style={{
                 flex:"1 1 120px",padding:"8px 12px",borderRadius:8,
                 background: i===0?"radial-gradient(ellipse 120% 120% at 100% 100%,rgba(232,184,74,.15),var(--s2))":
@@ -1968,9 +2229,24 @@ function LeaderboardView({ state, setState, onSelectPlayer, onNavToPlay, onNavTo
                 <div className="xs" style={{color:i===0?"var(--gold)":"var(--amber)",marginTop:2}}>{p.pts||0} pts</div>
               </div>
             ))}
+            </div>
           </div>
+        );
+      })()}
+      <div className="card">
+        <div className="card-header">
+          <span className="card-title">Season Overview</span>
         </div>
-      )}
+        <div className="grid-2">
+          <div className="stat-box"><div className="stat-lbl">Season Start</div><div className="stat-val xs">{new Date(currentSeason?.startDate).toLocaleDateString(LOCALE, {weekday:'short',month:'short',day:'numeric'})}</div></div>
+          <div className="stat-box"><div className="stat-lbl">Games</div><div className="stat-val">{seasonGames.length}</div></div>
+          <div className="stat-box"><div className="stat-lbl">Points In Play</div><div className="stat-val xs">{seasonGames.reduce((s,g)=>s+(g.ptsGain+g.ptsLoss),0)}</div></div>
+          <div className="stat-box"><div className="stat-lbl">7-Day Active</div><div className="stat-val xs">{(() => {
+  const sevenDaysAgo = new Date(Date.now() - 7 * MS_PER_DAY);
+  return seasonGames.filter(g => new Date(g.date) >= sevenDaysAgo).length;
+})()}</div></div>
+        </div>
+      </div>
       <div className="card">
         <div className="card-header">
           <span className="card-title">Rankings — {currentSeason?.label || fmtMonth(monthKey)}</span>
@@ -2637,24 +2913,54 @@ function PtsChart({ pid, games, players }) {
   );
 }
 
-// Win rate donut
-function WinDonut({ wins, losses }) {
-  const total = wins + losses;
-  if (!total) return <div style={{width:64,height:64,display:"flex",alignItems:"center",justifyContent:"center"}}><span className="xs text-dd">—</span></div>;
-  const pct = wins/total;
-  const R=28, CX=32, CY=32, CIRC=2*Math.PI*R;
-  const dash = pct * CIRC;
+// ============================================================
+// SEASONS ARCHIVE
+// ============================================================
+function SeasonsArchiveView({ state, onNavToHistory, onNavToStats }) {
+  const allSeasons = state.seasons || [];
+
   return (
-    <svg width="64" height="64" viewBox="0 0 64 64">
-      <circle cx={CX} cy={CY} r={R} fill="none" stroke="var(--b2)" strokeWidth="6"/>
-      <circle cx={CX} cy={CY} r={R} fill="none" stroke="#5ec98a" strokeWidth="6"
-        strokeDasharray={`${dash} ${CIRC}`} strokeDashoffset={CIRC/4}
-        strokeLinecap="round" style={{transition:"stroke-dasharray .6s ease"}}/>
-      <text x={CX} y={CY+1} textAnchor="middle" dominantBaseline="middle"
-        fill="var(--text)" fontSize="11" fontWeight="700" fontFamily="var(--disp)">
-        {Math.round(pct*100)}%
-      </text>
-    </svg>
+    <div className="stack page-fade">
+      <h1 style={{marginBottom:8}}>Seasons</h1>
+      <p className="xs text-dd" style={{marginBottom:16}}>View past season rankings, stats, and performance</p>
+      {allSeasons.length === 0 ? (
+        <div className="msg msg-i">No archived seasons yet</div>
+      ) : (
+        allSeasons.map((season, idx) => {
+          const seasonGames = (state.games || []).filter(g => gameInSeason(g, season));
+          const seasonStats = computeWindowPlayerStats(state.players, seasonGames);
+          const ranked = [...(state.players || [])].sort((a,b)=>(seasonStats[b.id]?.pts || 0) - (seasonStats[a.id]?.pts || 0));
+          const topPlayer = ranked[0];
+          const startDate = new Date(season.startDate).toLocaleDateString(LOCALE, {month:'short',day:'numeric'});
+          const endDate = season.archived ? new Date(season.archived).toLocaleDateString(LOCALE, {month:'short',day:'numeric'}) : 'Ongoing';
+
+          return (
+            <div key={season.id} className="card" style={{cursor:"pointer"}}>
+              <div className="card-header">
+                <div>
+                  <div className="card-title" style={{marginBottom:4}}>{season.label || `Season ${idx+1}`}</div>
+                  <div className="xs text-dd">{startDate} {season.archived ? `— ${endDate}` : '— Ongoing'}</div>
+                </div>
+              </div>
+              <div className="fac" style={{gap:16,marginBottom:8}}>
+                <div>
+                  <div className="xs text-dd">Matches</div>
+                  <div style={{fontSize:18,fontWeight:700}}>{seasonGames.length}</div>
+                </div>
+                <div>
+                  <div className="xs text-dd">Top Player</div>
+                  <div style={{fontSize:14,fontWeight:700}}>{topPlayer?.name || '—'} <span className="xs" style={{color:'var(--amber)',marginLeft:4}}>{topPlayer ? `${seasonStats[topPlayer.id]?.pts || 0} pts` : ''}</span></div>
+                </div>
+              </div>
+              <div className="fac" style={{gap:8}}>
+                <button className="btn btn-sm" onClick={() => onNavToHistory?.(season)}>History</button>
+                <button className="btn btn-sm" onClick={() => onNavToStats?.(season)}>Stats</button>
+              </div>
+            </div>
+          );
+        })
+      )}
+    </div>
   );
 }
 
@@ -3028,6 +3334,28 @@ function LogView({ state, setState, showToast }) {
 
     setErrors(newErrors);
     if (Object.keys(newErrors).length) { showToast("Fix errors first", "error"); return; }
+
+    // Data integrity warnings
+    const suspiciousRows = [];
+    for (const row of rows) {
+      const sA = parseInt(row.scoreA, 10), sB = parseInt(row.scoreB, 10);
+      const total = sA + sB;
+      const margin = Math.abs(sA - sB);
+      const issues = [];
+      if (total > 50) issues.push(`Total score ${total} (unusual)`);
+      if (margin > 15) issues.push(`Margin ${margin} (very lopsided)`);
+      if (sA === 0 || sB === 0) issues.push("Zero score");
+      if (issues.length > 0) suspiciousRows.push({ row, issues });
+    }
+
+    if (suspiciousRows.length > 0 && !skipDuplicateCheck) {
+      setConfirm({
+        title: "Suspicious Score(s) Detected",
+        msg: `${suspiciousRows.map(s => `${[...s.row.sideA,...s.row.sideB].map(id=>pName(id,state.players)).join(', ')}: ${s.row.scoreA}–${s.row.scoreB} (${s.issues.join(', ')})`).join('\n')}\n\nLog anyway?`,
+        onConfirm: () => { setConfirm(null); submitAll(true); },
+      });
+      return;
+    }
 
     // Duplicate game check
     if (!skipDuplicateCheck) {
@@ -4321,6 +4649,7 @@ function AdvancedPanel({ state, setState, showToast }) {
   const [loading, setLoading] = useState(false);
   const [history, setHistory] = useState([]);
   const [selected, setSelected] = useState(null);
+  const [exportSeasonFilter, setExportSeasonFilter] = useState("current");
   const clientId = getClientId();
   const lastWriterId = state?._meta?.lastWriterId || "—";
   const lastWriteAt = state?._meta?.lastWriteAt ? new Date(state._meta.lastWriteAt).toLocaleString("en-GB") : "—";
@@ -4520,6 +4849,47 @@ Climb the fresh leaderboard and set the tone early.`,
 
         <div className="card" style={{ marginTop: 12 }}>
           <div className="card-header">
+            <span className="card-title">Admin Actions</span>
+          </div>
+          <div style={{ padding: 14 }}>
+            {(state.adminActions || []).length === 0 ? (
+              <div className="xs text-dd">No recent actions</div>
+            ) : (
+              <>
+                <div style={{display:"flex",gap:8,marginBottom:12,flexWrap:"wrap"}}>
+                  <button className="btn btn-p" onClick={() => {
+                    const lastAction = (state.adminActions || [])[0];
+                    if (!lastAction) return;
+                    setState(s => {
+                      const updated = { ...s, ...lastAction.reverseMutation };
+                      return {...s, ...updated, adminActions: (s.adminActions||[]).slice(1)};
+                    });
+                    showToast(`Undid: ${(state.adminActions || [])[0].description}`, "ok");
+                  }}>
+                    ↶ Undo Last Action
+                  </button>
+                  <span className="xs text-dd" style={{alignSelf:"center"}}>
+                    {(state.adminActions || []).length} recent action{(state.adminActions || []).length !== 1 ? 's' : ''}
+                  </span>
+                </div>
+                <div style={{display:"flex",flexDirection:"column",gap:6,maxHeight:180,overflowY:"auto"}}>
+                  {(state.adminActions || []).slice(0, 5).map((action, i) => (
+                    <div key={i} style={{padding:"8px 10px",borderRadius:6,background:"var(--s2)",border:"1px solid var(--b1)",fontSize:11}}>
+                      <div style={{fontWeight:600,color:"var(--amber)",marginBottom:2}}>{action.type}</div>
+                      <div className="text-d">{action.description}</div>
+                      <div className="xs text-dd" style={{marginTop:4}}>
+                        {new Date(action.timestamp).toLocaleString("en-GB")}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+
+        <div className="card" style={{ marginTop: 12 }}>
+          <div className="card-header">
             <span className="card-title">Announcement</span>
             {state.announcement && (
               <span className={`tag ${isAnnouncementActive(state.announcement) ? "tag-w" : "tag-a"}`}>
@@ -4567,16 +4937,26 @@ Climb the fresh leaderboard and set the tone early.`,
           <div className="card-header">
             <span className="card-title">Exports</span>
           </div>
-          <div style={{ padding: 14, display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <button className="btn btn-g" onClick={() => exportStateJson(state)}>
-              Export State (JSON)
-            </button>
-            <button className="btn btn-g" onClick={() => exportPlayersCsv(state)}>
-              Export Players (CSV)
-            </button>
-            <button className="btn btn-g" onClick={() => exportGamesCsv(state)}>
-              Export Games (CSV)
-            </button>
+          <div style={{ padding: 14, display: "grid", gap: 10 }}>
+            <div className="field">
+              <label className="lbl">Season</label>
+              <select className="inp" value={exportSeasonFilter} onChange={e => setExportSeasonFilter(e.target.value)}>
+                <option value="current">Current season</option>
+                <option value="all">All seasons</option>
+                {(state.seasons || []).map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+              </select>
+            </div>
+            <div className="fac" style={{ gap: 8, flexWrap: "wrap" }}>
+              <button className="btn btn-g" onClick={() => exportStateJson(state)}>
+                Export State (JSON)
+              </button>
+              <button className="btn btn-g" onClick={() => exportPlayersCsv(state, exportSeasonFilter)}>
+                Export Players (CSV)
+              </button>
+              <button className="btn btn-g" onClick={() => exportGamesCsv(state, exportSeasonFilter)}>
+                Export Games (CSV)
+              </button>
+            </div>
           </div>
         </div>
 
@@ -4938,9 +5318,13 @@ export default function App(){
   // using isRemoteUpdate=true so it doesn't re-trigger a save.
   const isInitialLoad = useRef(true);
   const stateRef = useRef(state);
-  useEffect(() => { stateRef.current = state; }, [state]);
+  // Keep stateRef in sync with state (already synced in useEffect below)
 
-  useEffect(()=>{
+  useEffect(() => {
+    stateRef.current = state; // Always keep ref in sync
+  }, [state]);
+
+  useEffect(() => {
     if (loading) return;
     if (isInitialLoad.current) { isInitialLoad.current = false; return; }
     if (isRemoteUpdate.current) { isRemoteUpdate.current = false; return; }
@@ -4967,7 +5351,7 @@ export default function App(){
         if (SYNC_DEBUG) verifyRemoteState(newV, pendingSnapshot);
       }
     );
-  }, [state, loading]);
+  }, [loading]);
 
   // ============================================================
   // REALTIME SUBSCRIPTION
@@ -5083,7 +5467,6 @@ export default function App(){
   // ============================================================
   // NAV
   // ============================================================
-  const PUB = ["ranks","history","stats","play","rules"];
 
   const ADMIN_TABS = [
     { id:"onboard", label:"Onboard" },
@@ -5149,9 +5532,9 @@ export default function App(){
 
           {/* Desktop nav */}
           <nav className="nav">
-            {PUB.map(t=>(
+            {TABS.map(t=>(
               <button key={t} className={`nav-btn ${tab===t?"active":""}`} onClick={()=>navTo(t)}>
-                {{"ranks":"Ranks","history":"History","stats":"Stats","play":"Champions","rules":"Rules"}[t]||t}
+                {TAB_LABELS[t]}
                 {t==="play" && Object.values(state.finals?.[getMonthKey()]?.liveScores||{}).some(v=>v?.active) && (
                   <span style={{display:"inline-block",width:6,height:6,borderRadius:"50%",background:"var(--red)",marginLeft:5,verticalAlign:"middle",animation:"livePulse 1.4s infinite"}}/>
                 )}
@@ -5204,9 +5587,9 @@ export default function App(){
 
         {/* Mobile nav dropdown */}
         <div className={`mob-nav ${mobMenuOpen?"open":""}`}>
-          {PUB.map(t=>(
+          {TABS.map(t=>(
             <button key={t} className={`nav-btn ${tab===t?"active":""}`} onClick={()=>navTo(t)}>
-              {{"ranks":"Ranks","history":"History","stats":"Stats","play":"Champions","rules":"Rules"}[t]||t}
+              {TAB_LABELS[t]}
               {t==="play" && Object.values(state.finals?.[getMonthKey()]?.liveScores||{}).some(v=>v?.active) && (
                 <span style={{display:"inline-block",width:6,height:6,borderRadius:"50%",background:"var(--red)",marginLeft:5,verticalAlign:"middle",animation:"livePulse 1.4s infinite"}}/>
               )}
@@ -5260,6 +5643,14 @@ export default function App(){
             <StatsView
               state={state}
               onSelectPlayer={p=>{setSelPlayer(p);setEditPlayer(null);const cur=getCurrentSeason(state);setProfileSeasonId(cur?.id||"");}}
+            />
+          )}
+
+          {tab==="seasons" && (
+            <SeasonsArchiveView
+              state={state}
+              onNavToHistory={(season)=>{setTab("history");}}
+              onNavToStats={(season)=>{setTab("stats");}}
             />
           )}
 
