@@ -53,6 +53,37 @@ const CONFIG = {
 // Enable extra verification after each save to detect silent sync failures.
 // Turn off once the issue is resolved.
 const SYNC_DEBUG = true;
+const BACKUP_MIN_INTERVAL_MS = 10 * 60 * 1000; // at most 1 backup per 10 minutes per client
+const BACKUP_RETENTION_DAYS = 30;
+const BACKUP_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const CLIENT_ID_KEY = "ft_client_id";
+const LAST_BACKUP_KEY = "ft_last_backup_at";
+const LAST_BACKUP_CLEANUP_KEY = "ft_last_backup_cleanup_at";
+
+function readLocalNumber(key, fallback = 0) {
+  if (typeof localStorage === "undefined") return fallback;
+  const raw = localStorage.getItem(key);
+  const n = raw ? Number(raw) : fallback;
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function writeLocalNumber(key, value) {
+  if (typeof localStorage === "undefined") return;
+  localStorage.setItem(key, String(value));
+}
+
+function getClientId() {
+  if (typeof localStorage === "undefined") return "server";
+  let id = localStorage.getItem(CLIENT_ID_KEY);
+  if (!id) {
+    const rand = (typeof crypto !== "undefined" && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : `c_${Math.random().toString(36).slice(2)}_${Date.now()}`;
+    id = rand;
+    localStorage.setItem(CLIENT_ID_KEY, id);
+  }
+  return id;
+}
 
 // ============================================================
 // DEFAULT RULEBOOK (markdown)
@@ -358,7 +389,8 @@ async function loadState() {
     }
 
     const s = data?.state || {};
-    if (!s.players || s.players.length === 0) return SEED;
+    const hasState = s && Object.keys(s).length > 0;
+    if (!hasState) return SEED;
     const ns = normaliseState(s);
     // If DB has no _v yet, treat as 0 (upsert path will seed it)
     if (typeof s._v !== 'number') ns._v = 0;
@@ -458,6 +490,34 @@ function saveState(s, onConflict, onSuccess) {
   _sq.timer = setTimeout(_flushSave, 350);
 }
 
+async function cleanupBackupsIfNeeded() {
+  try {
+    const now = Date.now();
+    const last = readLocalNumber(LAST_BACKUP_CLEANUP_KEY, 0);
+    if (now - last < BACKUP_CLEANUP_INTERVAL_MS) return;
+    const cutoff = new Date(now - BACKUP_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+    await supabase.from("app_state_history").delete().lt("saved_at", cutoff);
+    writeLocalNumber(LAST_BACKUP_CLEANUP_KEY, now);
+  } catch (e) {
+    console.warn("[backup] cleanup failed:", e?.message || e);
+  }
+}
+
+async function maybeBackupState(stateToBackup) {
+  try {
+    const hasData = (stateToBackup?.players?.length || 0) > 0 || (stateToBackup?.games?.length || 0) > 0;
+    if (!hasData) return;
+    const now = Date.now();
+    const last = readLocalNumber(LAST_BACKUP_KEY, 0);
+    if (now - last < BACKUP_MIN_INTERVAL_MS) return;
+    await supabase.from("app_state_history").insert({ state: stateToBackup });
+    writeLocalNumber(LAST_BACKUP_KEY, now);
+    await cleanupBackupsIfNeeded();
+  } catch (e) {
+    console.warn("[backup] insert failed:", e?.message || e);
+  }
+}
+
 async function _flushSave() {
   if (!_sq.pending) return;
   const { stateToSave } = _sq.pending;
@@ -483,7 +543,16 @@ async function _flushSave() {
   _sq.inflightV = nextV;
   _sq.echoSet.add(nextV);
 
-  const slimmed = slimState({ ...stateToSave, _v: nextV });
+  const enriched = {
+    ...stateToSave,
+    _meta: {
+      ...(stateToSave._meta || {}),
+      lastWriteAt: new Date().toISOString(),
+      lastWriterId: getClientId(),
+    },
+    _v: nextV,
+  };
+  const slimmed = slimState(enriched);
 
   async function succeed() {
     console.log('[sync] ✓ saved _v' + nextV);
@@ -494,6 +563,7 @@ async function _flushSave() {
     const cb = _sq.onSuccess;
     _sq.pending = null; _sq.retries = 0; _sq.onSuccess = null; _sq.onConflict = null;
     cb?.(nextV);
+    void maybeBackupState(slimmed);
   }
 
   async function handleConflict() {
