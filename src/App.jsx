@@ -447,6 +447,7 @@ function replayGames(basePlayers, games, seasonStart) {
         perPlayerFactors[id] = {
           eloScale: +playerDeltas[id].eloScale.toFixed(3),
           rankScale: +playerDeltas[id].rankScale.toFixed(3),
+          matchQuality: +playerDeltas[id].matchQuality.toFixed(3),
           qualityScore: +playerDeltas[id].qualityScore.toFixed(3),
         };
       }
@@ -457,6 +458,7 @@ function replayGames(basePlayers, games, seasonStart) {
         perPlayerFactors[id] = {
           eloScale: +playerDeltas[id].eloScale.toFixed(3),
           rankScale: +playerDeltas[id].rankScale.toFixed(3),
+          matchQuality: +playerDeltas[id].matchQuality.toFixed(3),
           qualityScore: +playerDeltas[id].qualityScore.toFixed(3),
         };
       }
@@ -484,58 +486,87 @@ function replayGames(basePlayers, games, seasonStart) {
 }
 
 // ── CORE DELTA FORMULA (PER-PLAYER) ──────────────────────────
-// Each player receives their own individual gain/loss based on:
-//   1. SCORE DOMINANCE  — scoreMult shared (same game for everyone)
-//   2. MMR SURPRISE     — each player's MMR vs average opponent MMR
-//   3. RANK GAP         — each player's rank vs average opponent rank
-//   4. STREAK           — each player's own streak
 //
-// This means two players on the same winning team can receive
-// different gains if one is heavily favoured and the other is an underdog.
+// Theory: Standard Elo (Arpad Elo, 1960) uses one signal — expected score
+// from rating gap — applied symmetrically. Glicko-2 and TrueSkill extend
+// this with uncertainty weighting but keep a single composite skill estimate.
+//
+// Running MMR and rank as two independent multiplicative factors is
+// theoretically wrong: they measure the same latent variable (skill), so
+// compounding them creates instability. A high-ranked player beating a
+// low-ranked opponent already has a low eloScale — adding a low rankScale
+// multiplied on top compounds the penalty twice for the same phenomenon.
+//
+// Fix: fuse eloScale and rankScale into a single matchQuality signal
+// (weighted blend, 70/30), then apply it once for gain and once for loss.
+// This is equivalent to TrueSkill's approach of blending skill dimensions
+// before computing the update, rather than multiplying them separately.
+//
+// rankScale's purpose is specifically cherry-pick detection: when pts-rank
+// and MMR disagree (high rank, low MMR = sandbagging), the rank signal adds
+// information MMR misses. When they agree, it contributes proportionally.
+//
+// Each player gets their own delta based on:
+//   1. SCORE DOMINANCE  — scoreMult (shared per game, affects everyone equally)
+//   2. MATCH QUALITY    — blended eloScale + rankScale (single fused signal)
+//   3. STREAK           — each player's own streak power
 //
 function calcPlayerDelta({ winnerScore, loserScore, playerMMR, playerRank,
   playerStreakPower, oppAvgMMR, oppAvgRank, isWinner }) {
-  // 1. Score dominance
+  // 1. Score dominance — how convincing was the win
   const scoreDiff = winnerScore - loserScore;
   const scoreRatio = scoreDiff / Math.max(winnerScore, 1);
   const scoreMult = 1 + CONFIG.SCORE_WEIGHT * Math.pow(scoreRatio, CONFIG.SCORE_EXP);
 
-  // 2. MMR surprise
+  // 2. MMR surprise (primary signal, 70% weight)
+  // eloScale = 2 / (1 + e^(mmrGap/D)) — classic logistic Elo expected-score transform
+  // > 1.0 = underdog (opponent has higher MMR) → more pts
+  // < 1.0 = favourite (opponent has lower MMR) → fewer pts
+  // Centred at 1.0 when MMRs are equal
   const mmrGap = playerMMR - oppAvgMMR;
   const eloScale = 2 / (1 + Math.exp(mmrGap / CONFIG.ELO_DIVISOR));
 
-  // 3. Rank gap — only meaningful when both player and opponents are placed
-  // null rank = unplaced, skip rank adjustment entirely (rankScale = 1.0)
+  // 3. Rank signal (secondary signal, 30% weight)
+  // Only applied when both sides are placed — otherwise neutral (1.0)
+  // rankScale > 1.0 = beating a higher-ranked opponent (rank upset bonus)
+  // rankScale < 1.0 = beating a lower-ranked opponent (cherry-pick penalty)
+  // Contributes additional information when rank and MMR disagree (e.g. sandbagging)
   const rankScale = (playerRank === null || oppAvgRank === null)
     ? 1.0
     : (() => {
         const rankDiff = isWinner
-          ? (oppAvgRank - playerRank)
-          : (playerRank - oppAvgRank);
+          ? (oppAvgRank - playerRank)    // positive = beat higher-ranked = bonus
+          : (playerRank - oppAvgRank);   // positive = lost to lower-ranked = extra loss
         return 1 + CONFIG.RANK_WEIGHT * Math.tanh(rankDiff / CONFIG.RANK_DIVISOR);
       })();
 
-  // 4. Quality-weighted streak (capped, convergence-safe)
+  // 4. Fused match quality — weighted blend of MMR and rank signals
+  // Applied once for gain and once for loss (not multiplied together)
+  // This prevents the same skill gap from being penalised twice
+  const ELO_WEIGHT = 0.7;
+  const RANK_WEIGHT_BLEND = 0.3;
+  const matchQuality = ELO_WEIGHT * eloScale + RANK_WEIGHT_BLEND * rankScale;
+  // matchQuality ~ 1.0 at a perfectly even match
+  // > 1.0 = underdog (expected to lose) — more pts for winning, less for losing
+  // < 1.0 = favourite (expected to win) — fewer pts for winning, more for losing
+
+  // 5. Streak multiplier
   const mult = streakMult(playerStreakPower, isWinner);
 
-  // Quality score this game = how "hard" was the opponent
-  const qualityScore = eloScale * rankScale;
+  // qualityScore stored for streak decay and history display
+  const qualityScore = matchQuality;
 
   if (isWinner) {
-    const gain = Math.max(2, Math.round(CONFIG.BASE_GAIN * scoreMult * eloScale * rankScale * mult));
-    return { gain, loss: 0, scoreMult, eloScale, rankScale, streakMultVal: mult, qualityScore };
+    const gain = Math.max(2, Math.round(CONFIG.BASE_GAIN * scoreMult * matchQuality * mult));
+    return { gain, loss: 0, scoreMult, eloScale, rankScale, matchQuality, streakMultVal: mult, qualityScore };
   } else {
-    // Loss is harsher for:
-    //   - high scoreMult (blowout defeat)
-    //   - low eloScale  (expected win that didn't happen — higher MMR player lost)
-    //   - high rankScale (higher-ranked player lost to lower-ranked)
-    //   - active loss streak (streakMult > 1)
-    // LOSS_HARSHNESS nudges the base up slightly without doubling anything
-    const lossRankPunish = (2 - rankScale); // > 1 when higher-ranked lost to lower
+    // Loss formula mirrors gain: (2 - matchQuality) rises when matchQuality falls
+    // i.e. a heavy favourite who loses suffers more — symmetrical to Elo
+    // Single factor prevents the old (2-eloScale)*(2-rankScale) compounding
     const loss = Math.max(1, Math.round(
-      CONFIG.BASE_LOSS * scoreMult * (2 - eloScale) * lossRankPunish * mult * CONFIG.LOSS_HARSHNESS
+      CONFIG.BASE_LOSS * scoreMult * (2 - matchQuality) * mult * CONFIG.LOSS_HARSHNESS
     ));
-    return { gain: 0, loss, scoreMult, eloScale, rankScale, streakMultVal: mult, qualityScore };
+    return { gain: 0, loss, scoreMult, eloScale, rankScale, matchQuality, streakMultVal: mult, qualityScore };
   }
 }
 
@@ -2264,10 +2295,6 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
                   const rankColor = f.rankScale === 1.0 ? "var(--dimmer)"
                     : f.rankScale > 1.08 ? "var(--green)" : f.rankScale < 0.92 ? "var(--orange)" : "var(--dimmer)";
 
-                  // Quality score: product of elo+rank scales. <0.8 = weak game for points
-                  const qualityPct = Math.round(f.qualityScore * 100);
-                  const qualityColor = f.qualityScore < 0.75 ? "var(--red)" : f.qualityScore < 0.90 ? "var(--orange)" : "var(--green)";
-
                   return (
                     <div key={p.id} style={{ padding: "8px 10px", borderRadius: 6, background: "var(--s1)", border: "1px solid var(--b1)" }}>
                       {/* Player header: name + pts earned */}
@@ -2280,9 +2307,9 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
 
                       {/* Factor bars */}
                       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                        {/* MMR (elo) scale */}
+                        {/* MMR signal (primary) */}
                         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          <span style={{ fontSize: 10, color: "var(--dimmer)", width: 80, flexShrink: 0 }}>MMR gap</span>
+                          <span style={{ fontSize: 10, color: "var(--dimmer)", width: 90, flexShrink: 0 }}>MMR (70%)</span>
                           <div style={{ flex: 1, height: 5, borderRadius: 3, background: "var(--b2)", overflow: "hidden" }}>
                             <div style={{
                               height: "100%", borderRadius: 3,
@@ -2290,14 +2317,14 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
                               background: eloColor, transition: "width .4s",
                             }} />
                           </div>
-                          <span style={{ fontSize: 10, color: eloColor, width: 110, flexShrink: 0, textAlign: "right" }}>
+                          <span style={{ fontSize: 10, color: eloColor, width: 120, flexShrink: 0, textAlign: "right" }}>
                             ×{f.eloScale.toFixed(2)} {eloLabel}
                           </span>
                         </div>
 
-                        {/* Rank scale */}
+                        {/* Rank signal (secondary) */}
                         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          <span style={{ fontSize: 10, color: "var(--dimmer)", width: 80, flexShrink: 0 }}>Rank gap</span>
+                          <span style={{ fontSize: 10, color: "var(--dimmer)", width: 90, flexShrink: 0 }}>Rank (30%)</span>
                           <div style={{ flex: 1, height: 5, borderRadius: 3, background: "var(--b2)", overflow: "hidden" }}>
                             <div style={{
                               height: "100%", borderRadius: 3,
@@ -2305,32 +2332,41 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
                               background: rankColor, transition: "width .4s",
                             }} />
                           </div>
-                          <span style={{ fontSize: 10, color: rankColor, width: 110, flexShrink: 0, textAlign: "right" }}>
+                          <span style={{ fontSize: 10, color: rankColor, width: 120, flexShrink: 0, textAlign: "right" }}>
                             ×{f.rankScale.toFixed(2)} {rankLabel}
                           </span>
                         </div>
 
-                        {/* Overall quality */}
-                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          <span style={{ fontSize: 10, color: "var(--dimmer)", width: 80, flexShrink: 0 }}>Game value</span>
-                          <div style={{ flex: 1, height: 5, borderRadius: 3, background: "var(--b2)", overflow: "hidden" }}>
-                            <div style={{
-                              height: "100%", borderRadius: 3,
-                              width: `${Math.min(100, qualityPct)}%`,
-                              background: qualityColor, transition: "width .4s",
-                            }} />
-                          </div>
-                          <span style={{ fontSize: 10, color: qualityColor, width: 110, flexShrink: 0, textAlign: "right" }}>
-                            {qualityPct}% quality
-                          </span>
-                        </div>
+                        {/* Fused match quality — the actual multiplier used */}
+                        {(() => {
+                          const mq = f.matchQuality ?? f.qualityScore ?? 1;
+                          const mqPct = Math.round(mq * 100);
+                          const mqColor = mq < 0.80 ? "var(--red)" : mq < 0.95 ? "var(--orange)" : mq > 1.10 ? "var(--green)" : "var(--dimmer)";
+                          const mqLabel = mq < 0.80 ? "Low value" : mq < 0.95 ? "Slightly favoured" : mq > 1.15 ? "Underdog!" : mq > 1.05 ? "Slight underdog" : "Even";
+                          return (
+                            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 2, paddingTop: 4, borderTop: "1px solid var(--b1)" }}>
+                              <span style={{ fontSize: 10, color: "var(--dim)", width: 90, flexShrink: 0, fontWeight: 600 }}>Match quality</span>
+                              <div style={{ flex: 1, height: 6, borderRadius: 3, background: "var(--b2)", overflow: "hidden" }}>
+                                <div style={{
+                                  height: "100%", borderRadius: 3,
+                                  width: `${Math.min(100, mqPct)}%`,
+                                  background: mqColor, transition: "width .4s",
+                                  boxShadow: `0 0 4px ${mqColor}88`,
+                                }} />
+                              </div>
+                              <span style={{ fontSize: 10, color: mqColor, width: 120, flexShrink: 0, textAlign: "right", fontWeight: 600 }}>
+                                ×{mq.toFixed(2)} — {mqLabel}
+                              </span>
+                            </div>
+                          );
+                        })()}
                       </div>
                     </div>
                   );
                 })}
 
                 <div className="xs text-dd" style={{ lineHeight: 1.6, paddingTop: 2 }}>
-                  High-ranked players beating lower-ranked opponents earn reduced points. Beat players above you to climb faster.
+                  Match quality = 70% MMR gap + 30% rank gap, applied once. Beating a stronger opponent earns more. Cherry-picking weaker opponents earns less.
                 </div>
               </div>
             </div>
@@ -4190,6 +4226,7 @@ function LogView({ state, setState, showToast }) {
           perPlayerFactors[id] = {
             eloScale: +playerDeltas[id].eloScale.toFixed(3),
             rankScale: +playerDeltas[id].rankScale.toFixed(3),
+            matchQuality: +playerDeltas[id].matchQuality.toFixed(3),
             qualityScore: +playerDeltas[id].qualityScore.toFixed(3),
           };
         }
@@ -4200,6 +4237,7 @@ function LogView({ state, setState, showToast }) {
           perPlayerFactors[id] = {
             eloScale: +playerDeltas[id].eloScale.toFixed(3),
             rankScale: +playerDeltas[id].rankScale.toFixed(3),
+            matchQuality: +playerDeltas[id].matchQuality.toFixed(3),
             qualityScore: +playerDeltas[id].qualityScore.toFixed(3),
           };
         }
@@ -4426,10 +4464,10 @@ function LogView({ state, setState, showToast }) {
                             const n = state.players.find(p => p.id === id)?.name?.split(" ")[0] || "?";
                             return <div key={id} className="text-r">−{d?.loss ?? 0} {n}</div>;
                           })}
-                          {/* Game value warning if any winner has low quality score */}
-                          {prev.wIds.some(id => (prev.perPlayer[id]?.qualityScore ?? 1) < 0.8) && (
+                          {/* Game value warning if any winner has low match quality */}
+                          {prev.wIds.some(id => (prev.perPlayer[id]?.qualityScore ?? 1) < 0.85) && (
                             <div style={{ color: "var(--orange)", marginTop: 2, fontSize: 9, letterSpacing: .3 }}>
-                              ⚠ Low-value game — rank mismatch reduces pts
+                              ⚠ Low-value game — opponents weaker, reduced pts
                             </div>
                           )}
                         </div>
