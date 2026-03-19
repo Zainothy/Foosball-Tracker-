@@ -356,43 +356,67 @@ function replayGames(basePlayers, games, seasonStart) {
     wins: 0, losses: 0, streak: 0, streakPower: 0,
   }));
   const seasonStartDate = seasonStart ? new Date(seasonStart) : null;
-  const sorted = sortByDate(games); // Use helper for consistency
-  // Pre-build player map for O(1) lookups (updated as players change during game iteration)
+  const sorted = sortByDate(games);
   let playerMap = new Map(basePlayers.map(p => [p.id, p]));
+  // Track cumulative placements per monthKey so rankScale is only applied to placed players
+  const placementCount = {}; // { [monthKey]: { [pid]: number } }
   const updatedGames = sorted.map(g => {
     const gameDate = g.date ? new Date(g.date) : null;
     const inSeason = !seasonStartDate || !gameDate || gameDate >= seasonStartDate;
     const winIds = g.winner === "A" ? g.sideA : g.sideB;
     const losIds = g.winner === "A" ? g.sideB : g.sideA;
-    const ranked = sortByPoints(players); // Use helper for consistency
+    const mk = g.monthKey || g.date?.slice(0, 7) || "";
+
+    // Snapshot placements BEFORE this game (determines if rank matters for this game)
+    const monthPlacements = placementCount[mk] || {};
+    const isPlacedAtGameTime = pid => (monthPlacements[pid] || 0) >= CONFIG.MAX_PLACEMENTS_PER_MONTH;
+    const allPids = [...winIds, ...losIds];
+
+    // Only consider players who are placed when computing rank context
+    // Unplaced players get rankScale = 1.0 (neutral — rank is meaningless before calibration)
+    const ranked = sortByPoints(players);
     const rankOf = id => { const i = ranked.findIndex(p => p.id === id); return i === -1 ? ranked.length : i; };
-    // Update playerMap with current player state (changes as players are updated)
     playerMap = new Map(players.map(p => [p.id, p]));
     const oppAvgMMR = ids => avgWithMap(ids, playerMap, "mmr");
-    const oppAvgRank = ids => ids.reduce((s, id) => s + rankOf(id), 0) / ids.length;
+
+    // Rank average only over placed opponents — null if none placed
+    const oppAvgRankPlaced = ids => {
+      const placed = ids.filter(isPlacedAtGameTime);
+      if (!placed.length) return null;
+      return placed.reduce((s, id) => s + rankOf(id), 0) / placed.length;
+    };
+
     const winnerScore = Math.max(g.scoreA, g.scoreB);
     const loserScore = Math.min(g.scoreA, g.scoreB);
     const oppWinMMR = oppAvgMMR(winIds);
     const oppLosMMR = oppAvgMMR(losIds);
-    const oppWinRank = oppAvgRank(winIds);
-    const oppLosRank = oppAvgRank(losIds);
+    const oppWinRankPlaced = oppAvgRankPlaced(winIds);
+    const oppLosRankPlaced = oppAvgRankPlaced(losIds);
 
-    // Per-player deltas
     const playerDeltas = {};
-    [...winIds, ...losIds].forEach(pid => {
-      const p = playerMap.get(pid); // Use map instead of .find()
+    allPids.forEach(pid => {
+      const p = playerMap.get(pid);
       if (!p) return;
       const isWinner = winIds.includes(pid);
+      // If this player or ALL their opponents are unplaced, rank is neutral (null → rankScale=1)
+      const myPlaced = isPlacedAtGameTime(pid);
+      const oppRankPlaced = isWinner ? oppLosRankPlaced : oppWinRankPlaced;
       const d = calcPlayerDelta({
         winnerScore, loserScore,
         playerMMR: p.mmr,
-        playerRank: rankOf(pid),
+        playerRank: myPlaced ? rankOf(pid) : null,
         playerStreakPower: p.streakPower || 0,
         oppAvgMMR: isWinner ? oppLosMMR : oppWinMMR,
-        oppAvgRank: isWinner ? oppLosRank : oppWinRank,
+        oppAvgRank: (myPlaced && oppRankPlaced !== null) ? oppRankPlaced : null,
         isWinner,
       });
       playerDeltas[pid] = d;
+    });
+
+    // Advance placement counts AFTER computing deltas (this game counts toward next game)
+    if (!placementCount[mk]) placementCount[mk] = {};
+    allPids.forEach(pid => {
+      placementCount[mk][pid] = (placementCount[mk][pid] || 0) + 1;
     });
 
     players = players.map(p => {
@@ -480,11 +504,16 @@ function calcPlayerDelta({ winnerScore, loserScore, playerMMR, playerRank,
   const mmrGap = playerMMR - oppAvgMMR;
   const eloScale = 2 / (1 + Math.exp(mmrGap / CONFIG.ELO_DIVISOR));
 
-  // 3. Rank gap
-  const rankDiff = isWinner
-    ? (oppAvgRank - playerRank)
-    : (playerRank - oppAvgRank);
-  const rankScale = 1 + CONFIG.RANK_WEIGHT * Math.tanh(rankDiff / CONFIG.RANK_DIVISOR);
+  // 3. Rank gap — only meaningful when both player and opponents are placed
+  // null rank = unplaced, skip rank adjustment entirely (rankScale = 1.0)
+  const rankScale = (playerRank === null || oppAvgRank === null)
+    ? 1.0
+    : (() => {
+        const rankDiff = isWinner
+          ? (oppAvgRank - playerRank)
+          : (playerRank - oppAvgRank);
+        return 1 + CONFIG.RANK_WEIGHT * Math.tanh(rankDiff / CONFIG.RANK_DIVISOR);
+      })();
 
   // 4. Quality-weighted streak (capped, convergence-safe)
   const mult = streakMult(playerStreakPower, isWinner);
@@ -2175,18 +2204,27 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
           const hasFactors = allPlayers.some(p => game.perPlayerFactors?.[p.id]);
           if (!hasFactors) return null;
 
-          // Classify overall match balance using avg rank gap across all 4 players
           const ranked = [...state.players].sort((a, b) => (b.pts || 0) - (a.pts || 0));
           const rankOf = id => { const i = ranked.findIndex(p => p.id === id); return i === -1 ? ranked.length : i; };
-          const avgWinRank = (game.winner === "A" ? game.sideA : game.sideB).reduce((s, id) => s + rankOf(id), 0) / 2;
-          const avgLosRank = (game.winner === "A" ? game.sideB : game.sideA).reduce((s, id) => s + rankOf(id), 0) / 2;
-          const rankImbalance = Math.abs(avgWinRank - avgLosRank); // 0 = balanced, high = skewed
+          const monthKey = getMonthKey();
+          const monthPlacements = state.monthlyPlacements?.[monthKey] || {};
+          const isPlaced = pid => (monthPlacements[pid] || 0) >= CONFIG.MAX_PLACEMENTS_PER_MONTH;
 
-          // A win is "low-value" if the winner team is ranked meaningfully higher than losers
-          // (winners are better ranked = lower number, so avgWinRank < avgLosRank means winners outranked losers)
-          const winnerOutrankedLosers = avgWinRank < avgLosRank;
-          const isLopsided = rankImbalance >= 2; // 2+ rank positions difference
-          const isVeryLopsided = rankImbalance >= 4;
+          const winnerIds = game.winner === "A" ? game.sideA : game.sideB;
+          const loserIds = game.winner === "A" ? game.sideB : game.sideA;
+          const placedWinners = winnerIds.filter(isPlaced);
+          const placedLosers = loserIds.filter(isPlaced);
+          const anyPlaced = placedWinners.length > 0 || placedLosers.length > 0;
+
+          // Only show rank mismatch banner when both sides have placed players
+          const avgWinRank = placedWinners.length ? placedWinners.reduce((s, id) => s + rankOf(id), 0) / placedWinners.length : null;
+          const avgLosRank = placedLosers.length ? placedLosers.reduce((s, id) => s + rankOf(id), 0) / placedLosers.length : null;
+          const rankImbalance = (avgWinRank !== null && avgLosRank !== null) ? Math.abs(avgWinRank - avgLosRank) : 0;
+          const winnerOutrankedLosers = avgWinRank !== null && avgLosRank !== null && avgWinRank < avgLosRank;
+          const canShowRankBanner = avgWinRank !== null && avgLosRank !== null;
+
+          const isLopsided = canShowRankBanner && rankImbalance >= 2;
+          const isVeryLopsided = canShowRankBanner && rankImbalance >= 4;
 
           const bannerColor = isVeryLopsided && winnerOutrankedLosers ? "var(--orange)"
             : isLopsided && winnerOutrankedLosers ? "var(--amber-d)"
@@ -2194,7 +2232,8 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
           const bannerBg = isVeryLopsided && winnerOutrankedLosers ? "rgba(240,144,80,.08)"
             : isLopsided && winnerOutrankedLosers ? "rgba(88,200,130,.06)"
             : "var(--s2)";
-          const bannerLabel = isVeryLopsided && winnerOutrankedLosers ? "⚠ Heavily mismatched — low pts value"
+          const bannerLabel = !canShowRankBanner ? "Placement games — no rank data yet"
+            : isVeryLopsided && winnerOutrankedLosers ? "⚠ Heavily mismatched — low pts value"
             : isLopsided && winnerOutrankedLosers ? "↓ Rank mismatch — reduced gains for winners"
             : "✓ Balanced match";
 
@@ -2203,7 +2242,7 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
               {/* Banner */}
               <div style={{ background: bannerBg, borderBottom: `1px solid ${bannerColor}`, padding: "6px 12px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                 <span style={{ fontSize: 11, fontWeight: 700, color: bannerColor, letterSpacing: .3 }}>{bannerLabel}</span>
-                <span className="xs text-dd">Rank gap: {rankImbalance.toFixed(1)}</span>
+                <span className="xs text-dd">{canShowRankBanner ? `Rank gap: ${rankImbalance.toFixed(1)}` : "Placement game"}</span>
               </div>
 
               {/* Per-player factor rows */}
@@ -2220,8 +2259,10 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
                   // rankScale: >1 = beating higher-ranked (more pts), <1 = beating lower-ranked (less pts)
                   const eloLabel = f.eloScale > 1.15 ? "Underdog boost" : f.eloScale < 0.85 ? "Favourite penalty" : "Even MMR";
                   const eloColor = f.eloScale > 1.15 ? "var(--green)" : f.eloScale < 0.85 ? "var(--orange)" : "var(--dimmer)";
-                  const rankLabel = f.rankScale > 1.08 ? "Rank upset bonus" : f.rankScale < 0.92 ? "Rank penalty" : "Balanced";
-                  const rankColor = f.rankScale > 1.08 ? "var(--green)" : f.rankScale < 0.92 ? "var(--orange)" : "var(--dimmer)";
+                  const rankLabel = f.rankScale === 1.0 ? "Unranked — neutral"
+                    : f.rankScale > 1.08 ? "Rank upset bonus" : f.rankScale < 0.92 ? "Rank penalty" : "Balanced";
+                  const rankColor = f.rankScale === 1.0 ? "var(--dimmer)"
+                    : f.rankScale > 1.08 ? "var(--green)" : f.rankScale < 0.92 ? "var(--orange)" : "var(--dimmer)";
 
                   // Quality score: product of elo+rank scales. <0.8 = weak game for points
                   const qualityPct = Math.round(f.qualityScore * 100);
@@ -4064,34 +4105,42 @@ function LogView({ state, setState, showToast }) {
       const loserIds = winner === "A" ? row.sideB : row.sideA;
       const winnerScore = Math.max(sA, sB), loserScore = Math.min(sA, sB);
 
-      // Rank positions before this game
+      // Rank positions before this game — only meaningful for placed players
       const currentRanked = [...newPlayers].sort((a, b) => (b.pts || 0) - (a.pts || 0));
       const rankOf = id => currentRanked.findIndex(p => p.id === id);
-      const avgRank = ids => ids.reduce((s, id) => s + rankOf(id), 0) / ids.length;
+      const placementsBefore = { ...newPlacements[monthKey] };
+      const isPlacedBefore = pid => (placementsBefore[pid] || 0) >= CONFIG.MAX_PLACEMENTS_PER_MONTH;
+
+      // Rank avg only over placed opponents — null if none are placed
+      const oppAvgRankPlaced = ids => {
+        const placed = ids.filter(isPlacedBefore);
+        if (!placed.length) return null;
+        return placed.reduce((s, id) => s + rankOf(id), 0) / placed.length;
+      };
 
       // Per-player deltas
       const oppWinMMR = avg(winnerIds, newPlayers, "mmr");
       const oppLosMMR = avg(loserIds, newPlayers, "mmr");
-      const oppWinRank = avgRank(winnerIds);
-      const oppLosRank = avgRank(loserIds);
+      const oppWinRankPlaced = oppAvgRankPlaced(winnerIds);
+      const oppLosRankPlaced = oppAvgRankPlaced(loserIds);
       const allPids = [...winnerIds, ...loserIds];
       const playerDeltas = {};
       allPids.forEach(pid => {
         const p = newPlayers.find(x => x.id === pid);
         if (!p) return;
         const isWin = winnerIds.includes(pid);
+        const myPlaced = isPlacedBefore(pid);
+        const oppRankPlaced = isWin ? oppLosRankPlaced : oppWinRankPlaced;
         playerDeltas[pid] = calcPlayerDelta({
           winnerScore, loserScore,
           playerMMR: p.mmr,
-          playerRank: rankOf(pid),
+          playerRank: myPlaced ? rankOf(pid) : null,
           playerStreakPower: p.streakPower || 0,
           oppAvgMMR: isWin ? oppLosMMR : oppWinMMR,
-          oppAvgRank: isWin ? oppLosRank : oppWinRank,
+          oppAvgRank: (myPlaced && oppRankPlaced !== null) ? oppRankPlaced : null,
           isWinner: isWin,
         });
       });
-
-      const placementsBefore = { ...newPlacements[monthKey] };
 
       newPlayers = newPlayers.map(p => {
         const isWinner = winnerIds.includes(p.id);
@@ -4251,18 +4300,29 @@ function LogView({ state, setState, showToast }) {
                 const wIds = sA > sB ? row.sideA : row.sideB, lIds = sA > sB ? row.sideB : row.sideA;
                 const currentRanked = [...state.players].sort((a, b) => (b.pts || 0) - (a.pts || 0));
                 const rankOf = id => { const i = currentRanked.findIndex(p => p.id === id); return i === -1 ? currentRanked.length : i; };
+                const monthPlacements = state.monthlyPlacements?.[getMonthKey()] || {};
+                const isPlaced = pid => (monthPlacements[pid] || 0) >= CONFIG.MAX_PLACEMENTS_PER_MONTH;
                 const oppWinMMR = avg(wIds, state.players, "mmr"), oppLosMMR = avg(lIds, state.players, "mmr");
-                const oppWinRank = wIds.reduce((s, id) => s + rankOf(id), 0) / wIds.length;
-                const oppLosRank = lIds.reduce((s, id) => s + rankOf(id), 0) / lIds.length;
+                const oppAvgRankPlaced = ids => {
+                  const placed = ids.filter(isPlaced);
+                  if (!placed.length) return null;
+                  return placed.reduce((s, id) => s + rankOf(id), 0) / placed.length;
+                };
+                const oppWinRank = oppAvgRankPlaced(wIds);
+                const oppLosRank = oppAvgRankPlaced(lIds);
                 const perPlayer = {};
                 [...wIds, ...lIds].forEach(pid => {
                   const p = state.players.find(x => x.id === pid); if (!p) return;
                   const isW = wIds.includes(pid);
+                  const myPlaced = isPlaced(pid);
+                  const oppRank = isW ? oppLosRank : oppWinRank;
                   perPlayer[pid] = calcPlayerDelta({
                     winnerScore: Math.max(sA, sB), loserScore: Math.min(sA, sB),
-                    playerMMR: p.mmr, playerRank: rankOf(pid), playerStreakPower: p.streakPower || 0,
+                    playerMMR: p.mmr,
+                    playerRank: myPlaced ? rankOf(pid) : null,
+                    playerStreakPower: p.streakPower || 0,
                     oppAvgMMR: isW ? oppLosMMR : oppWinMMR,
-                    oppAvgRank: isW ? oppLosRank : oppWinRank,
+                    oppAvgRank: (myPlaced && oppRank !== null) ? oppRank : null,
                     isWinner: isW,
                   });
                 });
