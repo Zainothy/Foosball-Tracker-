@@ -415,8 +415,28 @@ function replayGames(basePlayers, games, seasonStart) {
     // Flat per-player gain/loss maps — persisted, not stripped by slimState
     const perPlayerGains = {};
     const perPlayerLosses = {};
-    winIds.forEach(id => { if (playerDeltas[id]) perPlayerGains[id] = playerDeltas[id].gain; });
-    losIds.forEach(id => { if (playerDeltas[id]) perPlayerLosses[id] = playerDeltas[id].loss; });
+    // Per-player factors: eloScale, rankScale, qualityScore — for history transparency
+    const perPlayerFactors = {};
+    winIds.forEach(id => {
+      if (playerDeltas[id]) {
+        perPlayerGains[id] = playerDeltas[id].gain;
+        perPlayerFactors[id] = {
+          eloScale: +playerDeltas[id].eloScale.toFixed(3),
+          rankScale: +playerDeltas[id].rankScale.toFixed(3),
+          qualityScore: +playerDeltas[id].qualityScore.toFixed(3),
+        };
+      }
+    });
+    losIds.forEach(id => {
+      if (playerDeltas[id]) {
+        perPlayerLosses[id] = playerDeltas[id].loss;
+        perPlayerFactors[id] = {
+          eloScale: +playerDeltas[id].eloScale.toFixed(3),
+          rankScale: +playerDeltas[id].rankScale.toFixed(3),
+          qualityScore: +playerDeltas[id].qualityScore.toFixed(3),
+        };
+      }
+    });
 
     // Summary averages for legacy display fallback
     const avgGain = Math.round(winIds.reduce((s, id) => s + (playerDeltas[id]?.gain || 0), 0) / Math.max(winIds.length, 1));
@@ -433,7 +453,7 @@ function replayGames(basePlayers, games, seasonStart) {
       });
     }
 
-    return { ...g, ptsGain: avgGain, ptsLoss: avgLoss, mmrGain: avgGain, mmrLoss: avgLoss, perPlayerGains, perPlayerLosses };
+    return { ...g, ptsGain: avgGain, ptsLoss: avgLoss, mmrGain: avgGain, mmrLoss: avgLoss, perPlayerGains, perPlayerLosses, perPlayerFactors };
   });
 
   return { players, games: updatedGames };
@@ -975,6 +995,7 @@ function slimState(s) {
       playerDeltas, scoreMult, eloScale, rankScale,
       winMult, lossMult, mmrGain, mmrLoss, ptsFactor,
       winnerAvgMMR, loserAvgMMR, ...keep
+      // perPlayerGains, perPlayerLosses, perPlayerFactors are kept — needed for history display
     }) => keep),
   };
 }
@@ -2144,6 +2165,137 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
           </div>
         </div>
 
+        {/* ── Match Quality Breakdown ─────────────────────────────────
+            Shows per-player how rank gap and MMR gap affected their pts.
+            This makes cherry-picking transparent: high-ranked players
+            beating lower-ranked opponents see an explicit "Low-value game"
+            warning and can see exactly how much points they lost to rank penalty.
+        ── */}
+        {!editing && (() => {
+          const hasFactors = allPlayers.some(p => game.perPlayerFactors?.[p.id]);
+          if (!hasFactors) return null;
+
+          // Classify overall match balance using avg rank gap across all 4 players
+          const ranked = [...state.players].sort((a, b) => (b.pts || 0) - (a.pts || 0));
+          const rankOf = id => { const i = ranked.findIndex(p => p.id === id); return i === -1 ? ranked.length : i; };
+          const avgWinRank = (game.winner === "A" ? game.sideA : game.sideB).reduce((s, id) => s + rankOf(id), 0) / 2;
+          const avgLosRank = (game.winner === "A" ? game.sideB : game.sideA).reduce((s, id) => s + rankOf(id), 0) / 2;
+          const rankImbalance = Math.abs(avgWinRank - avgLosRank); // 0 = balanced, high = skewed
+
+          // A win is "low-value" if the winner team is ranked meaningfully higher than losers
+          // (winners are better ranked = lower number, so avgWinRank < avgLosRank means winners outranked losers)
+          const winnerOutrankedLosers = avgWinRank < avgLosRank;
+          const isLopsided = rankImbalance >= 2; // 2+ rank positions difference
+          const isVeryLopsided = rankImbalance >= 4;
+
+          const bannerColor = isVeryLopsided && winnerOutrankedLosers ? "var(--orange)"
+            : isLopsided && winnerOutrankedLosers ? "var(--amber-d)"
+            : "var(--b2)";
+          const bannerBg = isVeryLopsided && winnerOutrankedLosers ? "rgba(240,144,80,.08)"
+            : isLopsided && winnerOutrankedLosers ? "rgba(88,200,130,.06)"
+            : "var(--s2)";
+          const bannerLabel = isVeryLopsided && winnerOutrankedLosers ? "⚠ Heavily mismatched — low pts value"
+            : isLopsided && winnerOutrankedLosers ? "↓ Rank mismatch — reduced gains for winners"
+            : "✓ Balanced match";
+
+          return (
+            <div style={{ margin: "4px 0 12px", border: `1px solid ${bannerColor}`, borderRadius: 8, overflow: "hidden" }}>
+              {/* Banner */}
+              <div style={{ background: bannerBg, borderBottom: `1px solid ${bannerColor}`, padding: "6px 12px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color: bannerColor, letterSpacing: .3 }}>{bannerLabel}</span>
+                <span className="xs text-dd">Rank gap: {rankImbalance.toFixed(1)}</span>
+              </div>
+
+              {/* Per-player factor rows */}
+              <div style={{ padding: "8px 12px", display: "flex", flexDirection: "column", gap: 8 }}>
+                {allPlayers.map(p => {
+                  const f = game.perPlayerFactors?.[p.id];
+                  if (!f) return null;
+                  const isWinner = (game.winner === "A" ? game.sideA : game.sideB).includes(p.id);
+                  const pts = isWinner
+                    ? (game.perPlayerGains?.[p.id] ?? game.ptsGain)
+                    : (game.perPlayerLosses?.[p.id] ?? game.ptsLoss);
+
+                  // eloScale: >1 = underdog (more pts), <1 = favourite (less pts)
+                  // rankScale: >1 = beating higher-ranked (more pts), <1 = beating lower-ranked (less pts)
+                  const eloLabel = f.eloScale > 1.15 ? "Underdog boost" : f.eloScale < 0.85 ? "Favourite penalty" : "Even MMR";
+                  const eloColor = f.eloScale > 1.15 ? "var(--green)" : f.eloScale < 0.85 ? "var(--orange)" : "var(--dimmer)";
+                  const rankLabel = f.rankScale > 1.08 ? "Rank upset bonus" : f.rankScale < 0.92 ? "Rank penalty" : "Balanced";
+                  const rankColor = f.rankScale > 1.08 ? "var(--green)" : f.rankScale < 0.92 ? "var(--orange)" : "var(--dimmer)";
+
+                  // Quality score: product of elo+rank scales. <0.8 = weak game for points
+                  const qualityPct = Math.round(f.qualityScore * 100);
+                  const qualityColor = f.qualityScore < 0.75 ? "var(--red)" : f.qualityScore < 0.90 ? "var(--orange)" : "var(--green)";
+
+                  return (
+                    <div key={p.id} style={{ padding: "8px 10px", borderRadius: 6, background: "var(--s1)", border: "1px solid var(--b1)" }}>
+                      {/* Player header: name + pts earned */}
+                      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 6 }}>
+                        <span style={{ fontWeight: 700, fontSize: 13 }}>{p.name}</span>
+                        <span style={{ fontFamily: "var(--disp)", fontWeight: 700, fontSize: 15, color: isWinner ? "var(--green)" : "var(--red)" }}>
+                          {isWinner ? "+" : "−"}{pts} pts
+                        </span>
+                      </div>
+
+                      {/* Factor bars */}
+                      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                        {/* MMR (elo) scale */}
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <span style={{ fontSize: 10, color: "var(--dimmer)", width: 80, flexShrink: 0 }}>MMR gap</span>
+                          <div style={{ flex: 1, height: 5, borderRadius: 3, background: "var(--b2)", overflow: "hidden" }}>
+                            <div style={{
+                              height: "100%", borderRadius: 3,
+                              width: `${Math.min(100, f.eloScale * 50)}%`,
+                              background: eloColor, transition: "width .4s",
+                            }} />
+                          </div>
+                          <span style={{ fontSize: 10, color: eloColor, width: 110, flexShrink: 0, textAlign: "right" }}>
+                            ×{f.eloScale.toFixed(2)} {eloLabel}
+                          </span>
+                        </div>
+
+                        {/* Rank scale */}
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <span style={{ fontSize: 10, color: "var(--dimmer)", width: 80, flexShrink: 0 }}>Rank gap</span>
+                          <div style={{ flex: 1, height: 5, borderRadius: 3, background: "var(--b2)", overflow: "hidden" }}>
+                            <div style={{
+                              height: "100%", borderRadius: 3,
+                              width: `${Math.min(100, f.rankScale * 70)}%`,
+                              background: rankColor, transition: "width .4s",
+                            }} />
+                          </div>
+                          <span style={{ fontSize: 10, color: rankColor, width: 110, flexShrink: 0, textAlign: "right" }}>
+                            ×{f.rankScale.toFixed(2)} {rankLabel}
+                          </span>
+                        </div>
+
+                        {/* Overall quality */}
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <span style={{ fontSize: 10, color: "var(--dimmer)", width: 80, flexShrink: 0 }}>Game value</span>
+                          <div style={{ flex: 1, height: 5, borderRadius: 3, background: "var(--b2)", overflow: "hidden" }}>
+                            <div style={{
+                              height: "100%", borderRadius: 3,
+                              width: `${Math.min(100, qualityPct)}%`,
+                              background: qualityColor, transition: "width .4s",
+                            }} />
+                          </div>
+                          <span style={{ fontSize: 10, color: qualityColor, width: 110, flexShrink: 0, textAlign: "right" }}>
+                            {qualityPct}% quality
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+
+                <div className="xs text-dd" style={{ lineHeight: 1.6, paddingTop: 2 }}>
+                  High-ranked players beating lower-ranked opponents earn reduced points. Beat players above you to climb faster.
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
         {/* Per-player penalties — always shown to admin */}
         {isAdmin && (
           <div style={{ marginTop: 4 }}>
@@ -3102,6 +3254,18 @@ function SeasonsArchiveView({ state, setState, isAdmin, showToast, onNavToHistor
   const [nextDateInput, setNextDateInput] = useState(state.nextSeasonDate ? new Date(state.nextSeasonDate).toISOString().slice(0, 16) : "");
   const [confirm, setConfirm] = useState(null);
 
+  // Keep nextDateInput in sync with state.nextSeasonDate when it changes externally
+  // (remote sync, conflict resolution, another tab saving). Only update when NOT editing
+  // so we don't clobber what the admin is currently typing.
+  const prevNextSeasonDate = useRef(state.nextSeasonDate);
+  useEffect(() => {
+    if (state.nextSeasonDate === prevNextSeasonDate.current) return;
+    prevNextSeasonDate.current = state.nextSeasonDate;
+    if (!editingNextDate) {
+      setNextDateInput(state.nextSeasonDate ? new Date(state.nextSeasonDate).toISOString().slice(0, 16) : "");
+    }
+  }, [state.nextSeasonDate, editingNextDate]);
+
   useEffect(() => {
     const id = setInterval(() => setTick(t => t + 1), 1000);
     return () => clearInterval(id);
@@ -3970,8 +4134,27 @@ function LogView({ state, setState, showToast }) {
       // Flat per-player maps — survive slimState, enable individual history display
       const perPlayerGains = {};
       const perPlayerLosses = {};
-      winnerIds.forEach(id => { if (playerDeltas[id]) perPlayerGains[id] = playerDeltas[id].gain; });
-      loserIds.forEach(id => { if (playerDeltas[id]) perPlayerLosses[id] = playerDeltas[id].loss; });
+      const perPlayerFactors = {};
+      winnerIds.forEach(id => {
+        if (playerDeltas[id]) {
+          perPlayerGains[id] = playerDeltas[id].gain;
+          perPlayerFactors[id] = {
+            eloScale: +playerDeltas[id].eloScale.toFixed(3),
+            rankScale: +playerDeltas[id].rankScale.toFixed(3),
+            qualityScore: +playerDeltas[id].qualityScore.toFixed(3),
+          };
+        }
+      });
+      loserIds.forEach(id => {
+        if (playerDeltas[id]) {
+          perPlayerLosses[id] = playerDeltas[id].loss;
+          perPlayerFactors[id] = {
+            eloScale: +playerDeltas[id].eloScale.toFixed(3),
+            rankScale: +playerDeltas[id].rankScale.toFixed(3),
+            qualityScore: +playerDeltas[id].qualityScore.toFixed(3),
+          };
+        }
+      });
 
       const avgGain = Math.round(winnerIds.reduce((s, id) => s + (playerDeltas[id]?.gain || 0), 0) / Math.max(winnerIds.length, 1));
       const avgLoss = Math.round(loserIds.reduce((s, id) => s + (playerDeltas[id]?.loss || 0), 0) / Math.max(loserIds.length, 1));
@@ -3983,7 +4166,7 @@ function LogView({ state, setState, showToast }) {
         id: crypto.randomUUID(), sideA: row.sideA, sideB: row.sideB,
         winner, scoreA: sA, scoreB: sB,
         ptsGain: avgGain, ptsLoss: avgLoss, mmrGain: avgGain, mmrLoss: avgLoss,
-        perPlayerGains, perPlayerLosses,
+        perPlayerGains, perPlayerLosses, perPlayerFactors,
         ...(gamePenalties ? { penalties: gamePenalties } : {}),
         date: new Date().toISOString(), monthKey
       });
@@ -4161,17 +4344,34 @@ function LogView({ state, setState, showToast }) {
                       </div>
 
                       {prev && (
-                        <div style={{ background: "var(--s1)", borderRadius: 4, padding: "6px 8px", fontSize: 10, lineHeight: 1.8 }}>
+                        <div style={{ background: "var(--s1)", borderRadius: 4, padding: "6px 8px", fontSize: 10, lineHeight: 1.9 }}>
                           {prev.wIds.map(id => {
                             const d = prev.perPlayer[id];
                             const n = state.players.find(p => p.id === id)?.name?.split(" ")[0] || "?";
-                            return <div key={id} className="text-g">+{d?.gain ?? 0} {n}</div>;
+                            // rankScale < 0.92 = rank penalty, show warning
+                            const rankPenalty = d?.rankScale < 0.92;
+                            return (
+                              <div key={id}>
+                                <span className="text-g">+{d?.gain ?? 0} {n}</span>
+                                {rankPenalty && (
+                                  <span style={{ color: "var(--orange)", marginLeft: 4 }}>
+                                    ↓×{d.rankScale.toFixed(2)} rank
+                                  </span>
+                                )}
+                              </div>
+                            );
                           })}
                           {prev.lIds.map(id => {
                             const d = prev.perPlayer[id];
                             const n = state.players.find(p => p.id === id)?.name?.split(" ")[0] || "?";
-                            return <div key={id} className="text-r">-{d?.loss ?? 0} {n}</div>;
+                            return <div key={id} className="text-r">−{d?.loss ?? 0} {n}</div>;
                           })}
+                          {/* Game value warning if any winner has low quality score */}
+                          {prev.wIds.some(id => (prev.perPlayer[id]?.qualityScore ?? 1) < 0.8) && (
+                            <div style={{ color: "var(--orange)", marginTop: 2, fontSize: 9, letterSpacing: .3 }}>
+                              ⚠ Low-value game — rank mismatch reduces pts
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
