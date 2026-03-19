@@ -12,36 +12,40 @@ const CONFIG = {
   STARTING_MMR: 1000,           // hidden matchmaking rating
   STARTING_PTS: 0,              // visible leaderboard points
 
-  // Base deltas — before all modifiers
-  BASE_GAIN: 18,
-  BASE_LOSS: 11,                 // slightly above base — losses proportionally meaningful
+  // ── Base deltas ───────────────────────────────────────────
+  // Calibrated against real game data (34 games, Mar 2026).
+  // Equal 10-6 game (most common score): winner +31, loser -18.
+  BASE_GAIN: 22,
+  BASE_LOSS: 12,
 
-  // Score dominance: scoreDiff / winnerScore gives 0→1 ratio
-  // Multiplier: 1 + SCORE_WEIGHT * ratio^SCORE_EXP
-  SCORE_WEIGHT: 1.2,            // max ~2.2× at perfect shutout
-  SCORE_EXP: 1.4,               // curve shape — >1 = punishes blowouts more
+  // Score dominance: scoreDiff / winnerScore → 0–1 ratio
+  // Raised from 1.2 → 1.4 so the real score range (10-9 to 10-1)
+  // spans 26 pts instead of 18. A 10-6 vs 10-9 is now 8pts apart.
+  SCORE_WEIGHT: 1.4,
+  SCORE_EXP: 1.4,               // curve shape unchanged
 
-  // MMR (elo) gap: sigmoid. Upset win (low MMR beats high) = high reward.
-  // Expected win (high MMR beats low) = low reward.
-  ELO_DIVISOR: 250,             // steepness — lower = sharper curve
+  // MMR surprise — sigmoid. Upset win = high reward, expected = low.
+  ELO_DIVISOR: 250,             // correct for 8–15 player league, unchanged
 
-  // Rank gap: beating someone ranked much higher = bonus
-  RANK_WEIGHT: 0.4,             // 0 = ignore rank, 1 = double at max gap
-  RANK_DIVISOR: 5,              // rank diff normaliser (field of ~10)
+  // Rank gap correction — cherry-pick prevention
+  RANK_WEIGHT: 0.4,             // unchanged — working correctly
+  RANK_DIVISOR: 5,              // unchanged
 
-  // ── STREAK SYSTEM (quality-weighted, convergence-safe) ────
-  // Streak power accumulates quality (eloScale * rankScale) per win,
-  // resets to 0 on loss. Prevents unclosable gaps from weak-opponent farming.
-  STREAK_POWER_SCALE: 4.0,      // tanh half-point (higher = slower ramp)
-  STREAK_WIN_MAX: 0.45,         // max bonus for win streak (+45% = 1.45x cap)
-  STREAK_LOSS_MAX: 0.35,        // max amplifier for loss streak (1.35x cap)
-  STREAK_QUALITY_DECAY: 0.88,   // per-game decay if opponent eloScale < 1.1
-  STREAK_DECAY_THRESHOLD: 1.05, // eloScale below this = "easy" opponent
-  STREAK_WINDOW: 8,             // rolling quality window (games)
+  // ── STREAK SYSTEM ─────────────────────────────────────────
+  // Problem identified in real data: Hector's 4-win streak added only
+  // +5 pts/game. Yusuf's 5-0 earned 152 pts when it should feel dominant.
+  // Fix: faster ramp (3.0 vs 4.0) + higher ceiling (0.55 vs 0.45).
+  // Anti-farm decay tightened slightly to offset the stronger ceiling.
+  STREAK_POWER_SCALE: 3.0,      // bonus kicks in by win 2–3, not win 6–7
+  STREAK_WIN_MAX: 0.55,         // max +55% on win streak (was +45%)
+  STREAK_LOSS_MAX: 0.42,        // max +42% on loss streak (was +35%)
+  STREAK_QUALITY_DECAY: 0.82,   // tighter anti-farm decay (was 0.88)
+  STREAK_DECAY_THRESHOLD: 1.05, // unchanged
+  STREAK_WINDOW: 8,             // unchanged
 
-  // Loss harshness scalar — multiplied into every loss, >1 = harsher
-  // 1.15 means losses are ~15% larger across the board after other factors
-  LOSS_HARSHNESS: 1.05,
+  // Loss harshness — nudged up to match higher gain baseline
+  // Losses feel meaningful without being devastating for underdogs
+  LOSS_HARSHNESS: 1.08,         // was 1.05
 
   MAX_PLACEMENTS_PER_MONTH: 5,  // per player per calendar month
 
