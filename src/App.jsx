@@ -528,15 +528,19 @@ function calcPlayerDelta({ winnerScore, loserScore, playerMMR, playerRank,
 
   // 3. Rank signal (secondary signal, 30% weight)
   // Only applied when both sides are placed — otherwise neutral (1.0)
-  // rankScale > 1.0 = beating a higher-ranked opponent (rank upset bonus)
-  // rankScale < 1.0 = beating a lower-ranked opponent (cherry-pick penalty)
-  // Contributes additional information when rank and MMR disagree (e.g. sandbagging)
+  // rankOf returns array index: 0 = #1 (best), higher index = worse rank
+  // So underdog = player has HIGHER index than opponents
+  //
+  // For winners:  playerRank - oppAvgRank > 0 means player is lower-ranked (underdog) → bonus
+  //               playerRank - oppAvgRank < 0 means player is higher-ranked (favourite) → penalty
+  // For losers:   oppAvgRank - playerRank > 0 means opponent is lower-ranked → extra loss
+  //               oppAvgRank - playerRank < 0 means opponent is higher-ranked → reduced loss
   const rankScale = (playerRank === null || oppAvgRank === null)
     ? 1.0
     : (() => {
         const rankDiff = isWinner
-          ? (oppAvgRank - playerRank)    // positive = beat higher-ranked = bonus
-          : (playerRank - oppAvgRank);   // positive = lost to lower-ranked = extra loss
+          ? (playerRank - oppAvgRank)    // positive = player is lower-ranked = underdog = bonus ✓
+          : (oppAvgRank - playerRank);   // positive = opponent is lower-ranked = expected loss = harsher ✓
         return 1 + CONFIG.RANK_WEIGHT * Math.tanh(rankDiff / CONFIG.RANK_DIVISOR);
       })();
 
