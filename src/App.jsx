@@ -526,33 +526,52 @@ function calcPlayerDelta({ winnerScore, loserScore, playerMMR, playerRank,
   const mmrGap = playerMMR - oppAvgMMR;
   const eloScale = 2 / (1 + Math.exp(mmrGap / CONFIG.ELO_DIVISOR));
 
-  // 3. Rank signal (secondary signal, 30% weight)
-  // Only applied when both sides are placed — otherwise neutral (1.0)
-  // rankOf returns array index: 0 = #1 (best), higher index = worse rank
-  // So underdog = player has HIGHER index than opponents
-  //
-  // For winners:  playerRank - oppAvgRank > 0 means player is lower-ranked (underdog) → bonus
-  //               playerRank - oppAvgRank < 0 means player is higher-ranked (favourite) → penalty
-  // For losers:   oppAvgRank - playerRank > 0 means opponent is lower-ranked → extra loss
-  //               oppAvgRank - playerRank < 0 means opponent is higher-ranked → reduced loss
-  const rankScale = (playerRank === null || oppAvgRank === null)
+  // 3. Rank signal — cherry-pick correction only
+  // rankDiff: positive = player is the underdog by rank, negative = player is the favourite
+  // rankScale > 1.0 = rank says underdog, rankScale < 1.0 = rank says favourite
+  const rankDiff = (playerRank === null || oppAvgRank === null)
+    ? 0
+    : isWinner
+      ? (playerRank - oppAvgRank)   // higher index = lower rank = underdog = positive
+      : (oppAvgRank - playerRank);  // opponent lower-ranked = expected loss = positive
+  const rankScale = playerRank === null || oppAvgRank === null
     ? 1.0
-    : (() => {
-        const rankDiff = isWinner
-          ? (playerRank - oppAvgRank)    // positive = player is lower-ranked = underdog = bonus ✓
-          : (oppAvgRank - playerRank);   // positive = opponent is lower-ranked = expected loss = harsher ✓
-        return 1 + CONFIG.RANK_WEIGHT * Math.tanh(rankDiff / CONFIG.RANK_DIVISOR);
-      })();
+    : 1 + CONFIG.RANK_WEIGHT * Math.tanh(rankDiff / CONFIG.RANK_DIVISOR);
 
-  // 4. Fused match quality — weighted blend of MMR and rank signals
-  // Applied once for gain and once for loss (not multiplied together)
-  // This prevents the same skill gap from being penalised twice
-  const ELO_WEIGHT = 0.7;
-  const RANK_WEIGHT_BLEND = 0.3;
-  const matchQuality = ELO_WEIGHT * eloScale + RANK_WEIGHT_BLEND * rankScale;
-  // matchQuality ~ 1.0 at a perfectly even match
-  // > 1.0 = underdog (expected to lose) — more pts for winning, less for losing
-  // < 1.0 = favourite (expected to win) — fewer pts for winning, more for losing
+  // 4. Fused match quality
+  // The rank signal is applied as a ONE-DIRECTIONAL correction:
+  //   - If rank says the game was HARDER than MMR thinks (rankScale > eloScale):
+  //     blend upward — reward the harder-than-expected game
+  //   - If rank says the game was EASIER than MMR thinks (rankScale < eloScale):
+  //     clamp to eloScale — MMR already captured the advantage, rank adds nothing
+  //
+  // This prevents the contradiction where an underdog (high eloScale) gets a
+  // rank penalty (low rankScale) because their pts-rank happens to be higher.
+  // Rank can only make a game worth MORE than MMR alone suggests, never less.
+  // The cherry-pick penalty is enforced through eloScale — if you genuinely
+  // outclass your opponents in MMR, that's already reflected there.
+  //
+  // Exception: when rank and MMR AGREE the player is the favourite, rank can
+  // confirm and slightly amplify the penalty (sandbagging detection).
+  // But the amplification is capped at the eloScale level — no compounding.
+  const matchQuality = (() => {
+    // Both say underdog: blend, but cap at eloScale + small rank bonus
+    if (rankScale >= 1.0 && eloScale >= 1.0) {
+      return Math.max(eloScale, 0.7 * eloScale + 0.3 * rankScale);
+    }
+    // Both say favourite: blend — rank confirms penalty, but only to eloScale floor
+    if (rankScale <= 1.0 && eloScale <= 1.0) {
+      return Math.max(0.7 * eloScale + 0.3 * rankScale, eloScale);
+    }
+    // Disagreement — rank says harder, MMR says easier (underdog by rank, favourite by MMR)
+    // Let rank boost toward 1.0 but don't let it exceed 1.0 if MMR is < 1.0
+    if (rankScale > eloScale) {
+      return Math.min(1.0, 0.7 * eloScale + 0.3 * rankScale);
+    }
+    // Disagreement — rank says easier, MMR says harder (favourite by rank, underdog by MMR)
+    // MMR wins — don't penalise an underdog just because their pts-rank is higher
+    return eloScale;
+  })();
 
   // 5. Streak multiplier
   const mult = streakMult(playerStreakPower, isWinner);
