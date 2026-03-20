@@ -1884,8 +1884,44 @@ function PlayerProfile({ player, state, onClose, isAdmin, onEdit, seasonMode, on
           </div>
         </div>
         <div className="stat-box">
-          <div className="stat-lbl">Position</div>
-          <div style={{ marginTop: 8 }}><PosBadge pos={player.position} /></div>
+          {((player.wins_atk||0)+(player.losses_atk||0)+(player.wins_def||0)+(player.losses_def||0)) > 0 ? (() => {
+            const atkTotal = (player.wins_atk||0)+(player.losses_atk||0);
+            const defTotal = (player.wins_def||0)+(player.losses_def||0);
+            const atkWR = atkTotal ? Math.round((player.wins_atk||0)/atkTotal*100) : null;
+            const defWR = defTotal ? Math.round((player.wins_def||0)/defTotal*100) : null;
+            return (
+              <>
+                <div className="stat-lbl" style={{marginBottom:8}}>Positional</div>
+                <div style={{display:"flex",flexDirection:"column",gap:7}}>
+                  <div style={{display:"flex",alignItems:"center",gap:7}}>
+                    <span className="role-tag role-atk" style={{pointerEvents:"none",flexShrink:0}}>🗡 ATK</span>
+                    <div style={{lineHeight:1.25}}>
+                      <div style={{fontWeight:700,fontSize:14,color:"var(--orange)"}}>{player.mmr_atk||player.mmr} <span style={{fontSize:10,fontWeight:500,color:"var(--dimmer)"}}>MMR</span></div>
+                      <div className="xs text-dd">
+                        <span className="text-g">{player.wins_atk||0}W</span> / <span className="text-r">{player.losses_atk||0}L</span>
+                        {atkWR !== null && <span style={{marginLeft:5,color:atkWR>=50?"var(--green)":"var(--red)"}}>{atkWR}%</span>}
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{display:"flex",alignItems:"center",gap:7}}>
+                    <span className="role-tag role-def" style={{pointerEvents:"none",flexShrink:0}}>🛡 DEF</span>
+                    <div style={{lineHeight:1.25}}>
+                      <div style={{fontWeight:700,fontSize:14,color:"var(--blue)"}}>{player.mmr_def||player.mmr} <span style={{fontSize:10,fontWeight:500,color:"var(--dimmer)"}}>MMR</span></div>
+                      <div className="xs text-dd">
+                        <span className="text-g">{player.wins_def||0}W</span> / <span className="text-r">{player.losses_def||0}L</span>
+                        {defWR !== null && <span style={{marginLeft:5,color:defWR>=50?"var(--green)":"var(--red)"}}>{defWR}%</span>}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </>
+            );
+          })() : (
+            <>
+              <div className="stat-lbl">Position</div>
+              <div style={{ marginTop: 8 }}><PosBadge pos={player.position} /></div>
+            </>
+          )}
         </div>
         <div className="stat-box">
           <div className="stat-lbl">Placements this month</div>
@@ -1942,6 +1978,50 @@ function PlayerProfile({ player, state, onClose, isAdmin, onEdit, seasonMode, on
                 return <div style={{ fontWeight: 600 }}>{(totalPts / myGames.length).toFixed(2)}</div>;
               })()}
             </div>
+            {(() => {
+              const atkGames = myGames.filter(g => g.roles?.[player.id] === "ATK");
+              const defGames = myGames.filter(g => g.roles?.[player.id] === "DEF");
+              if (atkGames.length + defGames.length === 0) return null;
+              const wr = games => {
+                if (!games.length) return null;
+                const w = games.filter(g => didPlayerWin(player.id, g)).length;
+                return Math.round(w / games.length * 100);
+              };
+              const netPts = (games) => games.reduce((acc, g) => {
+                const won = didPlayerWin(player.id, g);
+                return acc + (won
+                  ? (g.perPlayerGains?.[player.id] ?? g.ptsGain ?? 0)
+                  : -(g.perPlayerLosses?.[player.id] ?? g.ptsLoss ?? 0));
+              }, 0);
+              const atkWR = wr(atkGames), defWR = wr(defGames);
+              const strongerRole = (atkWR !== null && defWR !== null)
+                ? (atkWR > defWR ? "ATK" : defWR > atkWR ? "DEF" : null) : null;
+              return (
+                <div style={{gridColumn:"1/-1"}}>
+                  <div className="xs text-dd" style={{marginBottom:5}}>Role Performance</div>
+                  <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                    {atkGames.length > 0 && (
+                      <div style={{display:"flex",alignItems:"center",gap:6,padding:"5px 10px",borderRadius:6,background:"rgba(240,144,80,.08)",border:"1px solid rgba(240,144,80,.25)"}}>
+                        <span className="role-tag role-atk" style={{pointerEvents:"none"}}>🗡 ATK</span>
+                        <span style={{fontSize:12,fontWeight:600}}>{atkGames.length}G</span>
+                        {atkWR !== null && <span className={`xs ${atkWR>=50?"text-g":"text-r"}`}>{atkWR}% WR</span>}
+                        <span className={`xs ${netPts(atkGames)>=0?"text-g":"text-r"}`}>{netPts(atkGames)>=0?"+":""}{netPts(atkGames)}pts</span>
+                        {strongerRole==="ATK" && <span className="xs text-am">★ stronger</span>}
+                      </div>
+                    )}
+                    {defGames.length > 0 && (
+                      <div style={{display:"flex",alignItems:"center",gap:6,padding:"5px 10px",borderRadius:6,background:"rgba(96,168,232,.07)",border:"1px solid rgba(96,168,232,.25)"}}>
+                        <span className="role-tag role-def" style={{pointerEvents:"none"}}>🛡 DEF</span>
+                        <span style={{fontSize:12,fontWeight:600}}>{defGames.length}G</span>
+                        {defWR !== null && <span className={`xs ${defWR>=50?"text-g":"text-r"}`}>{defWR}% WR</span>}
+                        <span className={`xs ${netPts(defGames)>=0?"text-g":"text-r"}`}>{netPts(defGames)>=0?"+":""}{netPts(defGames)}pts</span>
+                        {strongerRole==="DEF" && <span className="xs text-am">★ stronger</span>}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         </div>
       )}
@@ -3918,24 +3998,55 @@ function StatsView({ state, onSelectPlayer }) {
                     <>
                       <div style={{ display: "grid", gridTemplateColumns: "64px 1fr 1fr 1fr", gap: 10, alignItems: "center" }}>
                         <WinDonut wins={st.wins} losses={st.losses} />
-                        {((selected.wins_atk||0)+(selected.losses_atk||0)+(selected.wins_def||0)+(selected.losses_def||0))>0 && (<>
-                          <div className="stat-box" style={{padding:"8px 10px"}}>
-                            <div className="stat-val" style={{fontSize:15,color:"var(--orange)"}}>{selected.wins_atk||0}W/{selected.losses_atk||0}L</div>
-                            <div className="stat-lbl">ATK</div>
-                          </div>
-                          <div className="stat-box" style={{padding:"8px 10px"}}>
-                            <div className="stat-val" style={{fontSize:15,color:"var(--blue)"}}>{selected.wins_def||0}W/{selected.losses_def||0}L</div>
-                            <div className="stat-lbl">DEF</div>
-                          </div>
-                        </>)}
-                        <div className="stat-box" style={{ padding: "8px 12px" }}>
-                          <div className="stat-lbl">Avg gain</div>
-                          <div className="stat-val am" style={{ fontSize: 20 }}>+{st.avgGain}</div>
-                        </div>
-                        <div className="stat-box" style={{ padding: "8px 12px" }}>
-                          <div className="stat-lbl">Avg loss</div>
-                          <div className="stat-val" style={{ fontSize: 20, color: "var(--red)" }}>−{st.avgLoss}</div>
-                        </div>
+
+                        {(() => {
+                          // Split avg gain/loss by role if roles present
+                          const atkGames = pGames.filter(g => g.roles?.[selected.id] === "ATK");
+                          const defGames = pGames.filter(g => g.roles?.[selected.id] === "DEF");
+                          const hasRoleData = atkGames.length + defGames.length > 0;
+                          const roleAvg = (games, type) => {
+                            const relevant = games.filter(g => {
+                              const won = (g.sideA.includes(selected.id)&&g.winner==="A")||(g.sideB.includes(selected.id)&&g.winner==="B");
+                              return type==="win" ? won : !won;
+                            });
+                            if (!relevant.length) return null;
+                            const key = type==="win" ? "perPlayerGains" : "perPlayerLosses";
+                            const fallback = type==="win" ? "ptsGain" : "ptsLoss";
+                            return Math.round(relevant.reduce((s,g)=>s+(g[key]?.[selected.id]??g[fallback]??0),0)/relevant.length);
+                          };
+                          if (hasRoleData) return (
+                            <>
+                              <div className="stat-box" style={{padding:"8px 10px"}}>
+                                <div className="stat-lbl">ATK avg</div>
+                                <div className="fac" style={{gap:4,marginTop:2}}>
+                                  {roleAvg(atkGames,"win")!=null && <span className="stat-val am" style={{fontSize:16}}>+{roleAvg(atkGames,"win")}</span>}
+                                  {roleAvg(atkGames,"loss")!=null && <span className="stat-val" style={{fontSize:16,color:"var(--red)"}}>−{roleAvg(atkGames,"loss")}</span>}
+                                  {atkGames.length===0 && <span className="xs text-dd">no games</span>}
+                                </div>
+                              </div>
+                              <div className="stat-box" style={{padding:"8px 10px"}}>
+                                <div className="stat-lbl">DEF avg</div>
+                                <div className="fac" style={{gap:4,marginTop:2}}>
+                                  {roleAvg(defGames,"win")!=null && <span className="stat-val am" style={{fontSize:16}}>+{roleAvg(defGames,"win")}</span>}
+                                  {roleAvg(defGames,"loss")!=null && <span className="stat-val" style={{fontSize:16,color:"var(--red)"}}>−{roleAvg(defGames,"loss")}</span>}
+                                  {defGames.length===0 && <span className="xs text-dd">no games</span>}
+                                </div>
+                              </div>
+                            </>
+                          );
+                          return (
+                            <>
+                              <div className="stat-box" style={{ padding: "8px 12px" }}>
+                                <div className="stat-lbl">Avg gain</div>
+                                <div className="stat-val am" style={{ fontSize: 20 }}>+{st.avgGain}</div>
+                              </div>
+                              <div className="stat-box" style={{ padding: "8px 12px" }}>
+                                <div className="stat-lbl">Avg loss</div>
+                                <div className="stat-val" style={{ fontSize: 20, color: "var(--red)" }}>−{st.avgLoss}</div>
+                              </div>
+                            </>
+                          );
+                        })()}
                         {((selected.wins_atk||0)+(selected.losses_atk||0) > 0) && (
                           <div className="stat-box" style={{ padding: "8px 12px" }}>
                             <div className="stat-lbl">ATK</div>
@@ -3990,14 +4101,22 @@ function StatsView({ state, onSelectPlayer }) {
                           const won = (g.sideA.includes(selected.id) && g.winner === "A") || (g.sideB.includes(selected.id) && g.winner === "B");
                           const opps = (g.sideA.includes(selected.id) ? g.sideB : g.sideA).map(id => pName(id, state.players)).join(" & ");
                           const delta = won ? (g.perPlayerGains?.[selected.id] ?? g.ptsGain ?? 0) : -(g.perPlayerLosses?.[selected.id] ?? g.ptsLoss ?? 0);
+                          const role = g.roles?.[selected.id];
+                          const roleIcon = role === "ATK" ? "🗡" : role === "DEF" ? "🛡" : null;
                           return (
-                            <div key={g.id} title={`${won ? "W" : "L"} vs ${opps} · ${delta >= 0 ? "+" : ""}${delta}pts`} style={{
-                              flex: 1, height: 28, borderRadius: 4,
-                              background: won ? "rgba(94,201,138,.18)" : "rgba(240,112,112,.14)",
-                              border: `1px solid ${won ? "rgba(94,201,138,.45)" : "rgba(240,112,112,.35)"}`,
-                              display: "flex", alignItems: "center", justifyContent: "center",
-                              fontSize: 9, fontWeight: 700, color: won ? "var(--green)" : "var(--red)", cursor: "default"
-                            }}>{won ? "W" : "L"}</div>
+                            <div key={g.id}
+                              title={`${won ? "W" : "L"}${role ? ` (${role})` : ""} vs ${opps} · ${delta >= 0 ? "+" : ""}${delta}pts`}
+                              style={{
+                                flex: 1, borderRadius: 4, minHeight: 28,
+                                background: won ? "rgba(94,201,138,.18)" : "rgba(240,112,112,.14)",
+                                border: `1px solid ${won ? "rgba(94,201,138,.45)" : "rgba(240,112,112,.35)"}`,
+                                display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+                                fontSize: 9, fontWeight: 700, color: won ? "var(--green)" : "var(--red)", cursor: "default",
+                                gap: 1, paddingTop: roleIcon ? 3 : 0,
+                              }}>
+                              {won ? "W" : "L"}
+                              {roleIcon && <span style={{fontSize:8,opacity:.7,lineHeight:1}}>{roleIcon}</span>}
+                            </div>
                           );
                         })}
                       </div>
