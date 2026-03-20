@@ -5182,8 +5182,18 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
 
   // Manual bracket builder — sequential team picking
   const [manualMode, setManualMode] = useState(false);
-  const [slots, setSlots] = useState({ upperA: [], upperB: [] });
-  const pickingTeam = slots.upperA.length < 2 ? 'upperA' : slots.upperB.length < 2 ? 'upperB' : null;
+  const [wantLower, setWantLower] = useState(false);
+  const EMPTY_SLOTS = { upperA: [], upperB: [], lowerA: [], lowerB: [] };
+  const [slots, setSlots] = useState(EMPTY_SLOTS);
+
+  // Sequential picking order: upper semi first, then lower semi if enabled
+  const pickingTeam = (() => {
+    if (slots.upperA.length < 2) return 'upperA';
+    if (slots.upperB.length < 2) return 'upperB';
+    if (wantLower && slots.lowerA.length < 2) return 'lowerA';
+    if (wantLower && slots.lowerB.length < 2) return 'lowerB';
+    return null;
+  })();
 
   function pickPlayer(pid) {
     if (!pickingTeam) return;
@@ -5191,24 +5201,35 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
   }
 
   function removeFromSlot(team, pid) {
-    if (team === 'upperA') setSlots({ upperA: slots.upperA.filter(x => x !== pid), upperB: [] });
-    else setSlots(prev => ({ ...prev, upperB: prev.upperB.filter(x => x !== pid) }));
+    // Removing from A clears B (and lower) to keep order consistent
+    const clears = {
+      upperA: { upperA: slots.upperA.filter(x => x !== pid), upperB: [], lowerA: [], lowerB: [] },
+      upperB: { ...slots, upperB: slots.upperB.filter(x => x !== pid), lowerA: [], lowerB: [] },
+      lowerA: { ...slots, lowerA: slots.lowerA.filter(x => x !== pid), lowerB: [] },
+      lowerB: { ...slots, lowerB: slots.lowerB.filter(x => x !== pid) },
+    };
+    setSlots(clears[team] || slots);
   }
 
   function confirmManual() {
     if (slots.upperA.length !== 2 || slots.upperB.length !== 2) {
-      showToast('Each team needs exactly 2 players', 'error'); return;
+      showToast('Semi 1 needs 2 teams of 2', 'error'); return;
     }
+    if (wantLower && (slots.lowerA.length !== 2 || slots.lowerB.length !== 2)) {
+      showToast('Semi 2 needs 2 teams of 2', 'error'); return;
+    }
+    const hasLower = wantLower && slots.lowerA.length === 2 && slots.lowerB.length === 2;
     const bracket = {
       upper: { sideA: slots.upperA, sideB: slots.upperB, winner: null, scoreA: null, scoreB: null },
-      lower: null,
+      lower: hasLower ? { sideA: slots.lowerA, sideB: slots.lowerB, winner: null, scoreA: null, scoreB: null } : null,
       final: { sideA: null, sideB: null, winner: null, scoreA: null, scoreB: null },
       champion: null,
     };
     setState(s => ({ ...s, finals: { ...(s.finals ?? {}), [monthKey]: { bracket, status: 'semis' } } }));
     showToast('Bracket set!');
     setManualMode(false);
-    setSlots({ upperA: [], upperB: [] });
+    setSlots(EMPTY_SLOTS);
+    setWantLower(false);
   }
 
   function recordResult(match, winnerSide, sA, sB) {
@@ -5491,45 +5512,62 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
 
             {/* Manual bracket builder — sequential team picking */}
             {manualMode && isAdmin && (() => {
-              const usedIds = [...slots.upperA, ...slots.upperB];
+              const lowerSlots = wantLower ? ['lowerA', 'lowerB'] : [];
+              const allSlotKeys = ['upperA', 'upperB', ...lowerSlots];
+              const usedIds = allSlotKeys.flatMap(k => slots[k]);
               const unassigned = ranked.filter(p => !usedIds.includes(p.id));
               const teamLabel = t => slots[t].map(id => pName(id, state.players).split(' ')[0]).join(' & ') || '—';
-              const stepA = slots.upperA.length < 2;
-              const stepB = !stepA && slots.upperB.length < 2;
-              const done = slots.upperA.length === 2 && slots.upperB.length === 2;
+              const upperDone = slots.upperA.length === 2 && slots.upperB.length === 2;
+              const lowerDone = !wantLower || (slots.lowerA.length === 2 && slots.lowerB.length === 2);
+              const done = upperDone && lowerDone;
               return (
                 <div style={{ marginTop: 12, padding: 14, background: 'var(--s2)', borderRadius: 8, border: '1px solid var(--b2)' }}>
+                  {/* Lower bracket toggle */}
+                  <div className="fbc" style={{ marginBottom: 12 }}>
+                    <span className="xs text-dd">Include Semi 2 (lower bracket)?</span>
+                    <button className={`btn btn-sm ${wantLower ? 'btn-p' : 'btn-g'}`}
+                      onClick={() => { setWantLower(v => !v); setSlots(prev => ({ ...prev, lowerA: [], lowerB: [] })); }}>
+                      {wantLower ? '✓ Yes' : 'No'}
+                    </button>
+                  </div>
+
                   {/* Step indicator */}
-                  <div className="fac" style={{ gap: 10, marginBottom: 14 }}>
-                    {[['Team 1', 'upperA', stepA], ['Team 2', 'upperB', stepB]].map(([label, key, active]) => (
-                      <div key={key} style={{
-                        flex: 1, padding: '8px 12px', borderRadius: 6, textAlign: 'center',
-                        border: `1px solid ${active ? 'var(--amber-d)' : slots[key].length === 2 ? 'var(--green)' : 'var(--b2)'}`,
-                        background: active ? 'rgba(232,184,74,.07)' : 'var(--s1)',
-                      }}>
-                        <div className="xs" style={{ color: active ? 'var(--amber)' : slots[key].length === 2 ? 'var(--green)' : 'var(--dimmer)', fontWeight: 700, marginBottom: 3 }}>
-                          {active ? `▸ Pick ${label}` : label}
+                  <div style={{ display: 'grid', gridTemplateColumns: wantLower ? '1fr 1fr 1fr 1fr' : '1fr 1fr', gap: 6, marginBottom: 14 }}>
+                    {[
+                      ['Semi 1 — A', 'upperA'],
+                      ['Semi 1 — B', 'upperB'],
+                      ...(wantLower ? [['Semi 2 — A', 'lowerA'], ['Semi 2 — B', 'lowerB']] : [])
+                    ].map(([label, key]) => {
+                      const active = pickingTeam === key;
+                      return (
+                        <div key={key} style={{
+                          padding: '7px 8px', borderRadius: 6, textAlign: 'center',
+                          border: `1px solid ${active ? 'var(--amber-d)' : slots[key].length === 2 ? 'rgba(94,201,138,.4)' : 'var(--b2)'}`,
+                          background: active ? 'rgba(232,184,74,.07)' : 'var(--s1)',
+                        }}>
+                          <div className="xs" style={{ color: active ? 'var(--amber)' : slots[key].length === 2 ? 'var(--green)' : 'var(--dimmer)', fontWeight: 700, marginBottom: 3 }}>
+                            {active ? '▸ ' : ''}{label}
+                          </div>
+                          <div style={{ fontSize: 11 }}>
+                            {slots[key].length === 0
+                              ? <span className="text-dd" style={{ fontStyle: 'italic' }}>empty</span>
+                              : slots[key].map(id => (
+                                <span key={id} className="tag tag-w" style={{ cursor: 'pointer', fontSize: 10, marginRight: 2 }}
+                                  onClick={() => removeFromSlot(key, id)}>
+                                  {pName(id, state.players).split(' ')[0]} ×
+                                </span>
+                              ))}
+                          </div>
                         </div>
-                        <div style={{ fontWeight: 600, fontSize: 13 }}>
-                          {slots[key].length === 0
-                            ? <span className="text-dd" style={{ fontStyle: 'italic', fontSize: 11 }}>empty</span>
-                            : slots[key].map(id => (
-                              <span key={id} className="tag tag-w" style={{ cursor: 'pointer', fontSize: 11, marginRight: 3 }}
-                                onClick={() => removeFromSlot(key, id)}>
-                                {pName(id, state.players).split(' ')[0]} ×
-                              </span>
-                            ))}
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
 
                   {/* Player list — only unassigned shown */}
                   {!done && (
                     <>
                       <div className="xs text-dd" style={{ marginBottom: 6 }}>
-                        {stepA ? 'Pick 2 players for Team 1' : 'Pick 2 players for Team 2'}
-                        {' '}({2 - (stepA ? slots.upperA : slots.upperB).length} remaining)
+                        {pickingTeam ? `Pick 2 players for ${pickingTeam === 'upperA' ? 'Semi 1 — Team A' : pickingTeam === 'upperB' ? 'Semi 1 — Team B' : pickingTeam === 'lowerA' ? 'Semi 2 — Team A' : 'Semi 2 — Team B'} (${2 - slots[pickingTeam].length} remaining)` : 'All slots filled'}
                       </div>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 3, maxHeight: 200, overflowY: 'auto', marginBottom: 10 }}>
                         {unassigned.map(p => (
@@ -5547,10 +5585,10 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
                   <div className="fac" style={{ gap: 8 }}>
                     {done && (
                       <button className="btn btn-p" onClick={confirmManual}>
-                        ✓ Set {teamLabel('upperA')} vs {teamLabel('upperB')}
+                        ✓ Set bracket ({wantLower ? '2 semis' : 'Semi 1 only'})
                       </button>
                     )}
-                    <button className="btn btn-g" onClick={() => setSlots({ upperA: [], upperB: [] })}>
+                    <button className="btn btn-g" onClick={() => setSlots(EMPTY_SLOTS)}>
                       {done ? 'Repick' : 'Clear'}
                     </button>
                   </div>
