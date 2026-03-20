@@ -46,7 +46,7 @@ const CONFIG = {
   // Loss harshness — nudged up to match higher gain baseline
   // Losses feel meaningful without being devastating for underdogs
   LOSS_HARSHNESS: 1.08,
-  ROLE_ALIGN_BONUS: 1.12,   // gain ×1.12 / loss ÷1.12 when playing preferred role; inverse when out of position         // was 1.05
+  ROLE_ALIGN_BONUS: 1.12,   // out-of-position attenuation: gain ×0.893, loss ×0.893. In-position and FLEX are neutral baseline (×1.0)         // was 1.05
 
   MAX_PLACEMENTS_PER_MONTH: 5,  // per player per calendar month
 
@@ -659,26 +659,33 @@ function calcPlayerDelta({ winnerScore, loserScore, playerMMR, playerRank,
   // qualityScore stored for streak decay and history display
   const qualityScore = matchQuality;
 
-  // 6. Role alignment multiplier
-  // aligned (pref === played): roleMult = ROLE_ALIGN_BONUS  → gain ×bonus, loss ÷bonus
-  // neutral (FLEX, no role):   roleMult = 1.0               → no change
-  // misaligned (pref ≠ played): roleMult = 1/ROLE_ALIGN_BONUS → gain ÷bonus, loss ×bonus
-  const roleMult = (() => {
-    if (!playerRole || !playerPreferredRole || playerPreferredRole === 'FLEX') return 1.0;
-    return playerPreferredRole === playerRole ? CONFIG.ROLE_ALIGN_BONUS : 1 / CONFIG.ROLE_ALIGN_BONUS;
-  })();
+  // 6. Role alignment multipliers
+  // In position / FLEX → neutral baseline (×1.0). Playing your role is normal.
+  // Out of position (imposed) → asymmetric treatment, mirrors Elo underdog logic:
+  //   WIN out of position: ×BONUS (higher) — overcame a structural disadvantage
+  //   LOSS out of position: ×1/BONUS (softer) — not your fault, imposition
+  // Rationale: parallel to eloScale > 1 for MMR underdogs. The positional handicap
+  // is a known disadvantage; the system should reward beating it and excuse losing to it.
+  const isOutOfPosition = !!(
+    playerRole && playerPreferredRole &&
+    playerPreferredRole !== 'FLEX' &&
+    playerPreferredRole !== playerRole
+  );
+  const roleGainMult = isOutOfPosition ? CONFIG.ROLE_ALIGN_BONUS : 1.0;
+  const roleLossMult = isOutOfPosition ? (1 / CONFIG.ROLE_ALIGN_BONUS) : 1.0;
+  const roleMult = roleGainMult; // for perPlayerFactors displaysplay
 
   if (isWinner) {
-    const gain = Math.max(2, Math.round(CONFIG.BASE_GAIN * scoreMult * matchQuality * mult * roleMult));
-    return { gain, loss: 0, scoreMult, eloScale, rankScale, matchQuality, streakMultVal: mult, qualityScore, roleMult };
+    const gain = Math.max(2, Math.round(CONFIG.BASE_GAIN * scoreMult * matchQuality * mult * roleGainMult));
+    return { gain, loss: 0, scoreMult, eloScale, rankScale, matchQuality, streakMultVal: mult, qualityScore, roleMult: roleGainMult, roleLossMult };
   } else {
     // Loss formula mirrors gain: (2 - matchQuality) rises when matchQuality falls
     // i.e. a heavy favourite who loses suffers more — symmetrical to Elo
     // Single factor prevents the old (2-eloScale)*(2-rankScale) compounding
     const loss = Math.max(1, Math.round(
-      CONFIG.BASE_LOSS * scoreMult * (2 - matchQuality) * mult * CONFIG.LOSS_HARSHNESS / roleMult
+      CONFIG.BASE_LOSS * scoreMult * (2 - matchQuality) * mult * CONFIG.LOSS_HARSHNESS * roleLossMult
     ));
-    return { gain: 0, loss, scoreMult, eloScale, rankScale, matchQuality, streakMultVal: mult, qualityScore };
+    return { gain: 0, loss, scoreMult, eloScale, rankScale, matchQuality, streakMultVal: mult, qualityScore, roleMult: roleGainMult, roleLossMult };
   }
 }
 
@@ -2611,13 +2618,37 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
                             </div>
                           );
                         })()}
+
+                        {/* Position impact */}
+                        {(() => {
+                          const rm = f.roleMult;
+                          if (!rm || rm === 1.0 || !game.roles?.[p.id]) return null;
+                          const oop = rm > 1.0; // out of position gets higher gain (rm = BONUS > 1)
+                          const pref = state.players.find(x => x.id === p.id)?.preferredRole;
+                          const played = game.roles[p.id];
+                          const label = oop
+                            ? `Out of position (pref: ${pref}) — win bonus / loss protected`
+                            : `In position (${played})`;
+                          const col = oop ? "var(--amber)" : "var(--dimmer)";
+                          return (
+                            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 2, paddingTop: 4, borderTop: "1px solid var(--b1)" }}>
+                              <span style={{ fontSize: 10, color: "var(--dim)", width: 90, flexShrink: 0 }}>Position</span>
+                              <span style={{ fontSize: 10, color: col, flex: 1 }}>
+                                {oop ? "⚠ " : "✓ "}{label}
+                              </span>
+                              <span style={{ fontSize: 10, color: col, width: 120, flexShrink: 0, textAlign: "right" }}>
+                                {oop ? `×${rm.toFixed(2)} win / ×${(1/rm).toFixed(2)} loss` : "×1.00 neutral"}
+                              </span>
+                            </div>
+                          );
+                        })()}
                       </div>
                     </div>
                   );
                 })}
 
                 <div className="xs text-dd" style={{ lineHeight: 1.6, paddingTop: 2 }}>
-                  Match quality = 70% MMR gap + 30% rank gap, applied once. Beating a stronger opponent earns more. Cherry-picking weaker opponents earns less.
+                  Match quality = 70% MMR gap + 30% rank gap. Beating a stronger opponent earns more. Out-of-position players earn more for wins and lose less for losses.
                 </div>
               </div>
             </div>
