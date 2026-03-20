@@ -2491,7 +2491,8 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
         ── */}
         {!editing && (() => {
           const hasFactors = allPlayers.some(p => game.perPlayerFactors?.[p.id]);
-          if (!hasFactors) return null;
+          const hasRoles = game.roles && Object.keys(game.roles).length > 0;
+          if (!hasFactors && !hasRoles) return null;
 
           const ranked = [...state.players].sort((a, b) => (b.pts || 0) - (a.pts || 0));
           const rankOf = id => { const i = ranked.findIndex(p => p.id === id); return i === -1 ? ranked.length : i; };
@@ -2621,15 +2622,14 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
 
                         {/* Position impact */}
                         {(() => {
-                          const rm = f.roleMult;
-                          if (!rm || rm === 1.0 || !game.roles?.[p.id]) return null;
-                          const oop = rm > 1.0; // out of position gets higher gain (rm = BONUS > 1)
+                          const played = game.roles?.[p.id];
+                          if (!played) return null; // no role logged for this game
                           const pref = state.players.find(x => x.id === p.id)?.preferredRole;
-                          const played = game.roles[p.id];
-                          const label = oop
-                            ? `Out of position (pref: ${pref}) — win bonus / loss protected`
-                            : `In position (${played})`;
+                          const oop = pref && pref !== "FLEX" && pref !== played;
                           const col = oop ? "var(--amber)" : "var(--dimmer)";
+                          const label = oop
+                            ? `Out of position — pref ${pref}, played ${played}`
+                            : `${played} — in position`;
                           return (
                             <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 2, paddingTop: 4, borderTop: "1px solid var(--b1)" }}>
                               <span style={{ fontSize: 10, color: "var(--dim)", width: 90, flexShrink: 0 }}>Position</span>
@@ -2637,7 +2637,7 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
                                 {oop ? "⚠ " : "✓ "}{label}
                               </span>
                               <span style={{ fontSize: 10, color: col, width: 120, flexShrink: 0, textAlign: "right" }}>
-                                {oop ? `×${rm.toFixed(2)} win / ×${(1/rm).toFixed(2)} loss` : "×1.00 neutral"}
+                                {oop ? `×1.12 win · ×0.89 loss` : "×1.00 neutral"}
                               </span>
                             </div>
                           );
