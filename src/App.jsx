@@ -5419,7 +5419,40 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
     );
   }
 
-  // ── DATE EDITOR ───────────────────────────────────────────
+  // ── BRACKET SEEDING HELPERS ─────────────────────────────
+  function buildBracket(pool) {
+    if (pool.length < 4) return null;
+    const [p0, p1, p2, p3] = pool;
+    const roles = pos => { const s = new Set(); [].concat(pos || []).forEach(p => { if (p === "attack") s.add("atk"); if (p === "defense") s.add("def"); if (p === "both" || p === "flex") { s.add("atk"); s.add("def"); } }); return s; };
+    const posScore = (a, b) => { const ra = roles(a.position), rb = roles(b.position); if (!ra.size && !rb.size) return 1; if (!ra.size || !rb.size) return 1; return (ra.has("atk") || rb.has("atk")) && (ra.has("def") || rb.has("def")) ? 2 : 0; };
+    const splits = [{ a: [p0, p1], b: [p2, p3] }, { a: [p0, p2], b: [p1, p3] }, { a: [p0, p3], b: [p1, p2] }];
+    const best = splits.reduce((best, s) => {
+      const score = posScore(s.a[0], s.a[1]) + posScore(s.b[0], s.b[1]);
+      return score > best.score ? { ...s, score } : best;
+    }, { ...splits[0], score: posScore(splits[0].a[0], splits[0].a[1]) + posScore(splits[0].b[0], splits[0].b[1]) });
+    return { teamA: best.a.map(p => p.id), teamB: best.b.map(p => p.id) };
+  }
+
+  const placedRanked = ranked.filter(p => (state.monthlyPlacements?.[monthKey] || {})[p.id] >= CONFIG.MAX_PLACEMENTS_PER_MONTH);
+  const upperPool = placedRanked.slice(0, 4);
+  const lowerPool = placedRanked.slice(4, 8);
+  const previewUpper = upperPool.length >= 4 ? buildBracket(upperPool) : null;
+  const previewLower = lowerPool.length >= 4 ? buildBracket(lowerPool) : null;
+
+  function initFinals() {
+    if (placedRanked.length < 4) { showToast("Need at least 4 placed players", "error"); return; }
+    const upper = buildBracket(upperPool);
+    const lower = lowerPool.length >= 4 ? buildBracket(lowerPool) : null;
+    const bracket = {
+      upper: { sideA: upper.teamA, sideB: upper.teamB, winner: null, scoreA: null, scoreB: null },
+      lower: lower ? { sideA: lower.teamA, sideB: lower.teamB, winner: null, scoreA: null, scoreB: null } : null,
+      final: { sideA: null, sideB: null, winner: null, scoreA: null, scoreB: null },
+      champion: null,
+    };
+    setState(s => ({ ...s, finals: { ...(s.finals ?? {}), [monthKey]: { bracket, status: "semis" } } }));
+    showToast("Bracket generated!");
+  }
+
   // ── NO FINALS YET ─────────────────────────────────────────
   if (!finals) {
     return (
