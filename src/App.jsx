@@ -3449,17 +3449,18 @@ function OnboardView({ state, setState, showToast }) {
 // ============================================================
 
 // SVG pts-over-time line chart with hover tooltip
-function PtsChart({ pid, games, players }) {
+function PtsChart({ pid, games, players, roleFilter }) {
   const W = 320, H = 90, PAD = 10;
   const [hovered, setHovered] = useState(null); // index
   const svgRef = useRef(null);
 
   const playerGames = [...games]
     .filter(g => g.sideA.includes(pid) || g.sideB.includes(pid))
+    .filter(g => !roleFilter || roleFilter === "ALL" || g.roles?.[pid] === roleFilter)
     .sort((a, b) => new Date(a.date) - new Date(b.date));
   if (playerGames.length < 2) return (
     <div style={{ height: H, display: "flex", alignItems: "center", justifyContent: "center" }}>
-      <span className="xs text-dd">Not enough games</span>
+      <span className="xs text-dd">{roleFilter && roleFilter !== "ALL" ? `No ${roleFilter} games yet` : "Not enough games"}</span>
     </div>
   );
 
@@ -3485,7 +3486,11 @@ function PtsChart({ pid, games, players }) {
   const fillD = pathD + ` L${toX(data.length - 1).toFixed(1)},${H} L${toX(0).toFixed(1)},${H} Z`;
   const lastPts = data[data.length - 1].pts;
   const isPos = lastPts >= 0;
-  const lineCol = isPos ? "#5ec98a" : "#f07070";
+  const lineCol = roleFilter === "ATK"
+    ? (isPos ? "#f09050" : "#f07070")   // ATK: amber when positive
+    : roleFilter === "DEF"
+      ? (isPos ? "#60a8e8" : "#f07070") // DEF: blue when positive
+      : (isPos ? "#5ec98a" : "#f07070"); // ALL: default green
 
   // Find nearest data point from mouse x position
   function handleMouseMove(e) {
@@ -4022,9 +4027,9 @@ function StatsView({ state, onSelectPlayer }) {
 
                 {/* Points chart */}
                 <div>
-                  <div className="xs text-dd" style={{ marginBottom: 6, letterSpacing: .5, textTransform: "uppercase", fontWeight: 600 }}>Points over time</div>
+                  <div className="xs text-dd" style={{ marginBottom: 6, letterSpacing: .5, textTransform: "uppercase", fontWeight: 600 }}>{posFilter === "ATK" ? "🗡 ATK points over time" : posFilter === "DEF" ? "🛡 DEF points over time" : "Points over time"}</div>
                   <div style={{ background: "var(--s2)", borderRadius: 8, padding: "10px 12px" }}>
-                    <PtsChart pid={selected.id} games={scopedGames} players={state.players} />
+                    <PtsChart pid={selected.id} games={scopedGames} players={state.players} roleFilter={posFilter} />
                   </div>
                 </div>
 
