@@ -5526,7 +5526,7 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
   }
 
   // ── NORMAL FINALS VIEW ────────────────────────────────────
-  const { bracket, status } = finals;
+  const { bracket, status } = finals ?? {};
   const champ = bracket?.champion?.map(id => pName(id, state.players));
 
   return (
