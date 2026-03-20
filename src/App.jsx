@@ -1299,9 +1299,9 @@ const CSS = `
   .pos-atk{background:rgba(224,82,82,.12);color:var(--red);border-color:rgba(224,82,82,.3)}
   .pos-def{background:rgba(91,155,213,.12);color:var(--blue);border-color:rgba(91,155,213,.3)}
   .pos-both{background:rgba(155,127,232,.12);color:var(--purple);border-color:rgba(155,127,232,.3)}
-  .role-tag{display:inline-flex;align-items:center;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;font-family:var(--sans);flex-shrink:0;cursor:pointer}
-  .role-atk{background:rgba(240,144,80,.18);color:var(--orange);outline:1px solid rgba(240,144,80,.35)}
-  .role-def{background:rgba(96,168,232,.14);color:var(--blue);outline:1px solid rgba(96,168,232,.3)}
+  .role-tag{display:inline-flex;align-items:center;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;font-family:var(--sans);flex-shrink:0;cursor:pointer;transition:opacity .15s}
+  .role-atk{background:rgba(240,144,80,.18);color:var(--orange);outline:1px solid rgba(240,144,80,.4)}
+  .role-def{background:rgba(96,168,232,.14);color:var(--blue);outline:1px solid rgba(96,168,232,.35)}
 
   /* ── PLACEMENT STATUS ────────────────────────────────────── */
   .placement-badge{display:inline-flex;align-items:center;gap:4px;font-size:9px;font-weight:700;letter-spacing:1px;text-transform:uppercase;padding:2px 7px;border-radius:3px}
@@ -1960,7 +1960,7 @@ function PlayerProfile({ player, state, onClose, isAdmin, onEdit, seasonMode, on
             <span className={`tag ${won ? "tag-w" : "tag-l"}`}>{won ? "WIN" : "LOSS"}</span>
             {mates.length > 0 && <span className="text-d sm">w/ {mates.join(" & ")}</span>}
             <span className="text-d sm">vs {opps.join(" & ")}</span>
-            {g.roles?.[player.id] && <span className={`role-tag ${g.roles[player.id]==="ATK"?"role-atk":"role-def"}`} style={{marginRight:2}}>{g.roles[player.id]}</span>}
+            {g.roles?.[player.id] && <span className={`role-tag ${g.roles[player.id]==="ATK"?"role-atk":"role-def"}`} style={{marginRight:3}}>{g.roles[player.id]==="ATK"?"🗡 ATK":"🛡 DEF"}</span>}
             <span className="disp text-am" style={{ fontSize: 15 }}>{myScore}–{oppScore}</span>
             <span className={won ? "text-g" : "text-r"}>
               {(() => {
@@ -2147,6 +2147,7 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
   const [confirm, setConfirm] = useState(null);
   // penalties: { [pid]: { yellow: N, red: N } } — per-player
   const [penalties, setPenalties] = useState(() => game.penalties || {});
+  const [editRoles, setEditRoles] = useState(() => ({ ...(game.roles || {}) }));
 
   const sA = game.sideA.map(id => state.players.find(p => p.id === id)).filter(Boolean);
   const sB = game.sideB.map(id => state.players.find(p => p.id === id)).filter(Boolean);
@@ -2181,7 +2182,7 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
     const nA = parseInt(scoreA), nB = parseInt(scoreB);
     if (isNaN(nA) || isNaN(nB) || nA < 0 || nB < 0) { showToast("Invalid scores", "error"); return; }
     if (nA === nB) { showToast("No draws", "error"); return; }
-    const updatedGame = { ...game, scoreA: nA, scoreB: nB, winner, penalties };
+    const updatedGame = { ...game, scoreA: nA, scoreB: nB, winner, penalties, roles: editRoles };
     const editedGames = state.games.map(g => g.id === game.id ? updatedGame : g);
     const basePlayers = state.players.map(p => ({ ...p, mmr: CONFIG.STARTING_MMR, pts: CONFIG.STARTING_PTS, wins: 0, losses: 0, streak: 0, streakPower: 0, lossStreakPower: 0 }));
     const { players: newPlayers, games: newGames } = replayGames(basePlayers, editedGames, state.seasonStart);
@@ -2254,9 +2255,22 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
               const pen = penaltyTotal(p.id);
               return (
                 <div key={p.id} style={{ marginBottom: 4 }}>
-                  <div style={{display:"flex",alignItems:"center",gap:5}}>
+                  <div style={{display:"flex",alignItems:"center",gap:6}}>
                     <span className={`bold ${game.winner === "A" ? "text-g" : "text-r"}`} style={{ fontSize: 14 }}>{p.name}</span>
-                    {game.roles?.[p.id] && <span className={`role-tag ${game.roles[p.id]==="ATK"?"role-atk":"role-def"}`}>{game.roles[p.id]}</span>}
+                    {editing ? (
+                      <div className="fac" style={{gap:3}}>
+                        {["ATK","DEF"].map(r => (
+                          <button key={r}
+                            className={`role-tag ${r==="ATK"?"role-atk":"role-def"}`}
+                            style={{cursor:"pointer",opacity:editRoles[p.id]===r?1:0.3,fontWeight:editRoles[p.id]===r?700:400}}
+                            onClick={()=>setEditRoles(prev=>({...prev,[p.id]:prev[p.id]===r?null:r}))}>
+                            {r==="ATK"?"🗡 ATK":"🛡 DEF"}
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      game.roles?.[p.id] && <span className={`role-tag ${game.roles[p.id]==="ATK"?"role-atk":"role-def"}`}>{game.roles[p.id]==="ATK"?"🗡 ATK":"🛡 DEF"}</span>
+                    )}
                   </div>
                   <div className="xs text-dd">
                     {game.winner === "A" ? <span className="text-g">+{gain}pts</span> : <span className="text-r">−{loss}pts</span>}
@@ -2299,9 +2313,22 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
               const pen = penaltyTotal(p.id);
               return (
                 <div key={p.id} style={{ marginBottom: 4 }}>
-                  <div style={{display:"flex",alignItems:"center",gap:5}}>
+                  <div style={{display:"flex",alignItems:"center",gap:6}}>
                     <span className={`bold ${game.winner === "B" ? "text-g" : "text-r"}`} style={{ fontSize: 14 }}>{p.name}</span>
-                    {game.roles?.[p.id] && <span className={`role-tag ${game.roles[p.id]==="ATK"?"role-atk":"role-def"}`}>{game.roles[p.id]}</span>}
+                    {editing ? (
+                      <div className="fac" style={{gap:3}}>
+                        {["ATK","DEF"].map(r => (
+                          <button key={r}
+                            className={`role-tag ${r==="ATK"?"role-atk":"role-def"}`}
+                            style={{cursor:"pointer",opacity:editRoles[p.id]===r?1:0.3,fontWeight:editRoles[p.id]===r?700:400}}
+                            onClick={()=>setEditRoles(prev=>({...prev,[p.id]:prev[p.id]===r?null:r}))}>
+                            {r==="ATK"?"🗡 ATK":"🛡 DEF"}
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      game.roles?.[p.id] && <span className={`role-tag ${game.roles[p.id]==="ATK"?"role-atk":"role-def"}`}>{game.roles[p.id]==="ATK"?"🗡 ATK":"🛡 DEF"}</span>
+                    )}
                   </div>
                   <div className="xs text-dd">
                     {game.winner === "B" ? <span className="text-g">+{gain}pts</span> : <span className="text-r">−{loss}pts</span>}
@@ -2758,7 +2785,7 @@ function LeaderboardView({ state, setState, onSelectPlayer, onNavToPlay, onNavTo
           <div className="tbl-wrap">
             <table className="tbl">
               <thead>
-                <tr><th>#</th><th>Player</th><th>Points</th><th>W</th><th>L</th><th>Win%</th><th>Streak</th><th>Position</th><th>Placements</th></tr>
+                <tr><th>#</th><th>Player</th><th>Points</th><th>W</th><th>L</th><th>Win%</th><th>Streak</th><th>ATK / DEF</th><th>Placements</th></tr>
               </thead>
               <tbody>
                 {(() => {
@@ -2796,7 +2823,24 @@ function LeaderboardView({ state, setState, onSelectPlayer, onNavToPlay, onNavTo
                         <td><span className="text-r bold">{sStat.losses}</span></td>
                         <td><span className={pct >= 50 ? "text-g" : "text-d"}>{total ? `${pct}%` : "—"}</span></td>
                         <td><StreakBadge streak={sStat.streak} streakPower={p.streakPower || 0} lossStreakPower={p.lossStreakPower || 0} showMult /></td>
-                        <td><PosBadge pos={p.position} /></td>
+                        <td>
+                          {((p.wins_atk||0)+(p.losses_atk||0)+(p.wins_def||0)+(p.losses_def||0)) > 0 ? (
+                            <div style={{lineHeight:1.3}}>
+                              <div className="fac" style={{gap:4}}>
+                                <span className="role-tag role-atk" style={{pointerEvents:"none"}}>🗡</span>
+                                <span style={{fontSize:12,fontWeight:600,color:"var(--orange)"}}>{p.mmr_atk||p.mmr}</span>
+                                <span className="xs text-dd">{p.wins_atk||0}W</span>
+                              </div>
+                              <div className="fac" style={{gap:4,marginTop:3}}>
+                                <span className="role-tag role-def" style={{pointerEvents:"none"}}>🛡</span>
+                                <span style={{fontSize:12,fontWeight:600,color:"var(--blue)"}}>{p.mmr_def||p.mmr}</span>
+                                <span className="xs text-dd">{p.wins_def||0}W</span>
+                              </div>
+                            </div>
+                          ) : (
+                            <PosBadge pos={p.position} />
+                          )}
+                        </td>
                         <td>
                           {isPlaced
                             ? <span className="placement-badge placement-done">✓ Placed</span>
@@ -2922,7 +2966,7 @@ function HistoryView({ state, setState, isAdmin, showToast }) {
                 <span className={winnerSide === "A" ? "g-name-w" : "g-name-l"}>
                   {winnerSide === "A" && <span style={{ color: "var(--green)", marginRight: 2, fontSize: 9 }}>▲</span>}{n}
                 </span>
-                {role && <span className={`role-tag ${role==="ATK"?"role-atk":"role-def"}`}>{role}</span>}
+                {role && <span className={`role-tag ${role==="ATK"?"role-atk":"role-def"}`}>{role==="ATK"?"🗡 ATK":"🛡 DEF"}</span>}
               </div>
             );
           })}
@@ -2952,7 +2996,7 @@ function HistoryView({ state, setState, isAdmin, showToast }) {
             const n = pName(id, state.players); const role = g.roles?.[id];
             return (
               <div key={id} style={{display:"flex",alignItems:"center",gap:3,justifyContent:"flex-end"}}>
-                {role && <span className={`role-tag ${role==="ATK"?"role-atk":"role-def"}`}>{role}</span>}
+                {role && <span className={`role-tag ${role==="ATK"?"role-atk":"role-def"}`}>{role==="ATK"?"🗡 ATK":"🛡 DEF"}</span>}
                 <span className={winnerSide === "B" ? "g-name-w" : "g-name-l"}>
                   {n}{winnerSide === "B" && <span style={{ color: "var(--green)", marginLeft: 2, fontSize: 9 }}>▲</span>}
                 </span>
@@ -4694,6 +4738,79 @@ function LogView({ state, setState, showToast }) {
                       </div>
                     </div>
                   </div>
+
+                  {/* ── Role Assignment Panel ─────────────────────── */}
+                  {row.sideA.length + row.sideB.length > 0 && (() => {
+                    const allPids = [...row.sideA, ...row.sideB];
+                    const assigned = allPids.filter(id => row.roles?.[id]);
+                    const fullyAssigned = assigned.length === 4 && allPids.length === 4;
+                    const partiallyAssigned = assigned.length > 0 && !fullyAssigned;
+                    return (
+                      <div style={{ marginTop: 10, borderTop: "1px solid var(--b1)", paddingTop: 10 }}>
+                        <div className="fbc" style={{ marginBottom: 8 }}>
+                          <span className="lbl" style={{ fontSize: 10, letterSpacing: ".5px" }}>POSITIONS</span>
+                          {fullyAssigned
+                            ? <span className="xs" style={{ color: "var(--green)" }}>✓ MMR tracking active</span>
+                            : allPids.length === 4
+                              ? <span className="xs" style={{ color: "var(--amber)" }}>Assign all 4 to enable ATK/DEF MMR</span>
+                              : <span className="xs text-dd">Add all 4 players first</span>
+                          }
+                        </div>
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                          {[["A", row.sideA, "var(--green)"], ["B", row.sideB, "var(--blue)"]].map(([side, ids, col]) => (
+                            <div key={side} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                              <div className="xs" style={{ color: col, fontWeight: 600, marginBottom: 2 }}>Side {side}</div>
+                              {["ATK", "DEF"].map(roleLabel => {
+                                const icon = roleLabel === "ATK" ? "🗡" : "🛡";
+                                const cls = roleLabel === "ATK" ? "role-atk" : "role-def";
+                                const occupant = ids.find(id => row.roles?.[id] === roleLabel);
+                                const unassigned = ids.filter(id => !row.roles?.[id]);
+                                return (
+                                  <div key={roleLabel}
+                                    style={{
+                                      display: "flex", alignItems: "center", gap: 6,
+                                      padding: "6px 10px", borderRadius: 6,
+                                      border: occupant
+                                        ? (roleLabel === "ATK" ? "1px solid rgba(240,144,80,.4)" : "1px solid rgba(96,168,232,.3)")
+                                        : "1px dashed var(--b2)",
+                                      background: occupant
+                                        ? (roleLabel === "ATK" ? "rgba(240,144,80,.08)" : "rgba(96,168,232,.06)")
+                                        : "transparent",
+                                      cursor: ids.length > 0 ? "pointer" : "default",
+                                      minHeight: 34,
+                                    }}
+                                    onClick={() => {
+                                      if (!occupant && unassigned.length === 1) {
+                                        // only one unassigned — auto-slot them in
+                                        setRole(row.id, unassigned[0], roleLabel);
+                                      } else if (!occupant && unassigned.length > 1) {
+                                        // cycle: assign first unassigned
+                                        setRole(row.id, unassigned[0], roleLabel);
+                                      } else if (occupant) {
+                                        // click occupied slot → clear that player's role
+                                        setRole(row.id, occupant, null);
+                                      }
+                                    }}
+                                  >
+                                    <span className={`role-tag ${cls}`} style={{ pointerEvents: "none" }}>{icon} {roleLabel}</span>
+                                    {occupant
+                                      ? <span style={{ fontSize: 12, fontWeight: 600 }}>{pName(occupant, state.players)}</span>
+                                      : <span className="xs text-dd" style={{ fontStyle: "italic" }}>
+                                          {ids.length === 0 ? "no players" : unassigned.length === 0 ? "all assigned" : "tap to assign"}
+                                        </span>
+                                    }
+                                    {occupant && unassigned.length > 0 && (
+                                      <span className="xs text-dd" style={{ marginLeft: "auto" }}>×</span>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })()}
 
                   {errors[row.id] && (
                     <div className="msg msg-e mt8" style={{ fontWeight: 600, fontSize: 12 }}>
