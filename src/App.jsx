@@ -223,21 +223,42 @@ function exportGamesCsv(state, seasonFilter = null) {
   const currentSeason = seasonFilter === null ? getCurrentSeason(state) : seasonFilter;
   const scopedGames = (state.games || []).filter(g => seasonFilter === "all" ? true : gameInSeason(g, currentSeason));
   const nameById = new Map((state.players || []).map(p => [p.id, p.name]));
+  const prefRole = new Map((state.players || []).map(p => [p.id, p.preferredRole || "FLEX"]));
+  // Long format: one row per player-game observation — suitable for regression analysis
   const rows = [
-    ["id", "date", "winner", "scoreA", "scoreB", "sideA", "sideB", "roles", "ptsGain", "ptsLoss"],
-    ...scopedGames.map(g => [
-      g.id,
-      g.date,
-      g.winner,
-      g.scoreA,
-      g.scoreB,
-      (g.sideA || []).map(id => nameById.get(id) || id).join(" & "),
-      (g.sideB || []).map(id => nameById.get(id) || id).join(" & "),
-      Object.entries(g.roles||{}).map(([pid,r])=>`${pid}:${r}`).join("|") || "",
-      g.ptsGain ?? "",
-      g.ptsLoss ?? ""
-    ])
+    ["game_id","date","score_winner","score_loser","player_id","player_name","side",
+     "role","preferred_role","role_aligned",
+     "won","delta_pts",
+     "elo_scale","rank_scale","match_quality","score_mult","streak_mult","role_mult",
+     "opp_a_name","opp_b_name","partner_name"]
   ];
+  const sorted = [...scopedGames].sort((a,b) => new Date(a.date)-new Date(b.date));
+  for (const g of sorted) {
+    const allIds = [...(g.sideA||[]), ...(g.sideB||[])];
+    for (const pid of allIds) {
+      const side = (g.sideA||[]).includes(pid) ? "A" : "B";
+      const won = (side==="A" && g.winner==="A") || (side==="B" && g.winner==="B");
+      const delta = won
+        ? (g.perPlayerGains?.[pid] ?? g.ptsGain ?? "")
+        : -(g.perPlayerLosses?.[pid] ?? g.ptsLoss ?? "");
+      const f = g.perPlayerFactors?.[pid] || {};
+      const role = g.roles?.[pid] || "";
+      const pref = prefRole.get(pid) || "FLEX";
+      const aligned = role && pref !== "FLEX" ? (role === pref ? "1" : "0") : "";
+      const teammates = ((side==="A" ? g.sideA : g.sideB)||[]).filter(id=>id!==pid).map(id=>nameById.get(id)||id);
+      const opps = ((side==="A" ? g.sideB : g.sideA)||[]).map(id=>nameById.get(id)||id);
+      const winScore = Math.max(g.scoreA||0, g.scoreB||0);
+      const losScore = Math.min(g.scoreA||0, g.scoreB||0);
+      rows.push([
+        g.id, g.date, winScore, losScore,
+        pid, nameById.get(pid)||pid, side,
+        role, pref, aligned,
+        won?"1":"0", delta,
+        f.eloScale??"", f.rankScale??"", f.matchQuality??"", f.scoreMult??"", f.streakMultVal??"", f.roleMult??"",
+        opps[0]||"", opps[1]||"", teammates[0]||""
+      ]);
+    }
+  }
   const seasonLabel = seasonFilter === "all" ? "all-time" : (currentSeason?.label || "current");
   const stamp = new Date().toISOString().slice(0, 10);
   downloadText(`foosball-games-${seasonLabel}-${stamp}.csv`, toCsv(rows), "text/csv");
