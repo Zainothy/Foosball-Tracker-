@@ -38,7 +38,7 @@ const CONFIG = {
   // Anti-farm decay tightened slightly to offset the stronger ceiling.
   STREAK_POWER_SCALE: 3.0,      // bonus kicks in by win 2–3, not win 6–7
   STREAK_WIN_MAX: 0.55,         // max +55% on win streak (was +45%)
-  STREAK_LOSS_MAX: 0.42,        // max +42% on loss streak (was +35%)
+  STREAK_LOSS_MAX: 0.35,        // capped at +35% — prevents triple-stacking with rank+MMR penalties
   STREAK_QUALITY_DECAY: 0.82,   // tighter anti-farm decay (was 0.88)
   STREAK_DECAY_THRESHOLD: 1.05, // unchanged
   STREAK_WINDOW: 8,             // unchanged
@@ -207,10 +207,10 @@ function exportPlayersCsv(state, seasonFilter = null) {
   const scopedGames = (state.games || []).filter(g => seasonFilter === "all" ? true : gameInSeason(g, currentSeason));
   const scopedStats = computeWindowPlayerStats(state.players, scopedGames);
   const rows = [
-    ["id", "name", "pts", "mmr", "wins", "losses", "streak"],
+    ["id", "name", "pts", "mmr", "mmr_atk", "mmr_def", "preferredRole", "wins", "losses", "wins_atk", "losses_atk", "wins_def", "losses_def", "streak"],
     ...(state.players || []).map(p => {
       const stats = scopedStats[p.id] || { wins: 0, losses: 0, streak: 0, pts: 0 };
-      return [p.id, p.name, stats.pts || 0, p.mmr ?? 0, stats.wins || 0, stats.losses || 0, stats.streak || 0];
+      return [p.id, p.name, stats.pts||0, p.mmr??CONFIG.STARTING_MMR, p.mmr_atk??p.mmr??CONFIG.STARTING_MMR, p.mmr_def??p.mmr??CONFIG.STARTING_MMR, p.preferredRole??"FLEX", stats.wins||0, stats.losses||0, p.wins_atk??0, p.losses_atk??0, p.wins_def??0, p.losses_def??0, stats.streak||0];
     })
   ];
   const seasonLabel = seasonFilter === "all" ? "all-time" : (currentSeason?.label || "current");
@@ -223,7 +223,7 @@ function exportGamesCsv(state, seasonFilter = null) {
   const scopedGames = (state.games || []).filter(g => seasonFilter === "all" ? true : gameInSeason(g, currentSeason));
   const nameById = new Map((state.players || []).map(p => [p.id, p.name]));
   const rows = [
-    ["id", "date", "winner", "scoreA", "scoreB", "sideA", "sideB", "ptsGain", "ptsLoss"],
+    ["id", "date", "winner", "scoreA", "scoreB", "sideA", "sideB", "roles", "ptsGain", "ptsLoss"],
     ...scopedGames.map(g => [
       g.id,
       g.date,
@@ -232,6 +232,7 @@ function exportGamesCsv(state, seasonFilter = null) {
       g.scoreB,
       (g.sideA || []).map(id => nameById.get(id) || id).join(" & "),
       (g.sideB || []).map(id => nameById.get(id) || id).join(" & "),
+      Object.entries(g.roles||{}).map(([pid,r])=>`${pid}:${r}`).join("|") || "",
       g.ptsGain ?? "",
       g.ptsLoss ?? ""
     ])
@@ -357,7 +358,9 @@ function computePlacements(games) {
 function replayGames(basePlayers, games, seasonStart) {
   let players = basePlayers.map(p => ({
     ...p, mmr: CONFIG.STARTING_MMR, pts: CONFIG.STARTING_PTS,
+    mmr_atk: CONFIG.STARTING_MMR, mmr_def: CONFIG.STARTING_MMR,
     wins: 0, losses: 0, streak: 0, streakPower: 0,
+    wins_atk: 0, losses_atk: 0, wins_def: 0, losses_def: 0,
   }));
   const seasonStartDate = seasonStart ? new Date(seasonStart) : null;
   const sorted = sortByDate(games);
@@ -397,24 +400,51 @@ function replayGames(basePlayers, games, seasonStart) {
     const oppWinRankPlaced = oppAvgRankPlaced(winIds);
     const oppLosRankPlaced = oppAvgRankPlaced(losIds);
 
+    // Positional role resolution — dual MMR when game has roles, legacy avg otherwise
+    const gameRoles = g.roles || {};
+    const hasRoles = Object.keys(gameRoles).length === 4;
+    const atkRanked = [...players].sort((a,b)=>(b.mmr_atk??CONFIG.STARTING_MMR)-(a.mmr_atk??CONFIG.STARTING_MMR));
+    const defRanked = [...players].sort((a,b)=>(b.mmr_def??CONFIG.STARTING_MMR)-(a.mmr_def??CONFIG.STARTING_MMR));
+    const atkRankOf = id => { const i=atkRanked.findIndex(p=>p.id===id); return i===-1?atkRanked.length:i; };
+    const defRankOf = id => { const i=defRanked.findIndex(p=>p.id===id); return i===-1?defRanked.length:i; };
+
     const playerDeltas = {};
     allPids.forEach(pid => {
       const p = playerMap.get(pid);
       if (!p) return;
       const isWinner = winIds.includes(pid);
-      // If this player or ALL their opponents are unplaced, rank is neutral (null → rankScale=1)
       const myPlaced = isPlacedAtGameTime(pid);
       const oppRankPlaced = isWinner ? oppLosRankPlaced : oppWinRankPlaced;
+      const myRole = gameRoles[pid];
+      const oppIds = isWinner ? losIds : winIds;
+      let playerMMR, oppMMRval, playerRank, oppRankVal;
+      if (hasRoles && myRole) {
+        const oppRole = myRole === 'ATK' ? 'DEF' : 'ATK';
+        const oppMatchId = oppIds.find(id => gameRoles[id] === oppRole);
+        const oppMatch = oppMatchId ? playerMap.get(oppMatchId) : null;
+        if (myRole === 'ATK') {
+          playerMMR = p.mmr_atk ?? p.mmr;
+          oppMMRval = oppMatch ? (oppMatch.mmr_def ?? oppMatch.mmr) : (isWinner ? oppLosMMR : oppWinMMR);
+          playerRank = myPlaced ? atkRankOf(pid) : null;
+          oppRankVal = (myPlaced && oppMatchId && isPlacedAtGameTime(oppMatchId)) ? defRankOf(oppMatchId) : null;
+        } else {
+          playerMMR = p.mmr_def ?? p.mmr;
+          oppMMRval = oppMatch ? (oppMatch.mmr_atk ?? oppMatch.mmr) : (isWinner ? oppLosMMR : oppWinMMR);
+          playerRank = myPlaced ? defRankOf(pid) : null;
+          oppRankVal = (myPlaced && oppMatchId && isPlacedAtGameTime(oppMatchId)) ? atkRankOf(oppMatchId) : null;
+        }
+      } else {
+        playerMMR = p.mmr;
+        oppMMRval = isWinner ? oppLosMMR : oppWinMMR;
+        playerRank = myPlaced ? rankOf(pid) : null;
+        oppRankVal = (myPlaced && oppRankPlaced !== null) ? oppRankPlaced : null;
+      }
       const d = calcPlayerDelta({
-        winnerScore, loserScore,
-        playerMMR: p.mmr,
-        playerRank: myPlaced ? rankOf(pid) : null,
+        winnerScore, loserScore, playerMMR, playerRank,
         playerStreakPower: p.streakPower || 0,
-        oppAvgMMR: isWinner ? oppLosMMR : oppWinMMR,
-        oppAvgRank: (myPlaced && oppRankPlaced !== null) ? oppRankPlaced : null,
-        isWinner,
+        oppAvgMMR: oppMMRval, oppAvgRank: oppRankVal, isWinner,
       });
-      playerDeltas[pid] = d;
+      playerDeltas[pid] = { ...d, role: myRole || null };
     });
 
     // Advance placement counts AFTER computing deltas (this game counts toward next game)
@@ -427,17 +457,30 @@ function replayGames(basePlayers, games, seasonStart) {
       const d = playerDeltas[p.id];
       if (!d) return p;
       const isWin = winIds.includes(p.id);
+      const role = d.role;
       if (isWin) {
-        const base = { ...p, wins: p.wins + 1 };
+        const base = { ...p, wins: p.wins+1,
+          wins_atk: (p.wins_atk||0)+(role==='ATK'?1:0),
+          wins_def: (p.wins_def||0)+(role==='DEF'?1:0),
+        };
         if (!inSeason) return base;
-        const ns = (p.streak || 0) >= 0 ? (p.streak || 0) + 1 : 1;
-        const newPower = updateStreakPower(p.streakPower || 0, true, d.qualityScore || 1);
-        return { ...base, mmr: p.mmr + d.gain, pts: (p.pts || 0) + d.gain, streak: ns, streakPower: newPower };
+        const ns = (p.streak||0)>=0 ? (p.streak||0)+1 : 1;
+        const newPower = updateStreakPower(p.streakPower||0, true, d.qualityScore||1);
+        const newAtk = role==='ATK' ? (p.mmr_atk??p.mmr)+d.gain : (p.mmr_atk??p.mmr);
+        const newDef = role==='DEF' ? (p.mmr_def??p.mmr)+d.gain : (p.mmr_def??p.mmr);
+        const newMMR = role ? Math.round((newAtk+newDef)/2) : p.mmr+d.gain;
+        return { ...base, mmr:newMMR, mmr_atk:newAtk, mmr_def:newDef, pts:(p.pts||0)+d.gain, streak:ns, streakPower:newPower };
       }
-      const base = { ...p, losses: p.losses + 1 };
+      const base = { ...p, losses: p.losses+1,
+        losses_atk: (p.losses_atk||0)+(role==='ATK'?1:0),
+        losses_def: (p.losses_def||0)+(role==='DEF'?1:0),
+      };
       if (!inSeason) return base;
-      const ns = (p.streak || 0) <= 0 ? (p.streak || 0) - 1 : -1;
-      return { ...base, mmr: Math.max(0, p.mmr - d.loss), pts: Math.max(0, (p.pts || 0) - d.loss), streak: ns, streakPower: 0 };
+      const ns = (p.streak||0)<=0 ? (p.streak||0)-1 : -1;
+      const newAtk = role==='ATK' ? Math.max(0,(p.mmr_atk??p.mmr)-d.loss) : (p.mmr_atk??p.mmr);
+      const newDef = role==='DEF' ? Math.max(0,(p.mmr_def??p.mmr)-d.loss) : (p.mmr_def??p.mmr);
+      const newMMR = role ? Math.round((newAtk+newDef)/2) : Math.max(0,p.mmr-d.loss);
+      return { ...base, mmr:newMMR, mmr_atk:newAtk, mmr_def:newDef, pts:Math.max(0,(p.pts||0)-d.loss), streak:ns, streakPower:0 };
     });
 
     // Flat per-player gain/loss maps — persisted, not stripped by slimState
@@ -811,7 +854,15 @@ function normaliseState(s) {
     Object.entries(rawFinals).map(([k, v]) => [k, { liveScores: {}, ...v }])
   );
   return {
-    players: (s.players || []).map(p => ({ streakPower: 0, lossStreakPower: 0, ...p })),
+    players: (s.players || []).map(p => ({
+      streakPower: 0, lossStreakPower: 0,
+      mmr_atk: p.mmr_atk ?? p.mmr ?? CONFIG.STARTING_MMR,
+      mmr_def: p.mmr_def ?? p.mmr ?? CONFIG.STARTING_MMR,
+      wins_atk: p.wins_atk ?? 0, losses_atk: p.losses_atk ?? 0,
+      wins_def: p.wins_def ?? 0, losses_def: p.losses_def ?? 0,
+      preferredRole: p.preferredRole ?? (p.position === 'attack' ? 'ATK' : p.position === 'defense' ? 'DEF' : 'FLEX'),
+      ...p,
+    })),
     games: (s.games || []).map(g => ({ penalties: {}, ...g })),
     monthlyPlacements: s.monthlyPlacements || {},
     finals: normFinals,
@@ -1248,6 +1299,9 @@ const CSS = `
   .pos-atk{background:rgba(224,82,82,.12);color:var(--red);border-color:rgba(224,82,82,.3)}
   .pos-def{background:rgba(91,155,213,.12);color:var(--blue);border-color:rgba(91,155,213,.3)}
   .pos-both{background:rgba(155,127,232,.12);color:var(--purple);border-color:rgba(155,127,232,.3)}
+  .role-tag{display:inline-flex;align-items:center;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;font-family:var(--sans);flex-shrink:0;cursor:pointer}
+  .role-atk{background:rgba(240,144,80,.18);color:var(--orange);outline:1px solid rgba(240,144,80,.35)}
+  .role-def{background:rgba(96,168,232,.14);color:var(--blue);outline:1px solid rgba(96,168,232,.3)}
 
   /* ── PLACEMENT STATUS ────────────────────────────────────── */
   .placement-badge{display:inline-flex;align-items:center;gap:4px;font-size:9px;font-weight:700;letter-spacing:1px;text-transform:uppercase;padding:2px 7px;border-radius:3px}
@@ -1906,6 +1960,7 @@ function PlayerProfile({ player, state, onClose, isAdmin, onEdit, seasonMode, on
             <span className={`tag ${won ? "tag-w" : "tag-l"}`}>{won ? "WIN" : "LOSS"}</span>
             {mates.length > 0 && <span className="text-d sm">w/ {mates.join(" & ")}</span>}
             <span className="text-d sm">vs {opps.join(" & ")}</span>
+            {g.roles?.[player.id] && <span className={`role-tag ${g.roles[player.id]==="ATK"?"role-atk":"role-def"}`} style={{marginRight:2}}>{g.roles[player.id]}</span>}
             <span className="disp text-am" style={{ fontSize: 15 }}>{myScore}–{oppScore}</span>
             <span className={won ? "text-g" : "text-r"}>
               {(() => {
@@ -2017,7 +2072,21 @@ function EditPlayerModal({ player, state, setState, showToast, onClose }) {
           <div className="field"><label className="lbl">Streak (+win / -loss)</label>
             <input className="inp inp-edit" type="number" value={streak} onChange={e => setStreak(e.target.value)} /></div>
         </div>
-        <div className="field mt8"><label className="lbl">Position Preference</label>
+        <div className="field mt8">
+          <label className="lbl">Preferred Role</label>
+          <div className="fac" style={{gap:6, marginBottom:6}}>
+            {["ATK","DEF","FLEX"].map(v => (
+              <button key={v}
+                className={`btn btn-sm ${(player.preferredRole||"FLEX")===v ? "btn-p" : "btn-g"}`}
+                onClick={() => setState(s => ({ ...s, players: s.players.map(p =>
+                  p.id === player.id ? { ...p, preferredRole: v } : p
+                )}))}>
+                {v==="ATK"?"🗡 ATK":v==="DEF"?"🛡 DEF":"⚡ FLEX"}
+              </button>
+            ))}
+          </div>
+          <div className="xs text-dd" style={{marginBottom:10}}>Used for auto-assign when logging games. Drives the ATK/DEF MMR tracks.</div>
+          <label className="lbl">Position Badges</label>
           <div className="fac" style={{ gap: 6, flexWrap: "wrap", marginBottom: 4 }}>
             {[["attack", "🗡 Attack"], ["defense", "🛡 Defense"], ["flex", "⚡ Flex"]].map(([v, l]) => {
               const on = positions.includes(v);
@@ -2028,7 +2097,7 @@ function EditPlayerModal({ player, state, setState, showToast, onClose }) {
               );
             })}
           </div>
-          <div className="xs text-dd" style={{ marginTop: 3 }}>Select all that apply. Flex = comfortable in either role.</div>
+          <div className="xs text-dd" style={{ marginTop: 3 }}>Legacy display badges. Preferred Role above drives the ranking engine.</div>
         </div>
         <div className="msg msg-w sm">Manually editing pts/streak will diverge from game history. Use recalculate to re-sync.</div>
 
@@ -2185,7 +2254,10 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
               const pen = penaltyTotal(p.id);
               return (
                 <div key={p.id} style={{ marginBottom: 4 }}>
-                  <div className={`bold ${game.winner === "A" ? "text-g" : "text-r"}`} style={{ fontSize: 14 }}>{p.name}</div>
+                  <div style={{display:"flex",alignItems:"center",gap:5}}>
+                    <span className={`bold ${game.winner === "A" ? "text-g" : "text-r"}`} style={{ fontSize: 14 }}>{p.name}</span>
+                    {game.roles?.[p.id] && <span className={`role-tag ${game.roles[p.id]==="ATK"?"role-atk":"role-def"}`}>{game.roles[p.id]}</span>}
+                  </div>
                   <div className="xs text-dd">
                     {game.winner === "A" ? <span className="text-g">+{gain}pts</span> : <span className="text-r">−{loss}pts</span>}
                     {pen > 0 && <span style={{ color: "var(--orange)", marginLeft: 4 }}>−{pen} 🟡</span>}
@@ -2227,7 +2299,10 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
               const pen = penaltyTotal(p.id);
               return (
                 <div key={p.id} style={{ marginBottom: 4 }}>
-                  <div className={`bold ${game.winner === "B" ? "text-g" : "text-r"}`} style={{ fontSize: 14 }}>{p.name}</div>
+                  <div style={{display:"flex",alignItems:"center",gap:5}}>
+                    <span className={`bold ${game.winner === "B" ? "text-g" : "text-r"}`} style={{ fontSize: 14 }}>{p.name}</span>
+                    {game.roles?.[p.id] && <span className={`role-tag ${game.roles[p.id]==="ATK"?"role-atk":"role-def"}`}>{game.roles[p.id]}</span>}
+                  </div>
                   <div className="xs text-dd">
                     {game.winner === "B" ? <span className="text-g">+{gain}pts</span> : <span className="text-r">−{loss}pts</span>}
                     {pen > 0 && <span style={{ color: "var(--orange)", marginLeft: 4 }}>−{pen} 🟡</span>}
@@ -2840,11 +2915,17 @@ function HistoryView({ state, setState, isAdmin, showToast }) {
       <div className="game-row" onClick={() => setSelectedGameId(g.id)}>
         {/* Side A */}
         <div className="g-side">
-          {sAN.map((n, i) => (
-            <span key={i} className={winnerSide === "A" ? "g-name-w" : "g-name-l"}>
-              {winnerSide === "A" && <span style={{ color: "var(--green)", marginRight: 3, fontSize: 9 }}>▲</span>}{n}
-            </span>
-          ))}
+          {g.sideA.map(id => {
+            const n = pName(id, state.players); const role = g.roles?.[id];
+            return (
+              <div key={id} style={{display:"flex",alignItems:"center",gap:3}}>
+                <span className={winnerSide === "A" ? "g-name-w" : "g-name-l"}>
+                  {winnerSide === "A" && <span style={{ color: "var(--green)", marginRight: 2, fontSize: 9 }}>▲</span>}{n}
+                </span>
+                {role && <span className={`role-tag ${role==="ATK"?"role-atk":"role-def"}`}>{role}</span>}
+              </div>
+            );
+          })}
           <div className="g-delta" style={{ display: "flex", flexDirection: "column", gap: 1 }}>
             {g.sideA.map(id => {
               const delta = winnerSide === "A"
@@ -2867,11 +2948,17 @@ function HistoryView({ state, setState, isAdmin, showToast }) {
         </div>
         {/* Side B */}
         <div className="g-side right">
-          {sBN.map((n, i) => (
-            <span key={i} className={winnerSide === "B" ? "g-name-w" : "g-name-l"}>
-              {n}{winnerSide === "B" && <span style={{ color: "var(--green)", marginLeft: 3, fontSize: 9 }}>▲</span>}
-            </span>
-          ))}
+          {g.sideB.map(id => {
+            const n = pName(id, state.players); const role = g.roles?.[id];
+            return (
+              <div key={id} style={{display:"flex",alignItems:"center",gap:3,justifyContent:"flex-end"}}>
+                {role && <span className={`role-tag ${role==="ATK"?"role-atk":"role-def"}`}>{role}</span>}
+                <span className={winnerSide === "B" ? "g-name-w" : "g-name-l"}>
+                  {n}{winnerSide === "B" && <span style={{ color: "var(--green)", marginLeft: 2, fontSize: 9 }}>▲</span>}
+                </span>
+              </div>
+            );
+          })}
           <div className="g-delta" style={{ display: "flex", flexDirection: "column", gap: 1, alignItems: "flex-end" }}>
             {g.sideB.map(id => {
               const delta = winnerSide === "B"
@@ -3064,12 +3151,11 @@ function OnboardView({ state, setState, showToast }) {
     const newPlayer = {
       id: crypto.randomUUID(),
       name,
-      mmr: CONFIG.STARTING_MMR,
-      pts: CONFIG.STARTING_PTS,
-      wins: 0,
-      losses: 0,
-      streak: 0,
-      championships: []
+      mmr: CONFIG.STARTING_MMR, pts: CONFIG.STARTING_PTS,
+      mmr_atk: CONFIG.STARTING_MMR, mmr_def: CONFIG.STARTING_MMR,
+      wins: 0, losses: 0, streak: 0, streakPower: 0,
+      wins_atk: 0, losses_atk: 0, wins_def: 0, losses_def: 0,
+      championships: [], position: [], preferredRole: 'FLEX',
     };
     setState(s => logAdmin({ ...s, players: [...s.players, newPlayer] }, "ADD_PLAYER", { name }));
     setSingle("");
@@ -3635,12 +3721,19 @@ function StatsView({ state, onSelectPlayer }) {
   const [selectedId, setSelectedId] = useState(null);
   const [search, setSearch] = useState("");
   const [seasonFilter, setSeasonFilter] = useState("current");
+  const [posFilter, setPosFilter] = useState("ALL");
 
   const currentSeason = getCurrentSeason(state);
   const activeSeason = seasonFilter === "all" ? null : (seasonFilter === "current" ? currentSeason : (state.seasons || []).find(s => s.id === seasonFilter) || null);
   const scopedGames = (state.games || []).filter(g => gameInSeason(g, activeSeason));
   const scopedStats = computeWindowPlayerStats(state.players, scopedGames);
-  const sorted = [...state.players].sort((a, b) => ((scopedStats[b.id]?.pts || 0) - (scopedStats[a.id]?.pts || 0)));
+  const sorted = [...state.players]
+    .filter(p => {
+      if (posFilter === "ALL") return true;
+      const r = p.preferredRole || "FLEX";
+      return posFilter === "ATK" ? (r==="ATK"||r==="FLEX") : (r==="DEF"||r==="FLEX");
+    })
+    .sort((a, b) => ((scopedStats[b.id]?.pts || 0) - (scopedStats[a.id]?.pts || 0)));
   const selected = state.players.find(p => p.id === selectedId);
 
   function getH2H(pidA, pidB) {
@@ -3726,6 +3819,12 @@ function StatsView({ state, onSelectPlayer }) {
         <div className="card">
           <div className="card-header"><span className="card-title">Player Stats</span><select className="inp" value={seasonFilter} onChange={e => setSeasonFilter(e.target.value)} style={{ fontSize: 11, padding: "4px 8px", maxWidth: 180 }}><option value="current">Current season</option><option value="all">All seasons</option>{(state.seasons || []).map(se => <option key={se.id} value={se.id}>{se.label}</option>)}</select></div>
           <div style={{ padding: 14 }}>
+            <div className="fac" style={{gap:4,marginBottom:8}}>
+              {["ALL","ATK","DEF"].map(f=>(
+                <button key={f} className={`btn btn-sm ${posFilter===f?"btn-p":"btn-g"}`}
+                  style={{minWidth:44,fontSize:11}} onClick={()=>setPosFilter(f)}>{f}</button>
+              ))}
+            </div>
             <input className="inp" placeholder="Search…" value={search}
               onChange={e => setSearch(e.target.value)} style={{ marginBottom: 10, fontSize: 12 }} />
             <div style={{ display: "flex", flexDirection: "column", gap: 3, maxHeight: 260, overflowY: "auto" }}>
@@ -3735,7 +3834,7 @@ function StatsView({ state, onSelectPlayer }) {
                   <span style={{ fontWeight: 600 }}>{p.name}</span>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <Sparkline pid={p.id} games={scopedGames} />
-                    <span className="xs text-dd">{scopedStats[p.id]?.pts || 0}pts</span>
+                    <span className="xs text-dd">{p.mmr||1000} MMR{((p.wins_atk||0)+(p.losses_atk||0)+(p.wins_def||0)+(p.losses_def||0) > 0) && (<> · <span style={{color:"var(--orange)"}}>A {p.mmr_atk||p.mmr}</span>/<span style={{color:"var(--blue)"}}>D {p.mmr_def||p.mmr}</span></>)} · {scopedStats[p.id]?.pts || 0}pts</span>
                   </div>
                 </div>
               ))}
@@ -3775,6 +3874,16 @@ function StatsView({ state, onSelectPlayer }) {
                     <>
                       <div style={{ display: "grid", gridTemplateColumns: "64px 1fr 1fr 1fr", gap: 10, alignItems: "center" }}>
                         <WinDonut wins={st.wins} losses={st.losses} />
+                        {((selected.wins_atk||0)+(selected.losses_atk||0)+(selected.wins_def||0)+(selected.losses_def||0))>0 && (<>
+                          <div className="stat-box" style={{padding:"8px 10px"}}>
+                            <div className="stat-val" style={{fontSize:15,color:"var(--orange)"}}>{selected.wins_atk||0}W/{selected.losses_atk||0}L</div>
+                            <div className="stat-lbl">ATK</div>
+                          </div>
+                          <div className="stat-box" style={{padding:"8px 10px"}}>
+                            <div className="stat-val" style={{fontSize:15,color:"var(--blue)"}}>{selected.wins_def||0}W/{selected.losses_def||0}L</div>
+                            <div className="stat-lbl">DEF</div>
+                          </div>
+                        </>)}
                         <div className="stat-box" style={{ padding: "8px 12px" }}>
                           <div className="stat-lbl">Avg gain</div>
                           <div className="stat-val am" style={{ fontSize: 20 }}>+{st.avgGain}</div>
@@ -3783,6 +3892,20 @@ function StatsView({ state, onSelectPlayer }) {
                           <div className="stat-lbl">Avg loss</div>
                           <div className="stat-val" style={{ fontSize: 20, color: "var(--red)" }}>−{st.avgLoss}</div>
                         </div>
+                        {((selected.wins_atk||0)+(selected.losses_atk||0) > 0) && (
+                          <div className="stat-box" style={{ padding: "8px 12px" }}>
+                            <div className="stat-lbl">ATK</div>
+                            <div className="stat-val" style={{ fontSize: 16, color: "var(--orange)" }}>{selected.wins_atk||0}W / {selected.losses_atk||0}L</div>
+                            <div className="xs text-dd" style={{marginTop:2}}>{selected.mmr_atk||selected.mmr} MMR</div>
+                          </div>
+                        )}
+                        {((selected.wins_def||0)+(selected.losses_def||0) > 0) && (
+                          <div className="stat-box" style={{ padding: "8px 12px" }}>
+                            <div className="stat-lbl">DEF</div>
+                            <div className="stat-val" style={{ fontSize: 16, color: "var(--blue)" }}>{selected.wins_def||0}W / {selected.losses_def||0}L</div>
+                            <div className="xs text-dd" style={{marginTop:2}}>{selected.mmr_def||selected.mmr} MMR</div>
+                          </div>
+                        )}
                         <div className="stat-box" style={{ padding: "8px 12px" }}>
                           <div className="stat-lbl">Best streak</div>
                           <div className="stat-val" style={{ fontSize: 20 }}>▲{st.longestStreak}</div>
@@ -3949,7 +4072,10 @@ function TeamBalancer({ players }) {
               <div key={p.id} className={`player-chip ${sel ? "sel-a" : ""} ${full ? "disabled" : ""}`}
                 onClick={() => !full && toggle(p.id)}>
                 <span>{p.name}</span>
-                <span className="xs text-dd">{p.mmr || 1000} MMR · {p.pts || 0}pts</span>
+                <span className="xs text-dd">
+                  {p.mmr||1000} MMR{((p.wins_atk||0)+(p.losses_atk||0)+(p.wins_def||0)+(p.losses_def||0))>0 &&
+                    <> · <span style={{color:"var(--orange)"}}>A:{p.mmr_atk}</span>/<span style={{color:"var(--blue)"}}>D:{p.mmr_def}</span></>} · {p.pts||0}pts
+                </span>
               </div>
             );
           })}
@@ -3994,7 +4120,7 @@ function TeamBalancer({ players }) {
   );
 }
 
-const EMPTY_ROW = () => ({ id: crypto.randomUUID(), sideA: [], sideB: [], scoreA: "", scoreB: "", searchA: "", searchB: "", penalties: {} });
+const EMPTY_ROW = () => ({ id: crypto.randomUUID(), sideA: [], sideB: [], scoreA: "", scoreB: "", searchA: "", searchB: "", penalties: {}, roles: {} });
 
 function LogView({ state, setState, showToast }) {
   const [rows, setRows] = useState([EMPTY_ROW()]);
@@ -4036,6 +4162,17 @@ function LogView({ state, setState, showToast }) {
     }));
   }
 
+  function setRole(rowId, pid, role) {
+    setRows(r => r.map(row => row.id !== rowId ? row : { ...row, roles: { ...row.roles, [pid]: role } }));
+  }
+
+  function autoAssignRole(rowId, pid) {
+    const pref = state.players.find(p => p.id === pid)?.preferredRole;
+    if (pref === 'ATK' || pref === 'DEF') {
+      setRows(r => r.map(row => row.id !== rowId ? row : { ...row, roles: { ...row.roles, [pid]: pref } }));
+    }
+  }
+
   function togglePlayer(rowId, side, pid) {
     setRows(r =>
       r.map(row => {
@@ -4045,9 +4182,11 @@ function LogView({ state, setState, showToast }) {
         const other = side === "A" ? "sideB" : "sideA";
         const otherFiltered = row[other].filter(id => id !== pid);
 
-        if (row[key].includes(pid)) return { ...row, [key]: row[key].filter(id => id !== pid) };
+        if (row[key].includes(pid)) {
+          const nr = { ...row.roles }; delete nr[pid];
+          return { ...row, [key]: row[key].filter(id => id !== pid), roles: nr };
+        }
         if (row[key].length >= 2) return row;
-        // Auto-clear search after selecting
         return { ...row, [key]: [...row[key], pid], [other]: otherFiltered, [searchKey]: "" };
       })
     );
@@ -4092,6 +4231,15 @@ function LogView({ state, setState, showToast }) {
       const sA = parseInt(row.scoreA, 10), sB = parseInt(row.scoreB, 10);
       if (isNaN(sA) || isNaN(sB) || sA < 0 || sB < 0) { newErrors[row.id] = "Invalid scores"; continue; }
       if (sA === sB) { newErrors[row.id] = "No draws allowed"; continue; }
+      if (row.sideA.length === 2 && row.sideB.length === 2) {
+        const allR = [...row.sideA, ...row.sideB].map(pid => row.roles?.[pid]).filter(Boolean);
+        if (allR.length > 0 && allR.length < 4) { newErrors[row.id] = "Assign ATK/DEF to all 4 players or leave all blank"; continue; }
+        if (allR.length === 4) {
+          const atkA = row.sideA.filter(pid => row.roles?.[pid]==="ATK").length;
+          const atkB = row.sideB.filter(pid => row.roles?.[pid]==="ATK").length;
+          if (atkA !== 1 || atkB !== 1) { newErrors[row.id] = "Each side needs exactly 1 ATK and 1 DEF"; continue; }
+        }
+      }
     }
 
     setErrors(newErrors);
@@ -4268,6 +4416,7 @@ function LogView({ state, setState, showToast }) {
         ptsGain: avgGain, ptsLoss: avgLoss, mmrGain: avgGain, mmrLoss: avgLoss,
         perPlayerGains, perPlayerLosses, perPlayerFactors,
         ...(gamePenalties ? { penalties: gamePenalties } : {}),
+        roles: Object.keys(row.roles||{}).length === 4 ? { ...row.roles } : {},
         date: new Date().toISOString(), monthKey
       });
     }
@@ -4404,12 +4553,23 @@ function LogView({ state, setState, showToast }) {
                       <div className="lbl" style={{ color: "var(--green)" }}>Side A {row.sideA.length}/2</div>
                       {row.sideA.length > 0 && (
                         <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 5 }}>
-                          {row.sideA.map(id => (
-                            <span key={id} className="tag tag-w" style={{ cursor: "pointer", fontSize: 11 }}
-                              onClick={() => togglePlayer(row.id, "A", id)}>
-                              {pName(id, state.players)} ×
-                            </span>
-                          ))}
+                          {row.sideA.map(id => {
+                            const role = row.roles?.[id];
+                            return (
+                              <div key={id} style={{display:"flex",alignItems:"center",gap:3}}>
+                                <span className="tag tag-w" style={{ cursor:"pointer", fontSize:11 }}
+                                  onClick={() => togglePlayer(row.id, "A", id)}>
+                                  {pName(id, state.players)} ×
+                                </span>
+                                <button className={`role-tag ${role==="ATK"?"role-atk":"role-def"}`}
+                                  style={{background:"none",outline:role?"":"1px solid var(--b2)",opacity:role?1:0.42,cursor:"pointer"}}
+                                  title={role?`Playing ${role} — click to swap`:"Assign role"}
+                                  onClick={(e)=>{e.stopPropagation();setRole(row.id,id,role==="ATK"?"DEF":role==="DEF"?"ATK":"ATK");}}>
+                                  {role||"?"}
+                                </button>
+                              </div>
+                            );
+                          })}
                         </div>
                       )}
                       <input
@@ -4426,7 +4586,7 @@ function LogView({ state, setState, showToast }) {
                             if (onA) return null; // already shown above as tag
                             return (
                               <div key={p.id} className={`player-chip ${onB || full ? "disabled" : ""}`}
-                                onClick={() => !onB && !full ? togglePlayer(row.id, "A", p.id) : null}>
+                                onClick={() => { if (!onB && !full) { togglePlayer(row.id, "A", p.id); autoAssignRole(row.id, p.id); } }}>
                                 <span>{p.name}</span>
                                 <span className="xs text-dd">{p.pts || 0}pts</span>
                               </div>
@@ -4492,12 +4652,23 @@ function LogView({ state, setState, showToast }) {
                       <div className="lbl" style={{ color: "var(--blue)" }}>Side B {row.sideB.length}/2</div>
                       {row.sideB.length > 0 && (
                         <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 5 }}>
-                          {row.sideB.map(id => (
-                            <span key={id} className="tag tag-b" style={{ cursor: "pointer", fontSize: 11 }}
-                              onClick={() => togglePlayer(row.id, "B", id)}>
-                              {pName(id, state.players)} ×
-                            </span>
-                          ))}
+                          {row.sideB.map(id => {
+                            const role = row.roles?.[id];
+                            return (
+                              <div key={id} style={{display:"flex",alignItems:"center",gap:3}}>
+                                <span className="tag tag-b" style={{ cursor:"pointer", fontSize:11 }}
+                                  onClick={() => togglePlayer(row.id, "B", id)}>
+                                  {pName(id, state.players)} ×
+                                </span>
+                                <button className={`role-tag ${role==="ATK"?"role-atk":"role-def"}`}
+                                  style={{background:"none",outline:role?"":"1px solid var(--b2)",opacity:role?1:0.42,cursor:"pointer"}}
+                                  title={role?`Playing ${role} — click to swap`:"Assign role"}
+                                  onClick={(e)=>{e.stopPropagation();setRole(row.id,id,role==="ATK"?"DEF":role==="DEF"?"ATK":"ATK");}}>
+                                  {role||"?"}
+                                </button>
+                              </div>
+                            );
+                          })}
                         </div>
                       )}
                       <input
@@ -4514,7 +4685,7 @@ function LogView({ state, setState, showToast }) {
                             if (onB) return null;
                             return (
                               <div key={p.id} className={`player-chip ${onA || full ? "disabled" : ""}`}
-                                onClick={() => !onA && !full ? togglePlayer(row.id, "B", p.id) : null}>
+                                onClick={() => { if (!onA && !full) { togglePlayer(row.id, "B", p.id); autoAssignRole(row.id, p.id); } }}>
                                 <span>{p.name}</span>
                                 <span className="xs text-dd">{p.pts || 0}pts</span>
                               </div>
