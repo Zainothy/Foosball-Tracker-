@@ -5138,94 +5138,36 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
     return () => clearInterval(id);
   }, []);
 
-  function getCountdown() {
-    let target;
-    if (state.finalsDate) {
-      target = new Date(state.finalsDate);
-    } else {
-      const n = new Date();
-      target = new Date(n.getFullYear(), n.getMonth() + 1, 0, 23, 59, 59);
+  // Manual bracket builder — sequential team picking
+  const [slots, setSlots] = useState({ upperA: [], upperB: [] });
+  const pickingTeam = slots.upperA.length < 2 ? 'upperA' : slots.upperB.length < 2 ? 'upperB' : null;
+
+  function pickPlayer(pid) {
+    if (!pickingTeam) return;
+    setSlots(prev => ({ ...prev, [pickingTeam]: [...prev[pickingTeam], pid] }));
+  }
+
+  function removeFromSlot(team, pid) {
+    if (team === 'upperA') setSlots({ upperA: slots.upperA.filter(x => x !== pid), upperB: [] });
+    else setSlots(prev => ({ ...prev, upperB: prev.upperB.filter(x => x !== pid) }));
+  }
+
+  function confirmManual() {
+    if (slots.upperA.length !== 2 || slots.upperB.length !== 2) {
+      showToast('Each team needs exactly 2 players', 'error'); return;
     }
-    const diff = Math.max(0, target - new Date());
-    return {
-      days: Math.floor(diff / 864e5),
-      hours: Math.floor((diff / 36e5) % 24),
-      mins: Math.floor((diff / 6e4) % 60),
-      secs: Math.floor((diff / 1e3) % 60),
-      diff,
-    };
-  }
-
-  const { days: cdDays, hours: cdHours, mins: cdMins, secs: cdSecs, diff: cdDiff } = getCountdown();
-  const cdColour = cdDiff < 864e5 ? "var(--red)" : cdDiff < 7 * 864e5 ? "var(--orange)" : "var(--amber)";
-
-  function Countdown({ compact }) {
-    const pad = n => String(n).padStart(2, "0");
-    if (compact) return (
-      <span style={{ color: cdColour, fontFamily: "var(--disp)", fontWeight: 800 }}>
-        {cdDays}d {cdHours}h {cdMins}m
-      </span>
-    );
-    return (
-      <div style={{ textAlign: "center" }}>
-        <div className="cd-wrap">
-          {cdDays > 0 && <>
-            <div className="cd-unit"><div className="cd-num" style={{ color: cdColour }}>{pad(cdDays)}</div><div className="cd-lbl">Days</div></div>
-            <div className="cd-sep">:</div>
-          </>}
-          <div className="cd-unit"><div className="cd-num" style={{ color: cdColour }}>{pad(cdHours)}</div><div className="cd-lbl">Hours</div></div>
-          <div className="cd-sep">:</div>
-          <div className="cd-unit"><div className="cd-num" style={{ color: cdColour }}>{pad(cdMins)}</div><div className="cd-lbl">Mins</div></div>
-          <div className="cd-sep">:</div>
-          <div className="cd-unit"><div className="cd-num" style={{ color: cdColour }}>{pad(cdSecs)}</div><div className="cd-lbl">Secs</div></div>
-        </div>
-      </div>
-    );
-  }
-
-  // ── BRACKET SEEDING — position-aware ─────────────────────
-  // Scores all 3 splits: (1) position balance, (2) MMR balance, (3) standard seeding tiebreak
-  function buildBracket(pool) {
-    if (pool.length < 4) return null;
-    const [p0, p1, p2, p3] = pool;
-    const roles = pos => { const s = new Set();[].concat(pos || []).forEach(p => { if (p === "attack") s.add("atk"); if (p === "defense") s.add("def"); if (p === "both" || p === "flex") { s.add("atk"); s.add("def"); } }); return s; };
-    const posScore = (a, b) => { const ra = roles(a.position), rb = roles(b.position); if (!ra.size && !rb.size) return 1; if (!ra.size || !rb.size) return 1; return (ra.has("atk") || rb.has("atk")) && (ra.has("def") || rb.has("def")) ? 2 : 0; };
-    const splits = [{ a: [p0, p1], b: [p2, p3] }, { a: [p0, p2], b: [p1, p3] }, { a: [p0, p3], b: [p1, p2] }];
-    const score = ({ a, b }) => [posScore(a[0], a[1]) + posScore(b[0], b[1]), -Math.abs(((a[0].mmr || 1000) + (a[1].mmr || 1000)) / 2 - ((b[0].mmr || 1000) + (b[1].mmr || 1000)) / 2)];
-    const best = splits.reduce((acc, s) => { const [ap, am] = score(acc), [bp, bm] = score(s); return bp > ap || (bp === ap && bm > am) ? s : acc; });
-    return { teamA: [best.a[0].id, best.a[1].id], teamB: [best.b[0].id, best.b[1].id] };
-  }
-
-  // Only placed players can be in the bracket
-  const placedRanked = ranked.filter(p => (state.monthlyPlacements[monthKey] || {})[p.id] >= CONFIG.MAX_PLACEMENTS_PER_MONTH);
-  const upperPool = placedRanked.slice(0, 4);
-  const lowerPool = placedRanked.slice(4, 8);
-
-  const previewUpper = upperPool.length >= 4 ? buildBracket(upperPool) : null;
-  const previewLower = lowerPool.length >= 4 ? buildBracket(lowerPool) : null;
-
-  // ── INIT FINALS ───────────────────────────────────────────
-  function initFinals() {
-    if (placedRanked.length < 4) { showToast("Need at least 4 placed players", "error"); return; }
-
-    const upper = buildBracket(upperPool);
-    const lower = lowerPool.length >= 4 ? buildBracket(lowerPool) : null;
-
     const bracket = {
-      upper: { sideA: upper.teamA, sideB: upper.teamB, winner: null, scoreA: null, scoreB: null },
-      lower: lower ? { sideA: lower.teamA, sideB: lower.teamB, winner: null, scoreA: null, scoreB: null } : null,
+      upper: { sideA: slots.upperA, sideB: slots.upperB, winner: null, scoreA: null, scoreB: null },
+      lower: null,
       final: { sideA: null, sideB: null, winner: null, scoreA: null, scoreB: null },
-      champion: null
+      champion: null,
     };
-
-    setState(s => ({
-      ...s,
-      finals: { ...(s.finals ?? {}), [monthKey]: { bracket, status: "semis" } }
-    }));
-    showToast("Bracket generated!");
+    setState(s => ({ ...s, finals: { ...(s.finals ?? {}), [monthKey]: { bracket, status: 'semis' } } }));
+    showToast('Bracket set!');
+    setManualMode(false);
+    setSlots({ upperA: [], upperB: [] });
   }
 
-  // ── RECORD RESULT ─────────────────────────────────────────
   function recordResult(match, winnerSide, sA, sB) {
     setState(s => {
       const f = { ...(s.finals?.[monthKey] ?? {}) };
@@ -5451,14 +5393,94 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
           {cdDiff >= 864e5 && cdDiff < 7 * 864e5 && <div className="tag tag-a" style={{ marginBottom: 16, fontSize: 11, letterSpacing: 2 }}>⚡ Finals this week</div>}
           <FinalsDateEditor finalsDate={state.finalsDate} setState={setState} showToast={showToast} isAdmin={isAdmin} />
           <div className="mt12">
-            {placedRanked.length >= 4
-              ? isAdmin && (
-                <div style={{ marginTop: 12 }}>
-                  <div className="xs text-dd" style={{ marginBottom: 6 }}>Top 4 placed players by points will be seeded into the bracket.</div>
-                  <button className="btn btn-p" onClick={initFinals}>⚡ Generate Bracket</button>
+            {isAdmin && (
+              <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {placedRanked.length >= 4 && (
+                  <div>
+                    <div className="xs text-dd" style={{ marginBottom: 6 }}>Auto-seed: top 4 placed players by points.</div>
+                    <button className="btn btn-p" onClick={initFinals}>⚡ Generate Bracket</button>
+                  </div>
+                )}
+                <div>
+                  <div className="xs text-dd" style={{ marginBottom: 6 }}>Manual: pick any players for each semi-final.</div>
+                  <button className="btn btn-g" onClick={() => { setManualMode(m => !m); setSlots({ upperA: [], upperB: [] }); }}>
+                    {manualMode ? '✕ Cancel' : '✏ Set Bracket Manually'}
+                  </button>
                 </div>
-              )
-              : <div className="msg msg-e" style={{ display: "inline-block" }}>Need at least 4 placed players</div>}
+                {!placedRanked.length && !manualMode && (
+                  <div className="msg msg-e" style={{ display: 'inline-block' }}>No placed players yet</div>
+                )}
+              </div>
+            )}
+
+            {/* Manual bracket builder — sequential team picking */}
+            {manualMode && isAdmin && (() => {
+              const usedIds = [...slots.upperA, ...slots.upperB];
+              const unassigned = ranked.filter(p => !usedIds.includes(p.id));
+              const teamLabel = t => slots[t].map(id => pName(id, state.players).split(' ')[0]).join(' & ') || '—';
+              const stepA = slots.upperA.length < 2;
+              const stepB = !stepA && slots.upperB.length < 2;
+              const done = slots.upperA.length === 2 && slots.upperB.length === 2;
+              return (
+                <div style={{ marginTop: 12, padding: 14, background: 'var(--s2)', borderRadius: 8, border: '1px solid var(--b2)' }}>
+                  {/* Step indicator */}
+                  <div className="fac" style={{ gap: 10, marginBottom: 14 }}>
+                    {[['Team 1', 'upperA', stepA], ['Team 2', 'upperB', stepB]].map(([label, key, active]) => (
+                      <div key={key} style={{
+                        flex: 1, padding: '8px 12px', borderRadius: 6, textAlign: 'center',
+                        border: `1px solid ${active ? 'var(--amber-d)' : slots[key].length === 2 ? 'var(--green)' : 'var(--b2)'}`,
+                        background: active ? 'rgba(232,184,74,.07)' : 'var(--s1)',
+                      }}>
+                        <div className="xs" style={{ color: active ? 'var(--amber)' : slots[key].length === 2 ? 'var(--green)' : 'var(--dimmer)', fontWeight: 700, marginBottom: 3 }}>
+                          {active ? `▸ Pick ${label}` : label}
+                        </div>
+                        <div style={{ fontWeight: 600, fontSize: 13 }}>
+                          {slots[key].length === 0
+                            ? <span className="text-dd" style={{ fontStyle: 'italic', fontSize: 11 }}>empty</span>
+                            : slots[key].map(id => (
+                              <span key={id} className="tag tag-w" style={{ cursor: 'pointer', fontSize: 11, marginRight: 3 }}
+                                onClick={() => removeFromSlot(key, id)}>
+                                {pName(id, state.players).split(' ')[0]} ×
+                              </span>
+                            ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Player list — only unassigned shown */}
+                  {!done && (
+                    <>
+                      <div className="xs text-dd" style={{ marginBottom: 6 }}>
+                        {stepA ? 'Pick 2 players for Team 1' : 'Pick 2 players for Team 2'}
+                        {' '}({2 - (stepA ? slots.upperA : slots.upperB).length} remaining)
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 3, maxHeight: 200, overflowY: 'auto', marginBottom: 10 }}>
+                        {unassigned.map(p => (
+                          <div key={p.id} className="player-chip" style={{ cursor: 'pointer' }} onClick={() => pickPlayer(p.id)}>
+                            <span style={{ fontWeight: 600 }}>{p.name}</span>
+                            <span className="xs text-dd">{p.pts || 0}pts · {p.mmr || 1000} MMR</span>
+                          </div>
+                        ))}
+                        {unassigned.length === 0 && <div className="xs text-dd">All players assigned</div>}
+                      </div>
+                    </>
+                  )}
+
+                  {/* Actions */}
+                  <div className="fac" style={{ gap: 8 }}>
+                    {done && (
+                      <button className="btn btn-p" onClick={confirmManual}>
+                        ✓ Set {teamLabel('upperA')} vs {teamLabel('upperB')}
+                      </button>
+                    )}
+                    <button className="btn btn-g" onClick={() => setSlots({ upperA: [], upperB: [] })}>
+                      {done ? 'Repick' : 'Clear'}
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         </div>
 
