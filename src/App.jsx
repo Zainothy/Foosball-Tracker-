@@ -45,7 +45,8 @@ const CONFIG = {
 
   // Loss harshness — nudged up to match higher gain baseline
   // Losses feel meaningful without being devastating for underdogs
-  LOSS_HARSHNESS: 1.08,         // was 1.05
+  LOSS_HARSHNESS: 1.08,
+  ROLE_ALIGN_BONUS: 1.12,   // gain ×1.12 / loss ÷1.12 when playing preferred role; inverse when out of position         // was 1.05
 
   MAX_PLACEMENTS_PER_MONTH: 5,  // per player per calendar month
 
@@ -275,6 +276,29 @@ This is the official ranked table football leaderboard. Games are logged by admi
 - Points lost depend on the score difference and the points gap between you and your opponent.
 - Winning streaks amplify gains. Losing streaks amplify losses.
 
+## Positions (ATK / DEF)
+Each player is assigned a position for every game: **Attacker** or **Defender**.
+
+- **Attacker (🗡 ATK)** — controls the 3-bar (strikers) and 5-bar (midfield). Primary role: score goals.
+- **Defender (🛡 DEF)** — controls the 2-bar (defence) and 1-bar (goalkeeper). Primary role: prevent goals.
+
+Positions are logged by an admin when the game is recorded. Each side must have exactly one ATK and one DEF.
+
+### Position Swapping
+A player may only swap position **once per game**, and only at the **halfway point** — when their team has scored **5 goals** (half of the 10-goal win condition).
+
+> **Example:** Your team leads 5–3. You and your teammate swap bars. This is permitted. You may not swap again.
+
+**If a swap occurs, the entire game must be logged as FLEX for the swapping player.** FLEX games do not affect ATK or DEF MMR — only overall points and MMR are updated. This prevents mid-game role mixing from corrupting positional statistics.
+
+| Team score at swap | Legal? | Logged as |
+|---|---|---|
+| 5 (your team) | ✓ Yes | FLEX |
+| 4 or fewer | ✗ No | — |
+| After swap (any) | ✗ No | — |
+
+If no swap occurs, positions are logged normally and both ATK and DEF MMR tracks update.
+
 ## Monthly Finals
 At the end of each month, the top 4 players enter a bracket:
 - Semi 1: #1 vs #2
@@ -496,6 +520,7 @@ function replayGames(basePlayers, games, seasonStart) {
           rankScale: +playerDeltas[id].rankScale.toFixed(3),
           matchQuality: +playerDeltas[id].matchQuality.toFixed(3),
           qualityScore: +playerDeltas[id].qualityScore.toFixed(3),
+          roleMult: +((playerDeltas[id].roleMult)||1).toFixed(3),
         };
       }
     });
@@ -507,6 +532,7 @@ function replayGames(basePlayers, games, seasonStart) {
           rankScale: +playerDeltas[id].rankScale.toFixed(3),
           matchQuality: +playerDeltas[id].matchQuality.toFixed(3),
           qualityScore: +playerDeltas[id].qualityScore.toFixed(3),
+          roleMult: +((playerDeltas[id].roleMult)||1).toFixed(3),
         };
       }
     });
@@ -555,7 +581,7 @@ function replayGames(basePlayers, games, seasonStart) {
 //    - MMR=favourite, rank=underdog: blend but cap at 1.0 (sandbagging detection)
 //
 function calcPlayerDelta({ winnerScore, loserScore, playerMMR, playerRank,
-  playerStreakPower, oppAvgMMR, oppAvgRank, isWinner }) {
+  playerStreakPower, oppAvgMMR, oppAvgRank, isWinner, playerRole, playerPreferredRole }) {
   // 1. Score dominance — how convincing was the win
   const scoreDiff = winnerScore - loserScore;
   const scoreRatio = scoreDiff / Math.max(winnerScore, 1);
@@ -612,21 +638,30 @@ function calcPlayerDelta({ winnerScore, loserScore, playerMMR, playerRank,
   // qualityScore stored for streak decay and history display
   const qualityScore = matchQuality;
 
+  // 6. Role alignment multiplier
+  // aligned (pref === played): roleMult = ROLE_ALIGN_BONUS  → gain ×bonus, loss ÷bonus
+  // neutral (FLEX, no role):   roleMult = 1.0               → no change
+  // misaligned (pref ≠ played): roleMult = 1/ROLE_ALIGN_BONUS → gain ÷bonus, loss ×bonus
+  const roleMult = (() => {
+    if (!playerRole || !playerPreferredRole || playerPreferredRole === 'FLEX') return 1.0;
+    return playerPreferredRole === playerRole ? CONFIG.ROLE_ALIGN_BONUS : 1 / CONFIG.ROLE_ALIGN_BONUS;
+  })();
+
   if (isWinner) {
-    const gain = Math.max(2, Math.round(CONFIG.BASE_GAIN * scoreMult * matchQuality * mult));
-    return { gain, loss: 0, scoreMult, eloScale, rankScale, matchQuality, streakMultVal: mult, qualityScore };
+    const gain = Math.max(2, Math.round(CONFIG.BASE_GAIN * scoreMult * matchQuality * mult * roleMult));
+    return { gain, loss: 0, scoreMult, eloScale, rankScale, matchQuality, streakMultVal: mult, qualityScore, roleMult };
   } else {
     // Loss formula mirrors gain: (2 - matchQuality) rises when matchQuality falls
     // i.e. a heavy favourite who loses suffers more — symmetrical to Elo
     // Single factor prevents the old (2-eloScale)*(2-rankScale) compounding
     const loss = Math.max(1, Math.round(
-      CONFIG.BASE_LOSS * scoreMult * (2 - matchQuality) * mult * CONFIG.LOSS_HARSHNESS
+      CONFIG.BASE_LOSS * scoreMult * (2 - matchQuality) * mult * CONFIG.LOSS_HARSHNESS / roleMult
     ));
     return { gain: 0, loss, scoreMult, eloScale, rankScale, matchQuality, streakMultVal: mult, qualityScore };
   }
 }
 
-// Legacy team-level wrapper used by GameDetail display (summary only)
+//, roleMult }; Legacy team-level wrapper used by GameDetail display (summary only)
 function calcDelta({ winnerScore, loserScore, winnerAvgMMR, loserAvgMMR,
   winnerAvgStreakPower, loserAvgStreakPower, winnerAvgRank, loserAvgRank }) {
   const scoreDiff = winnerScore - loserScore;
@@ -3852,12 +3887,11 @@ function StatsView({ state, onSelectPlayer }) {
   const scopedGames = (state.games || []).filter(g => gameInSeason(g, activeSeason));
   const scopedStats = computeWindowPlayerStats(state.players, scopedGames);
   const sorted = [...state.players]
-    .filter(p => {
-      if (posFilter === "ALL") return true;
-      const r = p.preferredRole || "FLEX";
-      return posFilter === "ATK" ? (r==="ATK"||r==="FLEX") : (r==="DEF"||r==="FLEX");
-    })
-    .sort((a, b) => ((scopedStats[b.id]?.pts || 0) - (scopedStats[a.id]?.pts || 0)));
+    .sort((a, b) => {
+      if (posFilter === "ATK") return (b.mmr_atk||b.mmr||0) - (a.mmr_atk||a.mmr||0);
+      if (posFilter === "DEF") return (b.mmr_def||b.mmr||0) - (a.mmr_def||a.mmr||0);
+      return (scopedStats[b.id]?.pts || 0) - (scopedStats[a.id]?.pts || 0);
+    });
   const selected = state.players.find(p => p.id === selectedId);
 
   function getH2H(pidA, pidB) {
@@ -3958,7 +3992,12 @@ function StatsView({ state, onSelectPlayer }) {
                   <span style={{ fontWeight: 600 }}>{p.name}</span>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <Sparkline pid={p.id} games={scopedGames} />
-                    <span className="xs text-dd">{p.mmr||1000} MMR{((p.wins_atk||0)+(p.losses_atk||0)+(p.wins_def||0)+(p.losses_def||0) > 0) && (<> · <span style={{color:"var(--orange)"}}>A {p.mmr_atk||p.mmr}</span>/<span style={{color:"var(--blue)"}}>D {p.mmr_def||p.mmr}</span></>)} · {scopedStats[p.id]?.pts || 0}pts</span>
+                    <span className="xs text-dd">{posFilter==="ATK"
+                    ? <><span style={{color:"var(--orange)",fontWeight:600}}>🗡 {p.mmr_atk||p.mmr}</span> ATK</>
+                    : posFilter==="DEF"
+                    ? <><span style={{color:"var(--blue)",fontWeight:600}}>🛡 {p.mmr_def||p.mmr}</span> DEF</>
+                    : <>{p.mmr||1000} MMR{((p.wins_atk||0)+(p.losses_atk||0)+(p.wins_def||0)+(p.losses_def||0) > 0) && (<> · <span style={{color:"var(--orange)"}}>A {p.mmr_atk||p.mmr}</span>/<span style={{color:"var(--blue)"}}>D {p.mmr_def||p.mmr}</span></>)}</>
+                  } · {scopedStats[p.id]?.pts || 0}pts</span>
                   </div>
                 </div>
               ))}
@@ -4016,7 +4055,7 @@ function StatsView({ state, onSelectPlayer }) {
                           };
                           if (hasRoleData) return (
                             <>
-                              <div className="stat-box" style={{padding:"8px 10px"}}>
+                              <div className="stat-box" style={{padding:"8px 10px", outline: posFilter==="ATK" ? "2px solid var(--orange)" : "none"}}>
                                 <div className="stat-lbl">ATK avg</div>
                                 <div className="fac" style={{gap:4,marginTop:2}}>
                                   {roleAvg(atkGames,"win")!=null && <span className="stat-val am" style={{fontSize:16}}>+{roleAvg(atkGames,"win")}</span>}
@@ -4024,7 +4063,7 @@ function StatsView({ state, onSelectPlayer }) {
                                   {atkGames.length===0 && <span className="xs text-dd">no games</span>}
                                 </div>
                               </div>
-                              <div className="stat-box" style={{padding:"8px 10px"}}>
+                              <div className="stat-box" style={{padding:"8px 10px", outline: posFilter==="DEF" ? "2px solid var(--blue)" : "none"}}>
                                 <div className="stat-lbl">DEF avg</div>
                                 <div className="fac" style={{gap:4,marginTop:2}}>
                                   {roleAvg(defGames,"win")!=null && <span className="stat-val am" style={{fontSize:16}}>+{roleAvg(defGames,"win")}</span>}
