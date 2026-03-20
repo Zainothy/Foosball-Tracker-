@@ -3457,34 +3457,27 @@ function OnboardView({ state, setState, showToast }) {
         <div className="card-header">
           <span className="card-title">Current Roster ({state.players.length})</span>
         </div>
-        <div className="tbl-wrap">
-          <table className="tbl">
-            <thead>
-              <tr><th>#</th><th>Name</th><th>Points</th><th>W/L</th><th></th></tr>
-            </thead>
-            <tbody>
-              {[...state.players]
-                .sort((a, b) => (b.pts || 0) - (a.pts || 0))
-                .map((p, i) => (
-                  <tr key={p.id}>
-                    <td><span className="rk">#{i + 1}</span></td>
-                    <td><span className="bold">{p.name}</span></td>
-                    <td><span className="text-am bold">{p.pts || 0}</span></td>
-                    <td>
-                      <span className="text-g">{p.wins}</span>
-                      <span className="text-dd">/</span>
-                      <span className="text-r">{p.losses}</span>
-                    </td>
-                    <td>
-                      <button className="btn btn-d btn-sm" onClick={() => removePlayer(p.id)}>Remove</button>
-                    </td>
-                  </tr>
-                ))}
-              {state.players.length === 0 && (
-                <tr><td colSpan={5} style={{ textAlign: "center", padding: 32, color: "var(--dimmer)" }}>No players yet</td></tr>
-              )}
-            </tbody>
-          </table>
+        <div style={{ padding: "8px 14px 14px" }}>
+          {state.players.length === 0 && (
+            <div style={{ textAlign: "center", padding: 24, color: "var(--dimmer)", fontSize: 12 }}>No players yet</div>
+          )}
+          {[...state.players]
+            .sort((a, b) => (b.pts || 0) - (a.pts || 0))
+            .map((p, i) => (
+              <div key={p.id} style={{
+                display: "flex", alignItems: "center", gap: 10,
+                padding: "9px 4px", borderBottom: "1px solid var(--b1)"
+              }}>
+                <span className="rk" style={{ minWidth: 28, flexShrink: 0 }}>#{i + 1}</span>
+                <span className="bold" style={{ flex: 1, fontSize: 13 }}>{p.name}</span>
+                <span className="text-am bold" style={{ fontSize: 13, minWidth: 36, textAlign: "right" }}>{p.pts || 0}</span>
+                <span style={{ fontSize: 12, color: "var(--dimmer)", minWidth: 44, textAlign: "right" }}>
+                  <span className="text-g">{p.wins}</span>/<span className="text-r">{p.losses}</span>
+                </span>
+                <button className="btn btn-d btn-sm" style={{ flexShrink: 0 }}
+                  onClick={() => removePlayer(p.id)}>Remove</button>
+              </div>
+            ))}
         </div>
       </div>
 
@@ -5139,6 +5132,7 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
   }, []);
 
   // Manual bracket builder — sequential team picking
+  const [manualMode, setManualMode] = useState(false);
   const [slots, setSlots] = useState({ upperA: [], upperB: [] });
   const pickingTeam = slots.upperA.length < 2 ? 'upperA' : slots.upperB.length < 2 ? 'upperB' : null;
 
