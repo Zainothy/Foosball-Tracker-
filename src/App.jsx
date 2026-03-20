@@ -5131,6 +5131,55 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
     return () => clearInterval(id);
   }, []);
 
+  function getCountdown() {
+    const pad = n => String(Math.max(0, Math.floor(n))).padStart(2, "0");
+    let target;
+    if (state.finalsDate) {
+      target = new Date(state.finalsDate);
+    } else {
+      const now = new Date();
+      target = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+    }
+    const diff = target - Date.now();
+    if (diff <= 0) return { days: "00", hours: "00", mins: "00", secs: "00", diff: 0 };
+    const days  = Math.floor(diff / 86400000);
+    const hours = Math.floor((diff % 86400000) / 3600000);
+    const mins  = Math.floor((diff % 3600000) / 60000);
+    const secs  = Math.floor((diff % 60000) / 1000);
+    return { days: pad(days), hours: pad(hours), mins: pad(mins), secs: pad(secs), diff };
+  }
+
+  const { days: cdDays, hours: cdHours, mins: cdMins, secs: cdSecs, diff: cdDiff } = getCountdown();
+  const cdColour = cdDiff < 86400000 ? "var(--red)" : cdDiff < 7 * 86400000 ? "var(--orange)" : "var(--green)";
+
+  function Countdown({ compact }) {
+    if (compact) return (
+      <div className="xs text-dd" style={{ marginTop: 4 }}>
+        {cdDays}d {cdHours}h {cdMins}m
+      </div>
+    );
+    return (
+      <div className="cd-wrap">
+        <div className="cd-unit">
+          <div className="cd-num" style={{ color: cdColour }}>{cdDays}</div>
+          <div className="cd-lbl">Days</div>
+        </div>
+        <div className="cd-unit">
+          <div className="cd-num" style={{ color: cdColour }}>{cdHours}</div>
+          <div className="cd-lbl">Hours</div>
+        </div>
+        <div className="cd-unit">
+          <div className="cd-num" style={{ color: cdColour }}>{cdMins}</div>
+          <div className="cd-lbl">Mins</div>
+        </div>
+        <div className="cd-unit">
+          <div className="cd-num" style={{ color: cdColour, fontSize: 28 }}>{cdSecs}</div>
+          <div className="cd-lbl">Secs</div>
+        </div>
+      </div>
+    );
+  }
+
   // Manual bracket builder — sequential team picking
   const [manualMode, setManualMode] = useState(false);
   const [slots, setSlots] = useState({ upperA: [], upperB: [] });
