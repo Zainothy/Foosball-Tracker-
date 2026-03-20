@@ -4519,140 +4519,53 @@ function LogView({ state, setState, showToast }) {
     const snapshot = { players: state.players, games: state.games, monthlyPlacements: state.monthlyPlacements };
     setUndoStack(u => [snapshot, ...u].slice(0, 5));
 
-    let newPlayers = [...state.players];
-    const newGames = [];
-    const newPlacements = { ...state.monthlyPlacements, [monthKey]: { ...(state.monthlyPlacements?.[monthKey] || {}) } };
-
-    for (const row of rows) {
+    // Build the new game objects (metadata only — no deltas yet)
+    const pendingGames = rows.map(row => {
       const sA = parseInt(row.scoreA, 10), sB = parseInt(row.scoreB, 10);
       const winner = sA > sB ? "A" : "B";
-      const winnerIds = winner === "A" ? row.sideA : row.sideB;
-      const loserIds = winner === "A" ? row.sideB : row.sideA;
-      const winnerScore = Math.max(sA, sB), loserScore = Math.min(sA, sB);
-
-      // Rank positions before this game — only meaningful for placed players
-      const currentRanked = [...newPlayers].sort((a, b) => (b.pts || 0) - (a.pts || 0));
-      const rankOf = id => currentRanked.findIndex(p => p.id === id);
-      const placementsBefore = { ...newPlacements[monthKey] };
-      const isPlacedBefore = pid => (placementsBefore[pid] || 0) >= CONFIG.MAX_PLACEMENTS_PER_MONTH;
-
-      // Rank avg only over placed opponents — null if none are placed
-      const oppAvgRankPlaced = ids => {
-        const placed = ids.filter(isPlacedBefore);
-        if (!placed.length) return null;
-        return placed.reduce((s, id) => s + rankOf(id), 0) / placed.length;
-      };
-
-      // Per-player deltas
-      const oppWinMMR = avg(winnerIds, newPlayers, "mmr");
-      const oppLosMMR = avg(loserIds, newPlayers, "mmr");
-      const oppWinRankPlaced = oppAvgRankPlaced(winnerIds);
-      const oppLosRankPlaced = oppAvgRankPlaced(loserIds);
-      const allPids = [...winnerIds, ...loserIds];
-      const playerDeltas = {};
-      allPids.forEach(pid => {
-        const p = newPlayers.find(x => x.id === pid);
-        if (!p) return;
-        const isWin = winnerIds.includes(pid);
-        const myPlaced = isPlacedBefore(pid);
-        const oppRankPlaced = isWin ? oppLosRankPlaced : oppWinRankPlaced;
-        playerDeltas[pid] = calcPlayerDelta({
-          winnerScore, loserScore,
-          playerMMR: p.mmr,
-          playerRank: myPlaced ? rankOf(pid) : null,
-          playerStreakPower: p.streakPower || 0,
-          oppAvgMMR: isWin ? oppLosMMR : oppWinMMR,
-          oppAvgRank: (myPlaced && oppRankPlaced !== null) ? oppRankPlaced : null,
-          isWinner: isWin,
-        });
-      });
-
-      newPlayers = newPlayers.map(p => {
-        const isWinner = winnerIds.includes(p.id);
-        const isLoser = loserIds.includes(p.id);
-        if (!isWinner && !isLoser) return p;
-        const d = playerDeltas[p.id];
-        const placedBefore = (placementsBefore[p.id] || 0) >= CONFIG.MAX_PLACEMENTS_PER_MONTH;
-        if (isWinner) {
-          const ns = (p.streak || 0) >= 0 ? (p.streak || 0) + 1 : 1;
-          const newPts = placedBefore ? (p.pts || 0) + d.gain : (p.pts || 0);
-          const newPower = updateStreakPower(p.streakPower || 0, true, d.qualityScore || 1);
-          return { ...p, mmr: p.mmr + d.gain, pts: newPts, wins: p.wins + 1, streak: ns, streakPower: newPower };
-        }
-        const ns = (p.streak || 0) <= 0 ? (p.streak || 0) - 1 : -1;
-        const newPts = placedBefore ? Math.max(0, (p.pts || 0) - d.loss) : (p.pts || 0);
-        return { ...p, mmr: Math.max(0, p.mmr - d.loss), pts: newPts, losses: p.losses + 1, streak: ns, streakPower: 0 };
-      });
-
-      // Placements + calibration
-      allPids.forEach(pid => {
-        const before = placementsBefore[pid] || 0;
-        newPlacements[monthKey][pid] = before + 1;
-        if (before + 1 === CONFIG.MAX_PLACEMENTS_PER_MONTH) {
-          const thisPlayer = newPlayers.find(p => p.id === pid);
-          if (thisPlayer) {
-            const placed = newPlayers.filter(p => p.id !== pid && (newPlacements[monthKey][p.id] || 0) >= CONFIG.MAX_PLACEMENTS_PER_MONTH);
-            const byMmr = [...placed].sort((a, b) => (b.mmr || 0) - (a.mmr || 0));
-            const ins = byMmr.findIndex(p => (p.mmr || 0) < (thisPlayer.mmr || 0));
-            const rk = ins === -1 ? byMmr.length : ins;
-            let cal;
-            if (!byMmr.length) cal = Math.round((thisPlayer.mmr - CONFIG.STARTING_MMR) * 0.5);
-            else if (rk === 0) cal = Math.round((byMmr[0].pts || 0) * 1.1 + 5);
-            else if (rk >= byMmr.length) cal = Math.max(0, Math.round((byMmr[byMmr.length - 1].pts || 0) * 0.9 - 5));
-            else cal = Math.round(((byMmr[rk - 1].pts || 0) + (byMmr[rk].pts || 0)) / 2);
-            newPlayers = newPlayers.map(p => p.id === pid ? { ...p, pts: Math.max(0, cal) } : p);
-          }
-        }
-      });
-
-      // Flat per-player maps — survive slimState, enable individual history display
-      const perPlayerGains = {};
-      const perPlayerLosses = {};
-      const perPlayerFactors = {};
-      winnerIds.forEach(id => {
-        if (playerDeltas[id]) {
-          perPlayerGains[id] = playerDeltas[id].gain;
-          perPlayerFactors[id] = {
-            eloScale: +playerDeltas[id].eloScale.toFixed(3),
-            rankScale: +playerDeltas[id].rankScale.toFixed(3),
-            matchQuality: +playerDeltas[id].matchQuality.toFixed(3),
-            qualityScore: +playerDeltas[id].qualityScore.toFixed(3),
-          };
-        }
-      });
-      loserIds.forEach(id => {
-        if (playerDeltas[id]) {
-          perPlayerLosses[id] = playerDeltas[id].loss;
-          perPlayerFactors[id] = {
-            eloScale: +playerDeltas[id].eloScale.toFixed(3),
-            rankScale: +playerDeltas[id].rankScale.toFixed(3),
-            matchQuality: +playerDeltas[id].matchQuality.toFixed(3),
-            qualityScore: +playerDeltas[id].qualityScore.toFixed(3),
-          };
-        }
-      });
-
-      const avgGain = Math.round(winnerIds.reduce((s, id) => s + (playerDeltas[id]?.gain || 0), 0) / Math.max(winnerIds.length, 1));
-      const avgLoss = Math.round(loserIds.reduce((s, id) => s + (playerDeltas[id]?.loss || 0), 0) / Math.max(loserIds.length, 1));
-
-      // Only include penalties if any were set
       const gamePenalties = Object.keys(row.penalties || {}).length > 0 ? row.penalties : undefined;
-
-      newGames.push({
+      return {
         id: crypto.randomUUID(), sideA: row.sideA, sideB: row.sideB,
         winner, scoreA: sA, scoreB: sB,
-        ptsGain: avgGain, ptsLoss: avgLoss, mmrGain: avgGain, mmrLoss: avgLoss,
-        perPlayerGains, perPlayerLosses, perPlayerFactors,
+        roles: Object.keys(row.roles || {}).length === 4 ? { ...row.roles } : {},
         ...(gamePenalties ? { penalties: gamePenalties } : {}),
-        roles: Object.keys(row.roles||{}).length === 4 ? { ...row.roles } : {},
-        date: new Date().toISOString(), monthKey
-      });
-    }
+        date: new Date().toISOString(), monthKey,
+        ptsGain: 0, ptsLoss: 0,
+      };
+    });
 
-    setState(s => ({ ...s, players: newPlayers, games: [...newGames, ...s.games], monthlyPlacements: newPlacements }));
+    // Full replay over all games (existing + new) — single source of truth
+    const basePlayers = state.players.map(p => ({
+      ...p,
+      mmr: CONFIG.STARTING_MMR, pts: CONFIG.STARTING_PTS,
+      mmr_atk: CONFIG.STARTING_MMR, mmr_def: CONFIG.STARTING_MMR,
+      wins: 0, losses: 0, streak: 0, streakPower: 0, lossStreakPower: 0,
+      wins_atk: 0, losses_atk: 0, wins_def: 0, losses_def: 0,
+    }));
+    const allGames = [...state.games, ...pendingGames];
+    const { players: newPlayers, games: newGames } = replayGames(basePlayers, allGames, state.seasonStart);
+
+    // Preserve non-computed fields (name, championships, position, preferredRole)
+    const mergedPlayers = newPlayers.map(p => {
+      const orig = state.players.find(x => x.id === p.id);
+      return orig ? {
+        ...p,
+        name: orig.name,
+        championships: orig.championships || [],
+        position: orig.position || [],
+        preferredRole: orig.preferredRole || "FLEX",
+      } : p;
+    });
+
+    const newPlacements = computePlacements(newGames);
+    // Isolate just the newly logged games (for lastLogged display) with their computed deltas
+    const newGameIds = new Set(pendingGames.map(g => g.id));
+    const loggedWithDeltas = newGames.filter(g => newGameIds.has(g.id));
+
+    setState(s => ({ ...s, players: mergedPlayers, games: newGames, monthlyPlacements: newPlacements }));
     setRows([EMPTY_ROW()]);
-    setLastLogged({ games: newGames, players: newPlayers, timestamp: new Date() });
-    showToast(`${newGames.length} game${newGames.length > 1 ? "s" : ""} logged`, "success");
+    setLastLogged({ games: loggedWithDeltas, players: mergedPlayers, timestamp: new Date() });
+    showToast(`${loggedWithDeltas.length} game${loggedWithDeltas.length > 1 ? "s" : ""} logged`, "success");
 
     clearTimeout(undoTimeout.current);
     undoTimeout.current = setTimeout(() => setUndoStack([]), 30000);
