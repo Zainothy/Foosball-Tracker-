@@ -3515,7 +3515,7 @@ function PtsChart({ pid, games, players, roleFilter }) {
         style={{ overflow: "visible", cursor: "crosshair", display: "block" }}
         onMouseMove={handleMouseMove} onMouseLeave={() => setHovered(null)}>
         <defs>
-          <linearGradient id={`cg-${pid}`} x1="0" y1="0" x2="0" y2="1">
+          <linearGradient id={`cg-${pid}-${roleFilter||"all"}`} x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor={lineCol} stopOpacity="0.22" />
             <stop offset="100%" stopColor={lineCol} stopOpacity="0" />
           </linearGradient>
@@ -3527,7 +3527,7 @@ function PtsChart({ pid, games, players, roleFilter }) {
         ))}
         {minP < 0 && <line x1={PAD} y1={toY(0)} x2={W - PAD} y2={toY(0)} stroke="var(--b2)" strokeWidth="1" strokeDasharray="4,3" />}
         {/* Fill */}
-        <path d={fillD} fill={`url(#cg-${pid})`} />
+        <path d={fillD} fill={`url(#cg-${pid}-${roleFilter||"all"})`} />
         {/* Line */}
         <path d={pathD} fill="none" stroke={lineCol} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
         {/* All dots — small */}
@@ -4029,7 +4029,7 @@ function StatsView({ state, onSelectPlayer }) {
                 <div>
                   <div className="xs text-dd" style={{ marginBottom: 6, letterSpacing: .5, textTransform: "uppercase", fontWeight: 600 }}>{posFilter === "ATK" ? "🗡 ATK points over time" : posFilter === "DEF" ? "🛡 DEF points over time" : "Points over time"}</div>
                   <div style={{ background: "var(--s2)", borderRadius: 8, padding: "10px 12px" }}>
-                    <PtsChart pid={selected.id} games={scopedGames} players={state.players} roleFilter={posFilter} />
+                    <PtsChart key={`${selected.id}-${posFilter}`} pid={selected.id} games={scopedGames} players={state.players} roleFilter={posFilter} />
                   </div>
                 </div>
 
