@@ -169,7 +169,7 @@ This is the official ranked table football leaderboard. Games are logged by admi
 ## Players & Teams
 - All players are ranked individually.
 - Teams are formed per game — you can play with anyone.
-- Each player has **${CONFIG.MAX_PLACEMENTS_PER_MONTH} placement games** per calendar month.
+- Each player has **${CONFIG.MAX_PLACEMENTS_PER_MONTH} placement games** per season.
 
 ## Scoring
 - A standard game is played to **10 goals**.
@@ -552,10 +552,10 @@ function avgWithMap(ids, playerMap, key) {
   return found.reduce((s, p) => s + (p[key] || 0), 0) / found.length;
 }
 
-function computePlacements(games) {
+function computePlacements(games, seasons) {
   const placements = {};
   for (const g of games) {
-    const mk = g.monthKey || g.date?.slice(0, 7)?.replace('-', '') || '';
+    const mk = getGamePlacementKey(g, seasons);
     if (!mk) continue;
     if (!placements[mk]) placements[mk] = {};
     for (const pid of [...g.sideA, ...g.sideB]) {
@@ -565,7 +565,7 @@ function computePlacements(games) {
   return placements;
 }
 
-function replayGames(basePlayers, games, seasonStart) {
+function replayGames(basePlayers, games, seasonStart, seasons) {
   let players = basePlayers.map(p => ({
     ...p, mmr: CONFIG.STARTING_MMR, pts: CONFIG.STARTING_PTS,
     mmr_atk: CONFIG.STARTING_MMR, mmr_def: CONFIG.STARTING_MMR,
@@ -581,7 +581,7 @@ function replayGames(basePlayers, games, seasonStart) {
     const inSeason = !seasonStartDate || !gameDate || gameDate >= seasonStartDate;
     const winIds = g.winner === "A" ? g.sideA : g.sideB;
     const losIds = g.winner === "A" ? g.sideB : g.sideA;
-    const mk = g.monthKey || g.date?.slice(0, 7) || "";
+    const mk = getGamePlacementKey(g, seasons);
     const monthPlacements = placementCount[mk] || {};
     const isPlacedAtGameTime = pid => (monthPlacements[pid] || 0) >= CONFIG.MAX_PLACEMENTS_PER_MONTH;
     const allPids = [...winIds, ...losIds];
@@ -746,6 +746,35 @@ function getMonthKey() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
+
+// Returns the placement bucket key for a specific game.
+// Season-based: if the game date falls within a known season, returns "season_<id>".
+// Legacy fallback: games before any season use their month key so old data is preserved.
+function getGamePlacementKey(game, seasons) {
+  if (!seasons?.length) return game.monthKey || game.date?.slice(0, 7) || '';
+  const gameDate = game.date ? new Date(game.date) : null;
+  if (!gameDate) return game.monthKey || '';
+  // Walk seasons newest-first, find the one that contains this game's date
+  const season = [...seasons]
+    .sort((a, b) => Date.parse(b.startAt) - Date.parse(a.startAt))
+    .find(s => {
+      const start = Date.parse(s.startAt);
+      const end = s.endAt ? Date.parse(s.endAt) : Infinity;
+      return Number.isFinite(start) && gameDate >= new Date(start) && gameDate < new Date(end);
+    });
+  if (season) return `season_${season.id}`;
+  // Pre-season game — use month key so historical data is unaffected
+  return game.monthKey || game.date?.slice(0, 7) || '';
+}
+
+// Returns the placement bucket key to use for display/checks in the current moment.
+// If there is an active season, returns its key; otherwise falls back to calendar month.
+function getCurrentPlacementKey(state) {
+  const currentSeason = getCurrentSeason(state);
+  if (currentSeason?.id) return `season_${currentSeason.id}`;
+  return getMonthKey();
+}
+
 function getCurrentSeason(state) { const seasons = state?.seasons || []; return seasons[seasons.length - 1] || null; }
 function gameInSeason(game, season) {
   if (!season) return true;
@@ -1513,8 +1542,8 @@ function AnnouncementModal({ announcement, onClose }) {
 // ── PLAYER PROFILE ─────────────────────────────────────────────────────────
 
 function PlayerProfile({ player, state, onClose, isAdmin, onEdit, seasonMode, onSeasonModeChange, selectedSeasonId, onSelectedSeasonIdChange }) {
-  const monthKey = getMonthKey();
-  const placements = (state.monthlyPlacements[monthKey] || {})[player.id] || 0;
+  const placementKey = getCurrentPlacementKey(state);
+  const placements = (state.monthlyPlacements[placementKey] || {})[player.id] || 0;
   const currentSeason = getCurrentSeason(state);
   const selectedSeason = seasonMode === "all" ? null : (state.seasons || []).find(s => s.id === selectedSeasonId) || currentSeason || null;
   const myGames = [...state.games].filter(g => (g.sideA.includes(player.id) || g.sideB.includes(player.id)) && gameInSeason(g, selectedSeason)).sort((a,b)=>new Date(b.date)-new Date(a.date));
@@ -1770,7 +1799,7 @@ function EditPlayerModal({ player, state, setState, showToast, onClose }) {
 
   function recalcPlayer() {
     setConfirm({ title:"Recalculate from Games?",msg:`This will recalculate ${player.name}'s pts, mmr, wins, losses, and streak from the game log. Manual edits will be overwritten.`,onConfirm:()=>{
-      const { players,games }=replayGames(state.players,state.games,state.seasonStart);
+      const { players,games }=replayGames(state.players,state.games,state.seasonStart,state.seasons);
       setState(s=>({ ...s,players,games })); showToast("All stats recalculated"); setConfirm(null); onClose();
     }});
   }
@@ -1859,9 +1888,9 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
     const updatedGame = { ...game, penalties };
     const editedGames = state.games.map(g => g.id === game.id ? updatedGame : g);
     const basePlayers = state.players.map(p => ({ ...p, mmr:CONFIG.STARTING_MMR, pts:CONFIG.STARTING_PTS, wins:0, losses:0, streak:0, streakPower:0, lossStreakPower:0 }));
-    const { players:newPlayers, games:newGames } = replayGames(basePlayers, editedGames, state.seasonStart);
+    const { players:newPlayers, games:newGames } = replayGames(basePlayers, editedGames, state.seasonStart, state.seasons);
     const mergedPlayers = newPlayers.map(p => { const orig = state.players.find(x=>x.id===p.id); return { ...p, name:orig?.name||p.name, championships:orig?.championships||[], runnerUps:orig?.runnerUps||[], thirdPlaces:orig?.thirdPlaces||[], position:orig?.position||p.position }; });
-    const newPlacements = computePlacements(newGames);
+    const newPlacements = computePlacements(newGames, state.seasons);
     setState(s => ({ ...s, games:newGames, players:mergedPlayers, monthlyPlacements:newPlacements }));
     const totalCards = Object.values(penalties).reduce((s,v) => (v.yellow||0)+(v.red||0)+s, 0);
     showToast(totalCards > 0 ? "Penalties applied & stats updated" : "Penalties cleared");
@@ -1875,9 +1904,9 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
     const updatedGame = { ...game, scoreA:nA, scoreB:nB, winner, penalties, roles:editRoles };
     const editedGames = state.games.map(g => g.id===game.id ? updatedGame : g);
     const basePlayers = state.players.map(p => ({ ...p, mmr:CONFIG.STARTING_MMR, pts:CONFIG.STARTING_PTS, wins:0, losses:0, streak:0, streakPower:0, lossStreakPower:0 }));
-    const { players:newPlayers, games:newGames } = replayGames(basePlayers, editedGames, state.seasonStart);
+    const { players:newPlayers, games:newGames } = replayGames(basePlayers, editedGames, state.seasonStart, state.seasons);
     const mergedPlayers = newPlayers.map(p => { const orig = state.players.find(x=>x.id===p.id); return { ...p, name:orig?.name||p.name, championships:orig?.championships||[], runnerUps:orig?.runnerUps||[], thirdPlaces:orig?.thirdPlaces||[], position:orig?.position||p.position }; });
-    const newPlacements = computePlacements(newGames);
+    const newPlacements = computePlacements(newGames, state.seasons);
     setState(s => ({ ...s, games:newGames, players:mergedPlayers, monthlyPlacements:newPlacements }));
     showToast("Match updated & stats recalculated"); setEditing(false); onClose();
   }
@@ -1886,9 +1915,9 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
     setConfirm({ title:"Delete Match?",msg:"Permanently removes this match and recalculates all affected stats.",danger:true,onConfirm:()=>{
       const filteredGames = state.games.filter(g=>g.id!==game.id);
       const basePlayers = state.players.map(p => ({ ...p, mmr:CONFIG.STARTING_MMR, pts:CONFIG.STARTING_PTS, wins:0, losses:0, streak:0, streakPower:0, lossStreakPower:0 }));
-      const { players:newPlayers, games:newGames } = replayGames(basePlayers, filteredGames, state.seasonStart);
+      const { players:newPlayers, games:newGames } = replayGames(basePlayers, filteredGames, state.seasonStart, state.seasons);
       const mergedPlayers = newPlayers.map(p => { const orig = state.players.find(x=>x.id===p.id); return { ...p, name:orig?.name||p.name, championships:orig?.championships||[], runnerUps:orig?.runnerUps||[], thirdPlaces:orig?.thirdPlaces||[], position:orig?.position||p.position }; });
-      const newPlacements = computePlacements(newGames);
+      const newPlacements = computePlacements(newGames, state.seasons);
       setState(s => ({ ...s, games:newGames, players:mergedPlayers, monthlyPlacements:newPlacements }));
       showToast("Match deleted & stats recalculated"); setConfirm(null); onClose();
     }});
@@ -2002,8 +2031,7 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
           if (!hasFactors&&!hasRoles) return null;
           const ranked = [...state.players].sort((a,b)=>(b.pts||0)-(a.pts||0));
           const rankOf = id=>{const i=ranked.findIndex(p=>p.id===id);return i===-1?ranked.length:i;};
-          const monthKey = getMonthKey();
-          const monthPlacements = state.monthlyPlacements?.[monthKey]||{};
+          const monthPlacements = state.monthlyPlacements?.[getCurrentPlacementKey(state)]||{};
           const isPlaced = pid=>(monthPlacements[pid]||0)>=CONFIG.MAX_PLACEMENTS_PER_MONTH;
           const winnerIds = game.winner==="A"?game.sideA:game.sideB;
           const loserIds = game.winner==="A"?game.sideB:game.sideA;
@@ -2186,6 +2214,7 @@ function LiveTicker({ games, players, finals, monthKey, onNavToPlay }) {
 
 function LeaderboardView({ state, setState, onSelectPlayer, onNavToPlay, onNavToHistory, rtConnected, isAdmin, showToast, syncStatus }) {
   const monthKey = getMonthKey();
+  const placementKey = getCurrentPlacementKey(state);
   const currentSeason = getCurrentSeason(state);
   const seasonGames = (state.games||[]).filter(g=>gameInSeason(g,currentSeason));
   const seasonStats = computeWindowPlayerStats(state.players, seasonGames);
@@ -2193,8 +2222,8 @@ function LeaderboardView({ state, setState, onSelectPlayer, onNavToPlay, onNavTo
   const [showRecalcConfirm, setShowRecalcConfirm] = useState(false);
 
   function doRecalc() {
-    const { players,games } = replayGames(state.players,state.games,state.seasonStart);
-    const monthlyPlacements = computePlacements(games);
+    const { players,games } = replayGames(state.players,state.games,state.seasonStart,state.seasons);
+    const monthlyPlacements = computePlacements(games, state.seasons);
     setState(s=>({ ...s,players,games,monthlyPlacements }));
     showToast("All stats recalculated from game log"); setShowRecalcConfirm(false);
   }
@@ -2239,7 +2268,7 @@ function LeaderboardView({ state, setState, onSelectPlayer, onNavToPlay, onNavTo
         </div>
 
         {(()=>{
-          const placedRanked=ranked.filter(p=>(state.monthlyPlacements[monthKey]||{})[p.id]>=CONFIG.MAX_PLACEMENTS_PER_MONTH).slice(0,4);
+          const placedRanked=ranked.filter(p=>(state.monthlyPlacements[placementKey]||{})[p.id]>=CONFIG.MAX_PLACEMENTS_PER_MONTH).slice(0,4);
           return placedRanked.length>=2&&(
             <div className="card" style={{ cursor:"pointer",transition:"border-color .15s" }} onClick={()=>onNavToPlay()} onMouseEnter={e=>e.currentTarget.style.borderColor="var(--amber-d)"} onMouseLeave={e=>e.currentTarget.style.borderColor=""}>
               <div className="card-header"><span className="card-title">Championship Race</span><span className="tag tag-a" style={{ cursor:"pointer" }}>View Finals →</span></div>
@@ -2280,7 +2309,7 @@ function LeaderboardView({ state, setState, onSelectPlayer, onNavToPlay, onNavTo
                 {(()=>{
                   let placedCount=0;
                   return ranked.map((p,i)=>{
-                    const placements=(state.monthlyPlacements[monthKey]||{})[p.id]||0;
+                    const placements=(state.monthlyPlacements[placementKey]||{})[p.id]||0;
                     const isPlaced=placements>=CONFIG.MAX_PLACEMENTS_PER_MONTH;
                     const rankNum=isPlaced?++placedCount:null;
                     const sStat=seasonStats[p.id]||{ wins:0,losses:0,streak:0 };
@@ -2358,7 +2387,7 @@ function LeaderboardView({ state, setState, onSelectPlayer, onNavToPlay, onNavTo
             {(()=>{
               let placedCount=0;
               return ranked.map((p,i)=>{
-                const placements=(state.monthlyPlacements[monthKey]||{})[p.id]||0;
+                const placements=(state.monthlyPlacements[placementKey]||{})[p.id]||0;
                 const isPlaced=placements>=CONFIG.MAX_PLACEMENTS_PER_MONTH;
                 const rankNum=isPlaced?++placedCount:null;
                 const sStat=seasonStats[p.id]||{ wins:0,losses:0,streak:0 };
@@ -2556,9 +2585,9 @@ const Admin = {
   removePlayer(state, id) { return { players:state.players.filter(p=>p.id!==id) }; }
 };
 function placementsLeft(pid, state) {
-  const m=getMonthKey();
-  const used=state.monthlyPlacements[m]?.[pid]||0;
-  return CONFIG.MAX_PLACEMENTS_PER_MONTH-used;
+  const key = getCurrentPlacementKey(state);
+  const used = state.monthlyPlacements[key]?.[pid] || 0;
+  return CONFIG.MAX_PLACEMENTS_PER_MONTH - used;
 }
 
 // ── ONBOARD VIEW ───────────────────────────────────────────────────────────
@@ -2801,12 +2830,12 @@ function LogView({ state, setState, showToast }) {
 
     const basePlayers=state.players.map(p=>({ ...p,mmr:CONFIG.STARTING_MMR,pts:CONFIG.STARTING_PTS,mmr_atk:CONFIG.STARTING_MMR,mmr_def:CONFIG.STARTING_MMR,wins:0,losses:0,streak:0,streakPower:0,lossStreakPower:0,wins_atk:0,losses_atk:0,wins_def:0,losses_def:0 }));
     const allGames=[...state.games,...pendingGames];
-    const { players:newPlayers,games:newGames }=replayGames(basePlayers,allGames,state.seasonStart);
+    const { players:newPlayers,games:newGames }=replayGames(basePlayers,allGames,state.seasonStart,state.seasons);
     const mergedPlayers=newPlayers.map(p=>{
       const orig=state.players.find(x=>x.id===p.id);
       return orig?{ ...p,name:orig.name,championships:orig.championships||[],runnerUps:orig.runnerUps||[],thirdPlaces:orig.thirdPlaces||[],position:orig.position||[],preferredRole:orig.preferredRole||"FLEX" }:p;
     });
-    const newPlacements=computePlacements(newGames);
+    const newPlacements=computePlacements(newGames,state.seasons);
     const newGameIds=new Set(pendingGames.map(g=>g.id));
     const loggedWithDeltas=newGames.filter(g=>newGameIds.has(g.id));
 
@@ -2882,7 +2911,7 @@ function LogView({ state, setState, showToast }) {
                 const wIds=sA>sB?row.sideA:row.sideB, lIds=sA>sB?row.sideB:row.sideA;
                 const currentRanked=[...state.players].sort((a,b)=>(b.pts||0)-(a.pts||0));
                 const rankOf=id=>{const i=currentRanked.findIndex(p=>p.id===id);return i===-1?currentRanked.length:i;};
-                const monthPlacements=state.monthlyPlacements?.[getMonthKey()]||{};
+                const monthPlacements=state.monthlyPlacements?.[getCurrentPlacementKey(state)]||{};
                 const isPlaced=pid=>(monthPlacements[pid]||0)>=CONFIG.MAX_PLACEMENTS_PER_MONTH;
                 const oppWinMMR=avg(wIds,state.players,"mmr"), oppLosMMR=avg(lIds,state.players,"mmr");
                 const oppAvgRankPlaced=ids=>{const placed=ids.filter(isPlaced);if(!placed.length)return null;return placed.reduce((s,id)=>s+rankOf(id),0)/placed.length;};
@@ -3409,7 +3438,7 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
     );
   }
 
-  const placedRanked=ranked.filter(p=>(state.monthlyPlacements?.[monthKey]||{})[p.id]>=CONFIG.MAX_PLACEMENTS_PER_MONTH);
+  const placedRanked=ranked.filter(p=>(state.monthlyPlacements?.[getCurrentPlacementKey(state)]||{})[p.id]>=CONFIG.MAX_PLACEMENTS_PER_MONTH);
   const upperPool=placedRanked.slice(0,4);
   const lowerPool=placedRanked.slice(4,8);
   const previewUpper=upperPool.length>=4?buildBracket(upperPool):null;
@@ -4280,14 +4309,18 @@ export default function App() {
 
   function startNewSeason({ type="hype",title="",subtitle="Fresh leaderboard",body="",withAnnouncement=true }={}) {
     const seasonStart=new Date().toISOString();
-    const { players,games }=replayGames(state.players,state.games,seasonStart);
-    const monthlyPlacements=computePlacements(games);
+    // Build the updated seasons list now so replayGames can key placements against it
+    const prevSeasons=[...(state.seasons||[])];
+    if(prevSeasons.length&&!prevSeasons[prevSeasons.length-1].endAt)
+      prevSeasons[prevSeasons.length-1]={ ...prevSeasons[prevSeasons.length-1],endAt:seasonStart };
+    const nextSeason={ id:`season_${Date.now()}`,label:`Season ${prevSeasons.length+1}`,startAt:seasonStart,endAt:null,createdAt:seasonStart };
+    const newSeasons=[...prevSeasons,nextSeason];
+    const { players,games }=replayGames(state.players,state.games,seasonStart,newSeasons);
+    const monthlyPlacements=computePlacements(games,newSeasons);
     setState(s=>{
-      const prevSeasons=[...(s.seasons||[])]; const now=new Date().toISOString();
-      if(prevSeasons.length&&!prevSeasons[prevSeasons.length-1].endAt) prevSeasons[prevSeasons.length-1]={ ...prevSeasons[prevSeasons.length-1],endAt:seasonStart };
-      const nextSeason={ id:`season_${Date.now()}`,label:`Season ${prevSeasons.length+1}`,startAt:seasonStart,endAt:null,createdAt:now };
+      const now=new Date().toISOString();
       const announcement=withAnnouncement?{ id:`ann_${Date.now()}`,type,title:title||`🎉 ${nextSeason.label} is live`,subtitle,body:body||`## The slate is clean.\n\nPoints reset. History preserved. May the best player rise.`,startsAt:now,endsAt:new Date(Date.now()+48*60*60*1000).toISOString(),createdBy:getClientId() }:s.announcement;
-      return{ ...s,players,games,monthlyPlacements,seasonStart,nextSeasonDate:null,seasons:[...prevSeasons,nextSeason],announcement };
+      return{ ...s,players,games,monthlyPlacements,seasonStart,nextSeasonDate:null,seasons:newSeasons,announcement };
     });
     showToast("New season started — points reset","ok");
   }
