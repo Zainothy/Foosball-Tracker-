@@ -1707,7 +1707,7 @@ function PlayerProfile({ player, state, onClose, isAdmin, onEdit, seasonMode, on
           )}
         </div>
         <div className="stat-box">
-          <div className="stat-lbl">Placements this month</div>
+          <div className="stat-lbl">Season placements</div>
           <div style={{ marginTop:10 }}>
             {placements>=CONFIG.MAX_PLACEMENTS_PER_MONTH
               ? <span className="placement-badge placement-done">✓ Placed</span>
@@ -4239,7 +4239,29 @@ export default function App() {
   const isRemoteUpdate = useRef(false);
 
   useEffect(()=>{
-    async function initState() { try { const loaded=await loadState(); setState(loaded); subscribeToStateChanges(); } catch(err) { console.error("Failed to initialize:",err); } finally { setLoading(false); } }
+    async function initState() {
+      try {
+        const loaded = await loadState();
+        // ── Placement migration ───────────────────────────────────────────
+        // After switching from month-key to season-key placement buckets, the
+        // stored monthlyPlacements may only contain old "2026-03" / "2026-04"
+        // style keys. Recompute from game history so season keys are populated
+        // immediately on first load after the upgrade, then persist.
+        const hasSeasonKeys = Object.keys(loaded.monthlyPlacements || {}).some(k => k.startsWith('season_'));
+        const hasGamesInSeason = loaded.seasons?.length > 0 && loaded.games?.length > 0;
+        if (!hasSeasonKeys && hasGamesInSeason) {
+          const recomputed = computePlacements(loaded.games, loaded.seasons);
+          // Merge: keep old month keys (for historical lookup) and add new season keys
+          loaded.monthlyPlacements = { ...loaded.monthlyPlacements, ...recomputed };
+          // Persist the migrated placements immediately
+          console.log('[placement-migration] recomputed season keys:', Object.keys(recomputed));
+          // Trigger a save by setting state — the autosave effect will pick it up
+        }
+        setState(loaded);
+        subscribeToStateChanges();
+      } catch(err) { console.error("Failed to initialize:",err); }
+      finally { setLoading(false); }
+    }
     initState();
     return()=>{ clearTimeout(reconnectTimer.current); if(subscriptionRef.current) supabase.removeChannel(subscriptionRef.current); };
   },[]);
