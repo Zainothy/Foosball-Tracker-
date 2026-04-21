@@ -21,7 +21,7 @@ const CONFIG = {
   STREAK_WINDOW: 8,
   LOSS_HARSHNESS: 1.08,
   ROLE_ALIGN_BONUS: 1.12,
-  MAX_PLACEMENTS_PER_MONTH: 5,
+  MAX_PLACEMENTS_PER_MONTH: 3,
   YELLOW_CARD_PTS: 5,
   RED_CARD_PTS: 20,
 };
@@ -169,7 +169,7 @@ This is the official ranked table football leaderboard. Games are logged by admi
 ## Players & Teams
 - All players are ranked individually.
 - Teams are formed per game — you can play with anyone.
-- Each player has **${CONFIG.MAX_PLACEMENTS_PER_MONTH} placement games** per season.
+- Each player has **${CONFIG.MAX_PLACEMENTS_PER_MONTH} placement games** per season — after which your rank is visible on the leaderboard.
 
 ## Scoring
 - A standard game is played to **10 goals**.
@@ -748,13 +748,11 @@ function getMonthKey() {
 }
 
 // Returns the placement bucket key for a specific game.
-// Season-based: if the game date falls within a known season, returns "season_<id>".
-// Legacy fallback: games before any season use their month key so old data is preserved.
+// With an active season: "season_<id>". Without: "all" (lifetime pool).
 function getGamePlacementKey(game, seasons) {
-  if (!seasons?.length) return game.monthKey || game.date?.slice(0, 7) || '';
+  if (!seasons?.length) return 'all';
   const gameDate = game.date ? new Date(game.date) : null;
-  if (!gameDate) return game.monthKey || '';
-  // Walk seasons newest-first, find the one that contains this game's date
+  if (!gameDate) return 'all';
   const season = [...seasons]
     .sort((a, b) => Date.parse(b.startAt) - Date.parse(a.startAt))
     .find(s => {
@@ -762,17 +760,14 @@ function getGamePlacementKey(game, seasons) {
       const end = s.endAt ? Date.parse(s.endAt) : Infinity;
       return Number.isFinite(start) && gameDate >= new Date(start) && gameDate < new Date(end);
     });
-  if (season) return `season_${season.id}`;
-  // Pre-season game — use month key so historical data is unaffected
-  return game.monthKey || game.date?.slice(0, 7) || '';
+  return season ? `season_${season.id}` : 'all';
 }
 
-// Returns the placement bucket key to use for display/checks in the current moment.
-// If there is an active season, returns its key; otherwise falls back to calendar month.
+// Returns the placement bucket key for display/checks right now.
 function getCurrentPlacementKey(state) {
   const currentSeason = getCurrentSeason(state);
   if (currentSeason?.id) return `season_${currentSeason.id}`;
-  return getMonthKey();
+  return 'all';
 }
 
 function getCurrentSeason(state) { const seasons = state?.seasons || []; return seasons[seasons.length - 1] || null; }
@@ -4247,15 +4242,12 @@ export default function App() {
         // stored monthlyPlacements may only contain old "2026-03" / "2026-04"
         // style keys. Recompute from game history so season keys are populated
         // immediately on first load after the upgrade, then persist.
-        const hasSeasonKeys = Object.keys(loaded.monthlyPlacements || {}).some(k => k.startsWith('season_'));
-        const hasGamesInSeason = loaded.seasons?.length > 0 && loaded.games?.length > 0;
-        if (!hasSeasonKeys && hasGamesInSeason) {
+        const hasValidKeys = Object.keys(loaded.monthlyPlacements || {}).some(k => k === 'all' || k.startsWith('season_'));
+        const hasGamesInSeason = loaded.games?.length > 0;
+        if (!hasValidKeys && hasGamesInSeason) {
           const recomputed = computePlacements(loaded.games, loaded.seasons);
-          // Merge: keep old month keys (for historical lookup) and add new season keys
           loaded.monthlyPlacements = { ...loaded.monthlyPlacements, ...recomputed };
-          // Persist the migrated placements immediately
-          console.log('[placement-migration] recomputed season keys:', Object.keys(recomputed));
-          // Trigger a save by setting state — the autosave effect will pick it up
+          console.log('[placement-migration] recomputed keys:', Object.keys(recomputed));
         }
         setState(loaded);
         subscribeToStateChanges();
