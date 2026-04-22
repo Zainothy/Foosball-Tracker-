@@ -749,16 +749,25 @@ function getMonthKey() {
 
 // Returns the placement bucket key for a specific game.
 // With an active season: "season_<id>". Without: "all" (lifetime pool).
+// Uses date-only comparison to handle mid-day season starts correctly.
 function getGamePlacementKey(game, seasons) {
   if (!seasons?.length) return 'all';
   const gameDate = game.date ? new Date(game.date) : null;
   if (!gameDate) return 'all';
+
+  // Strip time for date-only comparison
+  const toDateOnly = d => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const gameDay = toDateOnly(gameDate);
+
   const season = [...seasons]
     .sort((a, b) => Date.parse(b.startAt) - Date.parse(a.startAt))
     .find(s => {
-      const start = Date.parse(s.startAt);
-      const end = s.endAt ? Date.parse(s.endAt) : Infinity;
-      return Number.isFinite(start) && gameDate >= new Date(start) && gameDate < new Date(end);
+      const startDate = s.startAt ? new Date(s.startAt) : null;
+      if (!startDate || isNaN(startDate)) return false;
+      const startDay = toDateOnly(startDate);
+      const endDay = s.endAt ? toDateOnly(new Date(s.endAt)) : null;
+      // Game is on/after season start and before/equal to season end
+      return gameDay >= startDay && (!endDay || gameDay <= endDay);
     });
   return season ? `season_${season.id}` : 'all';
 }
@@ -4238,13 +4247,14 @@ export default function App() {
       try {
         const loaded = await loadState();
         // ── Placement migration ───────────────────────────────────────────
-        // After switching from month-key to season-key placement buckets, the
-        // stored monthlyPlacements may only contain old "2026-03" / "2026-04"
-        // style keys. Recompute from game history so season keys are populated
-        // immediately on first load after the upgrade, then persist.
-        const hasValidKeys = Object.keys(loaded.monthlyPlacements || {}).some(k => k === 'all' || k.startsWith('season_'));
-        const hasGamesInSeason = loaded.games?.length > 0;
-        if (!hasValidKeys && hasGamesInSeason) {
+        // Recompute placements if: (1) old month-key format exists, or
+        // (2) current season key is missing. This ensures games are correctly
+        // bucketed after date-only comparison fix and season creation.
+        const currentKey = getCurrentPlacementKey(loaded);
+        const keys = Object.keys(loaded.monthlyPlacements || {});
+        const hasOldMonthKeys = keys.some(k => /^\d{4}-\d{2}$/.test(k));
+        const missingCurrentKey = currentKey !== 'all' && !keys.includes(currentKey);
+        if ((hasOldMonthKeys || missingCurrentKey) && loaded.games?.length > 0) {
           const recomputed = computePlacements(loaded.games, loaded.seasons);
           loaded.monthlyPlacements = { ...loaded.monthlyPlacements, ...recomputed };
           console.log('[placement-migration] recomputed keys:', Object.keys(recomputed));
