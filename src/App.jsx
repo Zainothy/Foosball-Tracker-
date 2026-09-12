@@ -7,6 +7,8 @@ import {
   restoreSession,
   logAudit,
   createAccount,
+  listProfiles,
+  updateProfile,
 } from "./authClient";
 
 const CONFIG = {
@@ -11948,11 +11950,30 @@ function SyncTestPanel({ state, setState, showToast }) {
 
 // ── ADMIN LOGIN ────────────────────────────────────────────────────────────
 
-function ManageLoginsPanel({ showToast }) {
+function ManageLoginsPanel({ showToast, currentUserId }) {
   const [username, setUsername] = useState("");
   const [role, setRole] = useState("referee");
   const [busy, setBusy] = useState(false);
   const [minted, setMinted] = useState(null); // { username, passphrase, callSign, role } -- shown once
+
+  const [profiles, setProfiles] = useState(null); // null = loading
+  const [profilesErr, setProfilesErr] = useState("");
+  const [savingId, setSavingId] = useState(null);
+
+  async function loadProfiles() {
+    const result = await listProfiles();
+    if (result.error) {
+      setProfilesErr(result.error);
+      setProfiles([]);
+      return;
+    }
+    setProfilesErr("");
+    setProfiles(result.profiles);
+  }
+
+  useEffect(() => {
+    loadProfiles();
+  }, []);
 
   async function handleCreate() {
     if (!username.trim()) {
@@ -11968,6 +11989,38 @@ function ManageLoginsPanel({ showToast }) {
     }
     setMinted(result);
     setUsername("");
+    loadProfiles();
+  }
+
+  async function handleRoleChange(userId, newRole) {
+    setSavingId(userId);
+    const result = await updateProfile(userId, { role: newRole });
+    setSavingId(null);
+    if (result.error) {
+      showToast?.(result.error, "err");
+      return;
+    }
+    showToast?.("Role updated", "ok");
+    loadProfiles();
+  }
+
+  async function handleToggleActive(userId, nextActive) {
+    if (userId === currentUserId && !nextActive) {
+      showToast?.("You can't deactivate your own account", "err");
+      return;
+    }
+    setSavingId(userId);
+    const result = await updateProfile(userId, { active: nextActive });
+    setSavingId(null);
+    if (result.error) {
+      showToast?.(result.error, "err");
+      return;
+    }
+    showToast?.(
+      nextActive ? "Account reactivated" : "Account deactivated",
+      "ok",
+    );
+    loadProfiles();
   }
 
   return (
@@ -11977,9 +12030,9 @@ function ManageLoginsPanel({ showToast }) {
       </div>
       <div className="xs text-dd" style={{ marginBottom: 16 }}>
         Creates a username + passphrase login. The passphrase is generated
-        automatically (via DinoPass) and shown exactly once below. Write it
-        down and hand it to the person now; it cannot be retrieved again after
-        you navigate away.
+        automatically (via DinoPass) and shown exactly once below. Write it down
+        and hand it to the person now; it cannot be retrieved again after you
+        navigate away.
       </div>
 
       <div className="field">
@@ -12020,13 +12073,80 @@ function ManageLoginsPanel({ showToast }) {
             <strong>Role:</strong> {minted.role}
           </div>
           <div>
-            <strong>Call sign (shown in audit log):</strong> {minted.callSign}
-          </div>
-          <div>
             <strong>Passphrase (give this to the person — shown once):</strong>{" "}
             {minted.passphrase}
           </div>
         </div>
+      )}
+
+      <div className="card-header" style={{ marginTop: 28 }}>
+        <span className="card-title">Existing Logins</span>
+      </div>
+      <div className="xs text-dd" style={{ marginBottom: 12 }}>
+        Change a role, or deactivate a login (blocks sign-in immediately without
+        deleting their audit history). Passphrases can't be viewed or edited
+        here -- if someone's is compromised, deactivate the account and create a
+        new one (usernames must be unique, so give the replacement a different
+        username).
+      </div>
+
+      {profilesErr && <div className="msg msg-e">{profilesErr}</div>}
+      {profiles === null && <div className="xs text-dd">Loading…</div>}
+      {profiles && profiles.length === 0 && !profilesErr && (
+        <div className="xs text-dd">No accounts yet.</div>
+      )}
+
+      {profiles && profiles.length > 0 && (
+        <table className="tbl w-full">
+          <thead>
+            <tr>
+              <th>Username</th>
+              <th>Role</th>
+              <th>Status</th>
+              <th>Created</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {profiles.map((p) => (
+              <tr key={p.user_id} style={{ opacity: p.active ? 1 : 0.5 }}>
+                <td>
+                  {p.username}
+                  {p.user_id === currentUserId ? " (you)" : ""}
+                </td>
+                <td>
+                  <select
+                    className="inp inp-sm"
+                    value={p.role}
+                    disabled={savingId === p.user_id}
+                    onChange={(e) =>
+                      handleRoleChange(p.user_id, e.target.value)
+                    }
+                  >
+                    <option value="referee">Referee</option>
+                    <option value="gameadmin">Gameadmin</option>
+                    <option value="sysadmin">Sysadmin</option>
+                  </select>
+                </td>
+                <td>{p.active ? "Active" : "Deactivated"}</td>
+                <td>
+                  {p.created_at
+                    ? new Date(p.created_at).toLocaleDateString()
+                    : "—"}
+                </td>
+                <td>
+                  <button
+                    className="btn btn-g btn-sm"
+                    disabled={savingId === p.user_id}
+                    onClick={() => handleToggleActive(p.user_id, !p.active)}
+                  >
+                    {p.active ? "Deactivate" : "Reactivate"}
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
     </div>
   );
@@ -12372,9 +12492,6 @@ export default function App() {
     { id: "onboard", label: "Onboard" },
     { id: "logGames", label: "Log Games" },
     { id: "advanced", label: "Advanced" },
-    ...(adminProfile?.role === "sysadmin"
-      ? [{ id: "logins", label: "Logins" }]
-      : []),
   ];
   const [mobMenuOpen, setMobMenuOpen] = useState(false);
   function navTo(t, aTab) {
@@ -12540,7 +12657,8 @@ export default function App() {
             {isAdmin ? (
               <>
                 <span className="admin-badge">
-                  {adminProfile.username || adminProfile.call_sign} · {adminProfile.role}
+                  {adminProfile.username || adminProfile.call_sign} ·{" "}
+                  {adminProfile.role}
                 </span>
                 <button
                   className="btn btn-g btn-sm"
@@ -12726,15 +12844,13 @@ export default function App() {
                         setState={setState}
                         showToast={showToast}
                       />
+                      {adminProfile?.role === "sysadmin" && (
+                        <ManageLoginsPanel
+                          showToast={showToast}
+                          currentUserId={adminProfile.user_id}
+                        />
+                      )}
                     </>
-                  );
-                case "logins":
-                  return adminProfile?.role === "sysadmin" ? (
-                    <ManageLoginsPanel showToast={showToast} />
-                  ) : (
-                    <div className="card" style={{ padding: 24 }}>
-                      <div className="text-d">Sysadmin only</div>
-                    </div>
                   );
                 default:
                   return (
