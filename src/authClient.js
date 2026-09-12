@@ -1,30 +1,28 @@
 // src/authClient.js
 //
-// Passphrase-only login on top of Supabase Auth. There is no username field --
-// the passphrase itself is deterministically hashed into a synthetic email that
-// Supabase Auth uses internally. Nobody ever sees or types that email.
+// Username + passphrase login on top of Supabase Auth. Supabase still needs an
+// email-shaped identifier internally, so usernames are mapped to local-only
+// synthetic emails that users never need to see.
 
 import { supabase } from "./supabaseClient";
 
 const ADMIN_EMAIL_DOMAIN = "internal.foosballmmr.local";
 
-async function sha256Hex(input) {
-  const bytes = new TextEncoder().encode(input);
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, "0")).join("");
+function normalizeUsername(username) {
+  return username.trim().toLowerCase().replace(/[^a-z0-9._-]/g, "-");
 }
 
-async function passphraseToEmail(passphrase) {
-  const hash = await sha256Hex(passphrase.trim());
-  return `${hash.slice(0, 24)}@${ADMIN_EMAIL_DOMAIN}`;
+function usernameToEmail(username) {
+  return `${normalizeUsername(username)}@${ADMIN_EMAIL_DOMAIN}`;
 }
 
 // Returns { profile } on success, or { error } on failure. Never throws.
-export async function signInWithPassphrase(passphrase) {
+export async function signInWithUsername(username, passphrase) {
+  if (!username || !username.trim()) return { error: "Enter a username" };
   if (!passphrase || !passphrase.trim()) return { error: "Enter a passphrase" };
-  const email = await passphraseToEmail(passphrase);
+  const email = usernameToEmail(username);
   const { data, error } = await supabase.auth.signInWithPassword({ email, password: passphrase.trim() });
-  if (error || !data?.user) return { error: "Incorrect passphrase" };
+  if (error || !data?.user) return { error: "Incorrect username or passphrase" };
 
   const profile = await fetchActiveProfile();
   if (!profile) {
@@ -56,11 +54,11 @@ async function fetchActiveProfile() {
   if (!userData?.user) return null;
   const { data, error } = await supabase
     .from("profiles")
-    .select("user_id, role, call_sign, active")
+    .select("user_id, username, role, call_sign, active")
     .eq("user_id", userData.user.id)
     .single();
   if (error || !data || !data.active) return null;
-  return data; // { user_id, role, call_sign, active }
+  return data; // { user_id, username, role, call_sign, active }
 }
 
 // Fire-and-forget audit logging. Server derives actor identity from the JWT --
@@ -79,7 +77,7 @@ export async function logAudit(action, targetType = null, targetId = null, detai
 }
 
 // Sysadmin-only. Calls the create-account Edge Function.
-export async function createAccount(role) {
+export async function createAccount(username, role) {
   const { data: sessionData } = await supabase.auth.getSession();
   const token = sessionData?.session?.access_token;
   if (!token) return { error: "Not authenticated" };
@@ -87,9 +85,9 @@ export async function createAccount(role) {
   const res = await fetch(`${supabase.supabaseUrl}/functions/v1/create-account`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ role }),
+    body: JSON.stringify({ username, role }),
   });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) return { error: body.error || "Account creation failed" };
-  return { passphrase: body.passphrase, callSign: body.call_sign, role: body.role };
+  return { username: body.username, passphrase: body.passphrase, callSign: body.call_sign, role: body.role };
 }

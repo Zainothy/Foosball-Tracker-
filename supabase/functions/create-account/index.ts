@@ -2,8 +2,7 @@
 //
 // Sysadmin-only. Creates a new admin/referee login:
 //   - generates a passphrase (the real login secret) via DinoPass
-//   - generates a separate call_sign (what shows up in the audit log)
-//   - creates the Supabase Auth user under a synthetic, non-guessable email
+//   - creates the Supabase Auth user under a local-only synthetic email
 //   - inserts the profiles row with the chosen role
 //   - logs the creation to audit_log
 //
@@ -20,12 +19,23 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 const ADMIN_EMAIL_DOMAIN = "internal.foosballmmr.local"; // never a real, deliverable address
 const ALLOWED_ROLES = ["referee", "gameadmin", "sysadmin"];
 
-async function sha256Hex(input: string): Promise<string> {
-  const bytes = new TextEncoder().encode(input);
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return Array.from(new Uint8Array(digest))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
+function normalizeUsername(username: string): string {
+  return username.trim().toLowerCase().replace(/[^a-z0-9._-]/g, "-");
+}
+
+function usernameToEmail(username: string): string {
+  return `${normalizeUsername(username)}@${ADMIN_EMAIL_DOMAIN}`;
+}
+
+function validateUsername(username: string): string | null {
+  const normalized = normalizeUsername(username);
+  if (!normalized) return "Username is required";
+  if (normalized.length < 2) return "Username must be at least 2 characters";
+  if (normalized.length > 32) return "Username must be 32 characters or fewer";
+  if (!/^[a-z0-9][a-z0-9._-]*[a-z0-9]$/.test(normalized)) {
+    return "Username must start and end with a letter or number";
+  }
+  return null;
 }
 
 async function dinopassWord(): Promise<string> {
@@ -71,7 +81,7 @@ Deno.serve(async (req) => {
 
     const { data: callerProfile, error: profileErr } = await admin
       .from("profiles")
-      .select("role, active, call_sign")
+      .select("username, role, active, call_sign")
       .eq("user_id", user.id)
       .single();
 
@@ -83,6 +93,15 @@ Deno.serve(async (req) => {
     }
 
     const body = await req.json().catch(() => ({}));
+    const username = normalizeUsername(String(body.username ?? ""));
+    const usernameError = validateUsername(username);
+    if (usernameError) {
+      return new Response(JSON.stringify({ error: usernameError }), {
+        status: 400,
+        headers: { ...corsHeaders(origin), "Content-Type": "application/json" },
+      });
+    }
+
     const role = body.role;
     if (!ALLOWED_ROLES.includes(role)) {
       return new Response(JSON.stringify({ error: `role must be one of ${ALLOWED_ROLES.join(", ")}` }), {
@@ -91,17 +110,20 @@ Deno.serve(async (req) => {
       });
     }
 
-    // Generate the two independent words. Loop on collision (call_sign is UNIQUE).
-    const passphrase = await dinopassWord();
-    let callSign = await dinopassWord();
-    for (let attempt = 0; attempt < 5; attempt++) {
-      const { data: clash } = await admin.from("profiles").select("user_id").eq("call_sign", callSign).maybeSingle();
-      if (!clash) break;
-      callSign = await dinopassWord();
+    const { data: existingProfile } = await admin
+      .from("profiles")
+      .select("user_id")
+      .eq("username", username)
+      .maybeSingle();
+    if (existingProfile) {
+      return new Response(JSON.stringify({ error: "Username already exists" }), {
+        status: 409,
+        headers: { ...corsHeaders(origin), "Content-Type": "application/json" },
+      });
     }
 
-    const emailLocalPart = (await sha256Hex(passphrase)).slice(0, 24);
-    const syntheticEmail = `${emailLocalPart}@${ADMIN_EMAIL_DOMAIN}`;
+    const passphrase = await dinopassWord();
+    const syntheticEmail = usernameToEmail(username);
 
     const { data: newUser, error: createErr } = await admin.auth.admin.createUser({
       email: syntheticEmail,
@@ -117,8 +139,9 @@ Deno.serve(async (req) => {
 
     const { error: insertErr } = await admin.from("profiles").insert({
       user_id: newUser.user.id,
+      username,
       role,
-      call_sign: callSign,
+      call_sign: username,
       created_by: user.id,
     });
     if (insertErr) {
@@ -132,17 +155,17 @@ Deno.serve(async (req) => {
 
     await admin.from("audit_log").insert({
       actor_user_id: user.id,
-      actor_call_sign: callerProfile.call_sign,
+      actor_call_sign: callerProfile.username ?? callerProfile.call_sign,
       actor_role: callerProfile.role,
       action: "create_account",
       target_type: "profile",
       target_id: newUser.user.id,
-      details: { role, call_sign: callSign },
+      details: { username, role },
     });
 
     // Passphrase is returned exactly once. It is never stored anywhere in plaintext after this.
     return new Response(
-      JSON.stringify({ passphrase, call_sign: callSign, role }),
+      JSON.stringify({ username, passphrase, call_sign: username, role }),
       { status: 200, headers: { ...corsHeaders(origin), "Content-Type": "application/json" } },
     );
   } catch (e) {

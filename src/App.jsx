@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
 import { supabase } from "./supabaseClient";
 import {
-  signInWithPassphrase,
+  signInWithUsername,
   signOutAdmin,
   restoreSession,
   logAudit,
@@ -11949,19 +11949,25 @@ function SyncTestPanel({ state, setState, showToast }) {
 // ── ADMIN LOGIN ────────────────────────────────────────────────────────────
 
 function ManageLoginsPanel({ showToast }) {
+  const [username, setUsername] = useState("");
   const [role, setRole] = useState("referee");
   const [busy, setBusy] = useState(false);
-  const [minted, setMinted] = useState(null); // { passphrase, callSign, role } -- shown once
+  const [minted, setMinted] = useState(null); // { username, passphrase, callSign, role } -- shown once
 
   async function handleCreate() {
+    if (!username.trim()) {
+      showToast?.("Username required", "err");
+      return;
+    }
     setBusy(true);
-    const result = await createAccount(role);
+    const result = await createAccount(username, role);
     setBusy(false);
     if (result.error) {
       showToast?.(result.error, "err");
       return;
     }
     setMinted(result);
+    setUsername("");
   }
 
   return (
@@ -11970,10 +11976,21 @@ function ManageLoginsPanel({ showToast }) {
         <span className="card-title">Manage Logins</span>
       </div>
       <div className="xs text-dd" style={{ marginBottom: 16 }}>
-        Creates a new admin/referee login. A passphrase and an audit-log call
-        sign are generated automatically (via DinoPass) — the passphrase is
-        shown exactly once below. Write it down and hand it to the person now;
-        it cannot be retrieved again after you navigate away.
+        Creates a username + passphrase login. The passphrase is generated
+        automatically (via DinoPass) and shown exactly once below. Write it
+        down and hand it to the person now; it cannot be retrieved again after
+        you navigate away.
+      </div>
+
+      <div className="field">
+        <label className="lbl">Username</label>
+        <input
+          className="inp"
+          value={username}
+          onChange={(e) => setUsername(e.target.value)}
+          placeholder="e.g. zain"
+          disabled={busy}
+        />
       </div>
 
       <div className="field">
@@ -11997,6 +12014,9 @@ function ManageLoginsPanel({ showToast }) {
       {minted && (
         <div className="msg msg-ok" style={{ marginTop: 16 }}>
           <div>
+            <strong>Username:</strong> {minted.username}
+          </div>
+          <div>
             <strong>Role:</strong> {minted.role}
           </div>
           <div>
@@ -12013,6 +12033,7 @@ function ManageLoginsPanel({ showToast }) {
 }
 
 function AdminLogin({ onLogin }) {
+  const [username, setUsername] = useState("");
   const [pw, setPw] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
@@ -12020,7 +12041,7 @@ function AdminLogin({ onLogin }) {
     if (busy) return;
     setBusy(true);
     setErr("");
-    const { profile, error } = await signInWithPassphrase(pw);
+    const { profile, error } = await signInWithUsername(username, pw);
     setBusy(false);
     if (error) {
       setErr(error);
@@ -12033,6 +12054,17 @@ function AdminLogin({ onLogin }) {
     <div className="login-wrap">
       <div className="login-box">
         <div className="login-title">Admin Access</div>
+        <div className="field">
+          <label className="lbl">Username</label>
+          <input
+            className="inp"
+            placeholder="Username…"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && go()}
+            disabled={busy}
+          />
+        </div>
         <div className="field">
           <label className="lbl">Passphrase</label>
           <input
@@ -12508,7 +12540,7 @@ export default function App() {
             {isAdmin ? (
               <>
                 <span className="admin-badge">
-                  {adminProfile.call_sign} · {adminProfile.role}
+                  {adminProfile.username || adminProfile.call_sign} · {adminProfile.role}
                 </span>
                 <button
                   className="btn btn-g btn-sm"
