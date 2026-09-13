@@ -549,6 +549,7 @@ const CSS = `
   .fbc{display:flex;justify-content:space-between;align-items:center}
   .mt8{margin-top:8px}.mt12{margin-top:12px}.mt16{margin-top:16px}.mb8{margin-bottom:8px}.mb12{margin-bottom:12px}.mb16{margin-bottom:16px}
   .text-am{color:var(--amber)}.text-g{color:var(--green)}.text-r{color:var(--red)}.text-d{color:var(--dim)}.text-dd{color:var(--dimmer)}
+  .btn-link{background:none;border:0;color:var(--green);cursor:pointer;padding:0;font-family:var(--sans);white-space:nowrap}.btn-link:hover{text-decoration:underline}
   .bold{font-weight:600}.sm{font-size:12px}.xs{font-size:11px}
   .disp{font-family:var(--disp);font-weight:700}
   .pip{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:3px}
@@ -9801,6 +9802,17 @@ function StatsView({ state, onSelectPlayer, seasonFilter, setSeasonFilter }) {
             const ppg = pGames.length
               ? (netPts / pGames.length).toFixed(1)
               : null;
+            const sortedPGames = [...pGames].sort(
+              (a, b) => new Date(a.date) - new Date(b.date),
+            );
+            const last5 = sortedPGames.slice(-5);
+            const startsAtk = sortedPGames.filter(
+              (g) => g.roles?.[selected.id] === "ATK",
+            ).length;
+            const startsDef = sortedPGames.filter(
+              (g) => g.roles?.[selected.id] === "DEF",
+            ).length;
+            const totalStarts = startsAtk + startsDef;
             return (
               <div className="card">
                 <div className="card-header">
@@ -9827,6 +9839,111 @@ function StatsView({ state, onSelectPlayer, seasonFilter, setSeasonFilter }) {
                     gap: 14,
                   }}
                 >
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns:
+                        totalStarts > 0 ? "1fr 1fr 1.2fr" : "1fr 1fr",
+                      gap: 10,
+                    }}
+                  >
+                    <div className="stat-box" style={{ padding: "8px 12px" }}>
+                      <div className="stat-lbl">Record</div>
+                      <div className="stat-val" style={{ fontSize: 18 }}>
+                        <span className="text-g">{st.wins}W</span>
+                        {" – "}
+                        <span className="text-r">{st.losses}L</span>
+                      </div>
+                    </div>
+                    {last5.length > 0 && (
+                      <div className="stat-box" style={{ padding: "8px 12px" }}>
+                        <div className="stat-lbl">Form (last {last5.length})</div>
+                        <div
+                          className="fac"
+                          style={{ gap: 4, marginTop: 3 }}
+                        >
+                          {last5.map((g) => {
+                            const won =
+                              (g.sideA.includes(selected.id) &&
+                                g.winner === "A") ||
+                              (g.sideB.includes(selected.id) &&
+                                g.winner === "B");
+                            return (
+                              <span
+                                key={g.id}
+                                title={new Date(g.date).toLocaleDateString(
+                                  "en-GB",
+                                )}
+                                style={{
+                                  width: 20,
+                                  height: 20,
+                                  borderRadius: "50%",
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "center",
+                                  fontSize: 11,
+                                  fontWeight: 700,
+                                  background: won
+                                    ? "rgba(94,201,138,.20)"
+                                    : "rgba(240,112,112,.16)",
+                                  color: won ? "var(--green)" : "var(--red)",
+                                }}
+                              >
+                                {won ? "W" : "L"}
+                              </span>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                    {totalStarts > 0 && (
+                      <div className="stat-box" style={{ padding: "8px 12px" }}>
+                        <div className="stat-lbl">Position starts</div>
+                        <div
+                          className="fac"
+                          style={{
+                            justifyContent: "space-between",
+                            marginBottom: 3,
+                          }}
+                        >
+                          <span className="xs" style={{ color: "var(--orange)", fontWeight: 600 }}>
+                            ATK {Math.round((startsAtk / totalStarts) * 100)}%
+                          </span>
+                          <span className="xs" style={{ color: "var(--blue)", fontWeight: 600 }}>
+                            DEF {Math.round((startsDef / totalStarts) * 100)}%
+                          </span>
+                        </div>
+                        <div
+                          style={{
+                            display: "flex",
+                            height: 6,
+                            borderRadius: 3,
+                            overflow: "hidden",
+                            background: "var(--b2)",
+                          }}
+                        >
+                          <div
+                            style={{
+                              width: `${(startsAtk / totalStarts) * 100}%`,
+                              background: "var(--orange)",
+                            }}
+                          />
+                          <div
+                            style={{
+                              width: `${(startsDef / totalStarts) * 100}%`,
+                              background: "var(--blue)",
+                            }}
+                          />
+                        </div>
+                        <div
+                          className="xs text-dd"
+                          style={{ marginTop: 3 }}
+                        >
+                          {startsAtk} ATK starts · {startsDef} DEF starts
+                        </div>
+                      </div>
+                    )}
+                  </div>
                   <div>
                     <div
                       className="xs text-dd"
@@ -10171,25 +10288,141 @@ function StatsView({ state, onSelectPlayer, seasonFilter, setSeasonFilter }) {
                       </div>
                     );
                   })()}
+                  <div
+                    className="grid-2"
+                    style={{ gap: 14, alignItems: "start" }}
+                  >
                   <div>
-                    <div className="sec" style={{ marginBottom: 6 }}>
-                      Head to Head
+                    <div className="fac" style={{ justifyContent: "space-between", marginBottom: 6 }}>
+                      <div className="sec">Recent Results</div>
+                      <span className="xs text-dd">2v2</span>
                     </div>
                     <div
                       style={{
                         display: "flex",
                         flexDirection: "column",
                         gap: 4,
-                        maxHeight: 160,
+                        maxHeight: 220,
                         overflowY: "auto",
                       }}
                     >
-                      {sorted
-                        .filter((p) => p.id !== selected.id)
-                        .map((p) => {
-                          const h = getH2H(selected.id, p.id);
-                          if (!h.games) return null;
+                      {[...pGames]
+                        .sort((a, b) => new Date(b.date) - new Date(a.date))
+                        .slice(0, 6)
+                        .map((g) => {
+                          const onA = g.sideA.includes(selected.id);
+                          const won =
+                            (onA && g.winner === "A") ||
+                            (!onA && g.winner === "B");
+                          const partner = (onA ? g.sideA : g.sideB)
+                            .filter((id) => id !== selected.id)
+                            .map((id) => pName(id, state.players))
+                            .join(" & ");
+                          const opps = (onA ? g.sideB : g.sideA)
+                            .map((id) => pName(id, state.players))
+                            .join(" & ");
+                          const delta = won
+                            ? (g.perPlayerGains?.[selected.id] ?? g.ptsGain ?? 0)
+                            : -(g.perPlayerLosses?.[selected.id] ?? g.ptsLoss ?? 0);
+                          const role = g.roles?.[selected.id];
+                          return (
+                            <div
+                              key={g.id}
+                              style={{
+                                padding: "6px 10px",
+                                borderRadius: 8,
+                                background: "var(--s2)",
+                                border: "1px solid var(--b1)",
+                              }}
+                            >
+                              <div className="fac" style={{ justifyContent: "space-between" }}>
+                                <span
+                                  className="bold"
+                                  style={{
+                                    fontSize: 12,
+                                    color: won ? "var(--green)" : "var(--red)",
+                                  }}
+                                >
+                                  {won ? "W" : "L"} w/ {partner}
+                                </span>
+                                <span className="bold" style={{ fontSize: 13 }}>
+                                  {g.scoreA}–{g.scoreB}
+                                </span>
+                              </div>
+                              <div className="fac" style={{ justifyContent: "space-between", marginTop: 2 }}>
+                                <span className="xs text-dd">
+                                  vs {opps}
+                                  {role ? ` · ${role} Role` : ""}
+                                </span>
+                                <span
+                                  className="xs bold"
+                                  style={{ color: won ? "var(--green)" : "var(--red)" }}
+                                >
+                                  {delta >= 0 ? "+" : ""}
+                                  {delta}pts
+                                </span>
+                              </div>
+                              <div className="xs text-dd" style={{ marginTop: 2 }}>
+                                {new Date(g.date).toLocaleDateString("en-GB", {
+                                  day: "numeric",
+                                  month: "short",
+                                })}
+                                , {new Date(g.date).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      {!pGames.length && (
+                        <div className="xs text-dd" style={{ padding: "8px 0" }}>
+                          No matches yet
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="fac" style={{ justifyContent: "space-between", marginBottom: 6 }}>
+                      <div className="sec">Head to Head</div>
+                      <span className="xs text-dd">
+                        {activeSeason ? activeSeason.label : "All seasons"} encounters
+                      </span>
+                    </div>
+                    <div
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 4,
+                        maxHeight: 220,
+                        overflowY: "auto",
+                      }}
+                    >
+                      {(() => {
+                        const opponents = sorted
+                          .filter((p) => p.id !== selected.id)
+                          .map((p) => ({ p, h: getH2H(selected.id, p.id) }))
+                          .filter(({ h }) => h.games > 0);
+                        if (!opponents.length) {
+                          return (
+                            <div className="xs text-dd" style={{ padding: "8px 0" }}>
+                              No H2H data yet
+                            </div>
+                          );
+                        }
+                        let totalGames = 0,
+                          totalW = 0,
+                          totalNet = 0;
+                        const rows = opponents.map(({ p, h }) => {
                           const pct = Math.round((h.winsA / h.games) * 100);
+                          const shared = scopedGames.filter(
+                            (g) =>
+                              (g.sideA.includes(selected.id) ||
+                                g.sideB.includes(selected.id)) &&
+                              (g.sideA.includes(p.id) || g.sideB.includes(p.id)),
+                          );
+                          const netVsOpp = calcNetPts(selected.id, shared);
+                          totalGames += h.games;
+                          totalW += h.winsA;
+                          totalNet += netVsOpp;
+                          const oppRole = shared[shared.length - 1]?.roles?.[p.id];
                           return (
                             <div
                               key={p.id}
@@ -10203,6 +10436,30 @@ function StatsView({ state, onSelectPlayer, seasonFilter, setSeasonFilter }) {
                                 border: "1px solid var(--b1)",
                               }}
                             >
+                              {oppRole && (
+                                <span
+                                  style={{
+                                    fontSize: 10,
+                                    fontWeight: 700,
+                                    padding: "2px 5px",
+                                    borderRadius: 4,
+                                    color:
+                                      oppRole === "ATK"
+                                        ? "var(--orange)"
+                                        : oppRole === "DEF"
+                                          ? "var(--blue)"
+                                          : "var(--purple, #b08af0)",
+                                    background:
+                                      oppRole === "ATK"
+                                        ? "rgba(240,144,80,.14)"
+                                        : oppRole === "DEF"
+                                          ? "rgba(96,168,232,.14)"
+                                          : "rgba(176,138,240,.14)",
+                                  }}
+                                >
+                                  {oppRole}
+                                </span>
+                              )}
                               <span
                                 style={{
                                   flex: 1,
@@ -10210,55 +10467,58 @@ function StatsView({ state, onSelectPlayer, seasonFilter, setSeasonFilter }) {
                                   fontSize: 13,
                                 }}
                               >
-                                {p.name}
+                                vs {p.name}
                               </span>
-                              <div
+                              <span className="xs text-dd" style={{ minWidth: 74, textAlign: "right" }}>
+                                {h.games} match{h.games === 1 ? "" : "es"}
+                              </span>
+                              <span
+                                className="bold"
                                 style={{
-                                  width: 60,
-                                  height: 5,
-                                  borderRadius: 3,
-                                  background: "var(--b2)",
-                                  overflow: "hidden",
+                                  fontSize: 12,
+                                  minWidth: 68,
+                                  textAlign: "right",
+                                  color: netVsOpp >= 0 ? "var(--green)" : "var(--red)",
                                 }}
                               >
-                                <div
-                                  style={{
-                                    width: `${pct}%`,
-                                    height: "100%",
-                                    background: "var(--green)",
-                                    borderRadius: 3,
-                                    transition: "width .4s ease",
-                                  }}
-                                />
-                              </div>
-                              <span
-                                className="text-g bold"
-                                style={{ fontSize: 12, minWidth: 20 }}
-                              >
-                                {h.winsA}W
+                                {netVsOpp >= 0 ? "+" : ""}
+                                {netVsOpp} net
                               </span>
-                              <span className="text-dd xs">–</span>
-                              <span
-                                className="text-r bold"
-                                style={{ fontSize: 12, minWidth: 20 }}
-                              >
-                                {h.winsB}L
+                              <span className="xs text-dd" style={{ minWidth: 46, textAlign: "right" }}>
+                                {pct}% W
                               </span>
                             </div>
                           );
-                        })
-                        .filter(Boolean)}
-                      {!sorted
-                        .filter((p) => p.id !== selected.id)
-                        .some((p) => getH2H(selected.id, p.id).games > 0) && (
-                        <div
-                          className="xs text-dd"
-                          style={{ padding: "8px 0" }}
-                        >
-                          No H2H data yet
-                        </div>
-                      )}
+                        });
+                        return (
+                          <>
+                            {rows}
+                            <div
+                              className="fac"
+                              style={{
+                                justifyContent: "space-between",
+                                padding: "8px 10px 2px",
+                                borderTop: "1px solid var(--b1)",
+                                marginTop: 2,
+                              }}
+                            >
+                              <span className="xs text-dd">
+                                Total {totalGames} opposing encounter{totalGames === 1 ? "" : "s"}
+                              </span>
+                              <span className="xs bold">
+                                {totalW}W – {totalGames - totalW}L
+                                {" "}
+                                <span style={{ color: totalNet >= 0 ? "var(--green)" : "var(--red)" }}>
+                                  ({totalNet >= 0 ? "+" : ""}
+                                  {totalNet} net)
+                                </span>
+                              </span>
+                            </div>
+                          </>
+                        );
+                      })()}
                     </div>
+                  </div>
                   </div>
                 </div>
               </div>
@@ -10555,7 +10815,7 @@ function SeasonsArchiveView({
       );
   }, [state.nextSeasonDate, editingNextDate]);
   useEffect(() => {
-    const id = setInterval(() => setTick((t) => t + 1), 1000);
+    const id = setInterval(() => setTick((t) => t + 1), 60000);
     return () => clearInterval(id);
   }, []);
   const seasonProgress = (() => {
@@ -10654,26 +10914,13 @@ function SeasonsArchiveView({
                     LIVE
                   </span>
                 </div>
-                <div className="xs text-dd">
-                  Started{" "}
-                  {currentSeason.startAt &&
-                  !isNaN(Date.parse(currentSeason.startAt))
-                    ? new Date(currentSeason.startAt).toLocaleDateString(
-                        "en-GB",
-                        { day: "numeric", month: "long", year: "numeric" },
-                      )
-                    : "—"}
-                  {" · "}
-                  {seasonProgress.elapsedDays} day
-                  {seasonProgress.elapsedDays !== 1 ? "s" : ""} in
-                </div>
               </div>
               {isAdmin && (
                 <button
                   className="btn btn-g btn-sm"
                   onClick={() => setEditingNextDate((v) => !v)}
                 >
-                  {state.nextSeasonDate ? "Edit end date" : "Set end date"}
+                  <UiIcon name="calendar"/> {state.nextSeasonDate ? "Edit end date" : "Set end date"}
                 </button>
               )}
             </div>
@@ -10726,82 +10973,50 @@ function SeasonsArchiveView({
                 </div>
               </div>
             )}
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: seasonProgress.hasEnd ? "1fr 1fr 1fr" : "1fr",
+                gap: 16,
+                marginBottom: 16,
+              }}
+            >
+              <div>
+                <div className="stat-lbl">Started</div>
+                <div style={{ fontFamily: "var(--disp)", fontSize: 18, fontWeight: 700, marginTop: 2 }}>
+                  {currentSeason.startAt && !isNaN(Date.parse(currentSeason.startAt))
+                    ? new Date(currentSeason.startAt).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })
+                    : "—"}
+                </div>
+                <div className="xs text-dd">
+                  {seasonProgress.elapsedDays} day{seasonProgress.elapsedDays !== 1 ? "s" : ""} in
+                </div>
+              </div>
+              {seasonProgress.hasEnd && (
+                <>
+                  <div>
+                    <div className="stat-lbl">Ends</div>
+                    <div style={{ fontFamily: "var(--disp)", fontSize: 18, fontWeight: 700, marginTop: 2 }}>
+                      {seasonProgress.endDate.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
+                    </div>
+                    <div className="xs text-dd">
+                      {seasonProgress.remDays} day{seasonProgress.remDays !== 1 ? "s" : ""} left
+                    </div>
+                  </div>
+                  <div>
+                    <div className="stat-lbl">Progress</div>
+                    <div style={{ fontFamily: "var(--disp)", fontSize: 18, fontWeight: 700, marginTop: 2, color: "var(--green)" }}>
+                      {seasonProgress.pct}% through
+                    </div>
+                    <div className="xs text-dd">
+                      Day {seasonProgress.elapsedDays} of {seasonProgress.elapsedDays + seasonProgress.remDays} total
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
             {seasonProgress.hasEnd ? (
               <div>
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "baseline",
-                    marginBottom: 6,
-                  }}
-                >
-                  <span
-                    className="xs text-dd"
-                    style={{
-                      letterSpacing: 0.5,
-                      textTransform: "uppercase",
-                      fontWeight: 600,
-                    }}
-                  >
-                    Next season in
-                  </span>
-                  <span className="xs text-dd">
-                    {seasonProgress.pct}% through
-                  </span>
-                </div>
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "baseline",
-                    gap: 4,
-                    marginBottom: 12,
-                    flexWrap: "wrap",
-                  }}
-                >
-                  {seasonProgress.remDays > 0 && (
-                    <>
-                      <span
-                        style={{
-                          fontFamily: "var(--disp)",
-                          fontSize: 52,
-                          fontWeight: 800,
-                          lineHeight: 1,
-                          color:
-                            seasonProgress.remDays <= 1
-                              ? "var(--red)"
-                              : seasonProgress.remDays <= 7
-                                ? "var(--orange)"
-                                : "var(--amber)",
-                        }}
-                      >
-                        {seasonProgress.remDays}
-                      </span>
-                      <span
-                        style={{
-                          fontFamily: "var(--disp)",
-                          fontSize: 18,
-                          color: "var(--dim)",
-                          marginRight: 12,
-                        }}
-                      >
-                        day{seasonProgress.remDays !== 1 ? "s" : ""}
-                      </span>
-                    </>
-                  )}
-                  <span
-                    style={{
-                      fontFamily: "var(--mono)",
-                      fontSize: 13,
-                      color: "var(--dimmer)",
-                      letterSpacing: 1,
-                    }}
-                  >
-                    {String(seasonProgress.remHours).padStart(2, "0")}:
-                    {String(seasonProgress.remMins).padStart(2, "0")}:
-                    {String(seasonProgress.remSecs).padStart(2, "0")}
-                  </span>
-                </div>
                 <div
                   style={{
                     height: 6,
@@ -10824,23 +11039,16 @@ function SeasonsArchiveView({
                   style={{
                     display: "flex",
                     justifyContent: "space-between",
-                    marginTop: 4,
+                    marginTop: 6,
                   }}
                 >
                   <span className="xs text-dd">
                     {currentSeason.startAt
-                      ? new Date(currentSeason.startAt).toLocaleDateString(
-                          "en-GB",
-                          { day: "numeric", month: "short" },
-                        )
-                      : ""}
+                      ? new Date(currentSeason.startAt).toLocaleDateString("en-GB", { day: "numeric", month: "short" })
+                      : ""}{" (Start)"}
                   </span>
                   <span className="xs text-dd">
-                    {seasonProgress.endDate.toLocaleDateString("en-GB", {
-                      day: "numeric",
-                      month: "short",
-                      year: "numeric",
-                    })}
+                    {seasonProgress.endDate.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}{" (Deadline)"}
                   </span>
                 </div>
               </div>
@@ -10881,32 +11089,35 @@ function SeasonsArchiveView({
                   paddingTop: 14,
                   borderTop: "1px solid var(--b1)",
                   display: "flex",
-                  alignItems: "center",
+                  alignItems: "flex-start",
                   justifyContent: "space-between",
                   gap: 8,
                   flexWrap: "wrap",
                 }}
               >
-                <div className="xs text-dd" style={{ lineHeight: 1.6 }}>
-                  Starting a new season resets all points, MMR and streaks.
-                  <br />
-                  Game history and stats are preserved.
+                <div>
+                  <button
+                    className="btn btn-warn"
+                    onClick={() =>
+                      setConfirm({
+                        title: "Start New Season?",
+                        msg: `This will end ${currentSeason.label} and reset all points, MMR and streaks. Game history is preserved.`,
+                        onConfirm: () => {
+                          onStartNewSeason?.();
+                          setConfirm(null);
+                        },
+                      })
+                    }
+                  >
+                    <UiIcon name="zap"/> Start New Season
+                  </button>
+                  <div className="xs text-dd" style={{ marginTop: 6 }}>
+                    Resets points, MMR and streaks. History and stats are preserved.
+                  </div>
                 </div>
-                <button
-                  className="btn btn-warn"
-                  onClick={() =>
-                    setConfirm({
-                      title: "Start New Season?",
-                      msg: `This will end ${currentSeason.label} and reset all points, MMR and streaks. Game history is preserved.`,
-                      onConfirm: () => {
-                        onStartNewSeason?.();
-                        setConfirm(null);
-                      },
-                    })
-                  }
-                >
-                  <UiIcon name="zap"/> Start New Season
-                </button>
+                <span className="xs text-dd" style={{ textAlign: "right" }}>
+                  Current Season ID: {currentSeason.id}
+                </span>
               </div>
             )}
           </div>
@@ -10954,8 +11165,11 @@ function SeasonsArchiveView({
         </div>
       )}
 
-      <div className="sec" style={{ margin: "4px 0 0" }}>
-        Archive
+      <div className="fac" style={{ justifyContent: "space-between", margin: "4px 0 0" }}>
+        <div className="sec">Archive</div>
+        <span className="xs text-dd">
+          {allSeasons.filter((s) => s.endAt).length} closed cycle{allSeasons.filter((s) => s.endAt).length === 1 ? "" : "s"}
+        </span>
       </div>
       {allSeasons.length === 0 ? (
         <div className="msg msg-i">No seasons recorded yet</div>
@@ -11005,7 +11219,7 @@ function SeasonsArchiveView({
               : null;
           return (
             <div key={season.id} className="card">
-              <div className="card-header">
+              <div className="card-header" style={{ alignItems: "flex-start" }}>
                 <div>
                   <div
                     style={{
@@ -11015,73 +11229,83 @@ function SeasonsArchiveView({
                     }}
                   >
                     {season.label}
+                    <span className="xs text-dd" style={{ fontWeight: 400, marginLeft: 8 }}>
+                      {startDate} – {endDate}
+                    </span>
                   </div>
                   <div className="xs text-dd" style={{ marginTop: 2 }}>
-                    {startDate} — {endDate}
-                    {durationDays ? ` · ${durationDays}d` : ""}
+                    {durationDays ? `${durationDays} days` : ""}
+                    {durationDays ? " · " : ""}
+                    {seasonGames.length} games played
                   </div>
                 </div>
-                <div className="xs text-dd">{seasonGames.length} games</div>
+                <div className="fac" style={{ gap: 12 }}>
+                  <button className="btn-link xs" onClick={() => onNavToHistory?.(season)}>
+                    View {season.label} History →
+                  </button>
+                  <button className="btn-link xs" onClick={() => onNavToStats?.(season)}>
+                    View {season.label} Stats →
+                  </button>
+                </div>
               </div>
               {topThree.length > 0 && (
                 <div
                   style={{
-                    padding: "10px 16px",
-                    display: "flex",
-                    gap: 6,
-                    flexWrap: "wrap",
+                    padding: "4px 16px 16px",
+                    display: "grid",
+                    gridTemplateColumns: `repeat(${topThree.length}, minmax(0,1fr))`,
+                    gap: 10,
                   }}
                 >
-                  {topThree.map((p, i) => (
-                    <div
-                      key={p.id}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 8,
-                        padding: "6px 12px",
-                        borderRadius: 8,
-                        background:
-                          i === 0
-                            ? "radial-gradient(ellipse at 0% 50%,rgba(232,184,74,.12),var(--s2))"
-                            : i === 1
-                              ? "radial-gradient(ellipse at 0% 50%,rgba(192,200,196,.07),var(--s2))"
-                              : "var(--s2)",
-                        border: `1px solid ${i === 0 ? "rgba(232,184,74,.25)" : "var(--b1)"}`,
-                        flex: "1 1 120px",
-                      }}
-                    >
-                      <span style={{ fontSize: 14 }}>
-                        {i === 0 ? "1" : i === 1 ? "2" : "3"}
-                      </span>
-                      <div>
-                        <div style={{ fontWeight: 600, fontSize: 13 }}>
-                          {p.name}
+                  {topThree.map((p, i) => {
+                    const placeLabel = i === 0 ? "Champion" : i === 1 ? "Runner-up" : "3rd Place";
+                    const role = p.preferredRole;
+                    return (
+                      <div
+                        key={p.id}
+                        className="fac"
+                        style={{
+                          gap: 10,
+                          padding: "10px 14px",
+                          borderRadius: 10,
+                          background: i === 0 ? "rgba(232,184,74,.07)" : "var(--s2)",
+                          border: `1px solid ${i === 0 ? "rgba(232,184,74,.28)" : "var(--b1)"}`,
+                        }}
+                      >
+                        <span style={{ color: i === 0 ? "var(--gold)" : i === 1 ? "var(--dim)" : "var(--orange)" }}>
+                          <UiIcon name="medal"/>
+                        </span>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontWeight: 600, fontSize: 14, overflowWrap: "anywhere" }}>
+                            {p.name}
+                          </div>
+                          <div className="fac" style={{ gap: 6 }}>
+                            <span
+                              className="xs"
+                              style={{ color: i === 0 ? "var(--gold)" : "var(--dim)" }}
+                            >
+                              {placeLabel}
+                            </span>
+                            {role && (
+                              <span
+                                className={`role-tag ${role === "ATK" ? "role-atk" : role === "FLEX" ? "role-flex" : "role-def"}`}
+                              >
+                                {role}
+                              </span>
+                            )}
+                          </div>
                         </div>
-                        <div className="xs" style={{ color: "var(--amber)" }}>
-                          {seasonStats[p.id]?.pts || 0} pts
+                        <div style={{ textAlign: "right" }}>
+                          <div style={{ fontFamily: "var(--disp)", fontWeight: 800, fontSize: 18 }}>
+                            {seasonStats[p.id]?.pts || 0}
+                          </div>
+                          <div className="xs text-dd">pts</div>
                         </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
-              <div
-                style={{ padding: "8px 16px 12px", display: "flex", gap: 6 }}
-              >
-                <button
-                  className="btn btn-g btn-sm"
-              onClick={() => onNavToHistory?.(season)}
-                >
-                  History
-                </button>
-                <button
-                  className="btn btn-g btn-sm"
-                  onClick={() => onNavToStats?.(season)}
-                >
-                  Stats
-                </button>
-              </div>
             </div>
           );
         })
