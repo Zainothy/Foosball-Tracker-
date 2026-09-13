@@ -1,6 +1,15 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
-import { UiIcon, LeagueHeader, RanksHeading, ManagementNav, LeagueSkeleton, EventCountdown, RecentResults, useLeagueNavigation } from "./components/LeagueUI";
+import {
+  UiIcon,
+  LeagueHeader,
+  RanksHeading,
+  ManagementNav,
+  LeagueSkeleton,
+  EventCountdown,
+  RecentResults,
+  useLeagueNavigation,
+} from "./components/LeagueUI";
 import leagueCSS from "./styles/league.css?raw";
 import sectionCSS from "./styles/sections.css?raw";
 import seasonsCSS from "./styles/seasons.css?raw";
@@ -523,6 +532,8 @@ const CSS = `
   .player-chip.sel-a{background:rgba(94,201,138,.1);border-color:var(--green);color:var(--green)}
   .player-chip.sel-b{background:rgba(107,163,214,.10);border-color:var(--blue);color:var(--blue)}
   .player-chip.disabled{opacity:.3;cursor:not-allowed}
+  .player-chip.stat-chip{flex-direction:column;align-items:stretch;gap:0}
+  @media(max-width:600px){.stat-chip-detail{display:none}}
   .pos-badge{display:inline-flex;align-items:center;gap:3px;font-size:9px;font-weight:700;letter-spacing:1px;text-transform:uppercase;padding:2px 6px;border-radius:3px;border:1px solid}
   .pos-atk{background:rgba(224,82,82,.12);color:var(--red);border-color:rgba(224,82,82,.3)}
   .pos-def{background:rgba(91,155,213,.12);color:var(--blue);border-color:rgba(91,155,213,.3)}
@@ -2005,19 +2016,19 @@ function PosBadge({ pos }) {
       if (p === "attack")
         return (
           <span key="atk" className="pos-badge pos-atk">
-            <UiIcon name="swords"/> ATK
+            <UiIcon name="swords" /> ATK
           </span>
         );
       if (p === "defense")
         return (
           <span key="def" className="pos-badge pos-def">
-            <UiIcon name="shield"/> DEF
+            <UiIcon name="shield" /> DEF
           </span>
         );
       if (p === "both" || p === "flex")
         return (
           <span key="flex" className="pos-badge pos-both">
-            <UiIcon name="zap"/> FLEX
+            <UiIcon name="zap" /> FLEX
           </span>
         );
       return null;
@@ -2035,7 +2046,13 @@ function Toast({ t }) {
   return <div className={`toast ${t.type || "info"}`}>{t.msg}</div>;
 }
 
-function Modal({ onClose, children, large = false, variant = "", label = "League details" }) {
+function Modal({
+  onClose,
+  children,
+  large = false,
+  variant = "",
+  label = "League details",
+}) {
   const dialogRef = useRef(null);
   useEffect(() => {
     const previous = document.activeElement;
@@ -2043,17 +2060,34 @@ function Modal({ onClose, children, large = false, variant = "", label = "League
     const overflow = document.body.style.overflow;
     dialog.showModal();
     document.body.style.overflow = "hidden";
-    return () => { dialog.close(); document.body.style.overflow = overflow; if (previous?.isConnected) previous.focus(); };
+    return () => {
+      dialog.close();
+      document.body.style.overflow = overflow;
+      if (previous?.isConnected) previous.focus();
+    };
   }, []);
   return createPortal(
     <dialog
       ref={dialogRef}
       className={`overlay ${variant ? `overlay-${variant}` : ""}`}
       aria-label={label}
-      onCancel={(e) => {e.preventDefault(); onClose();}}
+      onCancel={(e) => {
+        e.preventDefault();
+        onClose();
+      }}
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
-      <div className={`modal ${large ? "modal-lg" : ""} ${variant}`}><button className="icon-button modal-close" title="Close" aria-label="Close dialog" onClick={onClose}><UiIcon name="x"/></button>{children}</div>
+      <div className={`modal ${large ? "modal-lg" : ""} ${variant}`}>
+        <button
+          className="icon-button modal-close"
+          title="Close"
+          aria-label="Close dialog"
+          onClick={onClose}
+        >
+          <UiIcon name="x" />
+        </button>
+        {children}
+      </div>
     </dialog>,
     document.body,
   );
@@ -2550,25 +2584,71 @@ function AnnouncementContent({ announcement, preview = false }) {
   const hype = announcement.type === "hype";
   const title = announcement.title || (season ? "New season" : "Announcement");
   const subtitle = announcement.subtitle || (season ? "Fresh leaderboard" : "");
-  return <article className={`announcement-content ${hype ? "is-hype" : featured ? "is-featured" : ""}`}>
-    <header className="announcement-heading">
-      <div className="announcement-category"><UiIcon name={season ? "flag" : hype ? "trophy" : "announcement"} size={18}/><span>{season ? "Season update" : hype ? "Matchday announcement" : "League announcement"}</span></div>
-      <h2>{title}</h2>
-      {subtitle && <p>{subtitle}</p>}
-    </header>
-    <div className="announcement-body md" dangerouslySetInnerHTML={{__html:renderMd(announcement.body || (preview ? "*No content yet.*" : ""))}}/>
-  </article>;
+  return (
+    <article
+      className={`announcement-content ${hype ? "is-hype" : featured ? "is-featured" : ""}`}
+    >
+      <header className="announcement-heading">
+        <div className="announcement-category">
+          <UiIcon
+            name={season ? "flag" : hype ? "trophy" : "announcement"}
+            size={18}
+          />
+          <span>
+            {season
+              ? "Season update"
+              : hype
+                ? "Matchday announcement"
+                : "League announcement"}
+          </span>
+        </div>
+        <h2>{title}</h2>
+        {subtitle && <p>{subtitle}</p>}
+      </header>
+      <div
+        className="announcement-body md"
+        dangerouslySetInnerHTML={{
+          __html: renderMd(
+            announcement.body || (preview ? "*No content yet.*" : ""),
+          ),
+        }}
+      />
+    </article>
+  );
 }
 
 function AnnouncementModal({ announcement, onClose }) {
   if (!announcement) return null;
-  return <Modal onClose={onClose} variant="announcement-modal" label={announcement.title || "League announcement"}>
-    <AnnouncementContent announcement={announcement}/>
-    <footer className="announcement-footer">
-      {announcement.endsAt && <span className="announcement-expiry"><UiIcon name="calendar" size={15}/><span>Until <time dateTime={announcement.endsAt}>{new Date(announcement.endsAt).toLocaleString("en-GB",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"})}</time></span></span>}
-      <button className="btn btn-p" onClick={onClose}>Got it</button>
-    </footer>
-  </Modal>;
+  return (
+    <Modal
+      onClose={onClose}
+      variant="announcement-modal"
+      label={announcement.title || "League announcement"}
+    >
+      <AnnouncementContent announcement={announcement} />
+      <footer className="announcement-footer">
+        {announcement.endsAt && (
+          <span className="announcement-expiry">
+            <UiIcon name="calendar" size={15} />
+            <span>
+              Until{" "}
+              <time dateTime={announcement.endsAt}>
+                {new Date(announcement.endsAt).toLocaleString("en-GB", {
+                  day: "numeric",
+                  month: "short",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })}
+              </time>
+            </span>
+          </span>
+        )}
+        <button className="btn btn-p" onClick={onClose}>
+          Got it
+        </button>
+      </footer>
+    </Modal>
+  );
 }
 
 // ── PLAYER PROFILE ─────────────────────────────────────────────────────────
@@ -2586,8 +2666,8 @@ function PlayerProfile({
   selectedSeasonId,
   onSelectedSeasonIdChange,
 }) {
-  const [detailGameId,setDetailGameId] = useState(null);
-  const detailGame = state.games.find(g => g.id === detailGameId);
+  const [detailGameId, setDetailGameId] = useState(null);
+  const detailGame = state.games.find((g) => g.id === detailGameId);
   const placementKey = getCurrentPlacementKey(state);
   const placements =
     (state.monthlyPlacements[placementKey] || {})[player.id] || 0;
@@ -2634,640 +2714,676 @@ function PlayerProfile({
 
   return (
     <>
-    <Modal onClose={onClose} large variant="player-profile" label={`${player.name} player profile`}>
-      {/* Diamond banner — 3+ champs */}
-      {isDiamond && (
-        <div
-          className="championship-banner"
-          style={{
-            background:
-              "radial-gradient(ellipse 140% 140% at 0% 0%,rgba(96,168,232,.16) 0%,rgba(165,133,232,.11) 50%,transparent 100%)",
-            borderColor: "rgba(96,168,232,.38)",
-            marginBottom: 8,
-          }}
-        >
-          <svg
-            width="24"
-            height="26"
-            viewBox="0 0 24 26"
-            fill="none"
-            aria-hidden="true"
-            style={{ flexShrink: 0 }}
-          >
-            <polygon
-              points="12,0 22,8 12,26 2,8"
-              fill="rgba(96,168,232,.18)"
-              stroke="#a8d8f8"
-              strokeWidth="1.2"
-            />
-            <polygon
-              points="12,0 22,8 12,13 2,8"
-              fill="rgba(165,133,232,.35)"
-            />
-          </svg>
-          <div style={{ flex: 1 }}>
-            <div
-              className="xs bold"
-              style={{
-                letterSpacing: 2,
-                textTransform: "uppercase",
-                color: "#a8d8f8",
-                marginBottom: 3,
-              }}
-            >
-              Triple Champion — {champs.length}× Title
-            </div>
-            <div className="sm text-d">
-              {champs.map((c, i) => (
-                <span key={i}>
-                  {fmtMonth(c.month)}
-                  {c.partner ? ` (w/ ${c.partner})` : ""}
-                  {i < champs.length - 1 ? " · " : ""}
-                </span>
-              ))}
-            </div>
-          </div>
-          {isAdmin && (
-            <button className="btn btn-warn btn-sm" onClick={onEdit}>
-              Edit
-            </button>
-          )}
-        </div>
-      )}
-
-      {/* Standard champion banner — 1-2 champs */}
-      {champs.length > 0 && !isDiamond && (
-        <div className="championship-banner">
-          <svg
-            width="22"
-            height="20"
-            viewBox="0 0 22 20"
-            fill="none"
-            aria-hidden="true"
-            style={{ flexShrink: 0 }}
-          >
-            <path
-              d="M11 1L14 7L20 8L15.5 12.5L16.5 19L11 16L5.5 19L6.5 12.5L2 8L8 7Z"
-              fill="rgba(232,184,74,.2)"
-              stroke="var(--gold)"
-              strokeWidth="1.2"
-            />
-          </svg>
-          <div style={{ flex: 1 }}>
-            <div
-              className="xs text-am bold"
-              style={{ letterSpacing: 2, textTransform: "uppercase" }}
-            >
-              Monthly Champion
-            </div>
-            <div className="sm text-d" style={{ marginTop: 2 }}>
-              {champs.map((c, i) => (
-                <span key={i}>
-                  {fmtMonth(c.month)}
-                  {c.partner ? ` (w/ ${c.partner})` : ""}
-                  {i < champs.length - 1 ? " · " : ""}
-                </span>
-              ))}
-            </div>
-          </div>
-          {isAdmin && !isDiamond && (
-            <button className="btn btn-warn btn-sm" onClick={onEdit}>
-              Edit
-            </button>
-          )}
-        </div>
-      )}
-
-      {/* Runner-up banner */}
-      {runnerUps.length > 0 && (
-        <div
-          className="championship-banner"
-          style={{
-            background:
-              "radial-gradient(ellipse 140% 140% at 0% 0%,rgba(176,200,192,.10) 0%,var(--s2) 100%)",
-            borderColor: "rgba(176,200,192,.32)",
-            marginBottom: 8,
-          }}
-        >
-          <svg
-            width="22"
-            height="20"
-            viewBox="0 0 22 20"
-            fill="none"
-            aria-hidden="true"
-            style={{ flexShrink: 0 }}
-          >
-            <path
-              d="M11 1L14 7L20 8L15.5 12.5L16.5 19L11 16L5.5 19L6.5 12.5L2 8L8 7Z"
-              fill="rgba(176,200,192,.12)"
-              stroke="#b0c8c0"
-              strokeWidth="1.2"
-            />
-          </svg>
-          <div>
-            <div
-              className="xs bold"
-              style={{
-                letterSpacing: 2,
-                textTransform: "uppercase",
-                color: "#b0c8c0",
-              }}
-            >
-              Runner-Up
-            </div>
-            <div className="sm text-d" style={{ marginTop: 2 }}>
-              {runnerUps.map((c, i) => (
-                <span key={i}>
-                  {fmtMonth(c.month)}
-                  {c.partner ? ` (w/ ${c.partner})` : ""}
-                  {i < runnerUps.length - 1 ? " · " : ""}
-                </span>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Third-place banner */}
-      {thirdPlaces.length > 0 && (
-        <div
-          className="championship-banner"
-          style={{
-            background:
-              "radial-gradient(ellipse 140% 140% at 0% 0%,rgba(200,134,74,.09) 0%,var(--s2) 100%)",
-            borderColor: "rgba(200,134,74,.28)",
-            marginBottom: 8,
-          }}
-        >
-          <svg
-            width="22"
-            height="20"
-            viewBox="0 0 22 20"
-            fill="none"
-            aria-hidden="true"
-            style={{ flexShrink: 0 }}
-          >
-            <path
-              d="M11 1L14 7L20 8L15.5 12.5L16.5 19L11 16L5.5 19L6.5 12.5L2 8L8 7Z"
-              fill="rgba(200,134,74,.10)"
-              stroke="#c8864a"
-              strokeWidth="1.2"
-            />
-          </svg>
-          <div>
-            <div
-              className="xs bold"
-              style={{
-                letterSpacing: 2,
-                textTransform: "uppercase",
-                color: "#c8864a",
-              }}
-            >
-              Third Place
-            </div>
-            <div className="sm text-d" style={{ marginTop: 2 }}>
-              {thirdPlaces.map((c, i) => (
-                <span key={i}>
-                  {fmtMonth(c.month)}
-                  {c.partner ? ` (w/ ${c.partner})` : ""}
-                  {i < thirdPlaces.length - 1 ? " · " : ""}
-                </span>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      <div className="prof-head">
-        <div className="prof-av">{player.name[0].toUpperCase()}</div>
-        <div style={{ flex: 1 }}>
-          <div className="prof-name">{player.name}</div>
-          <div className="prof-sub">
-            Current rank #{rank} · {seasonMode === "all" ? "All-time" : selectedSeason?.label || "Current season"}
-          </div>
+      <Modal
+        onClose={onClose}
+        large
+        variant="player-profile"
+        label={`${player.name} player profile`}
+      >
+        {/* Diamond banner — 3+ champs */}
+        {isDiamond && (
           <div
-            className="fac"
-            style={{ gap: 6, marginTop: 8, flexWrap: "wrap" }}
+            className="championship-banner"
+            style={{
+              background:
+                "radial-gradient(ellipse 140% 140% at 0% 0%,rgba(96,168,232,.16) 0%,rgba(165,133,232,.11) 50%,transparent 100%)",
+              borderColor: "rgba(96,168,232,.38)",
+              marginBottom: 8,
+            }}
           >
-            <button
-              className={`btn btn-sm ${seasonMode === "all" ? "btn-p" : "btn-g"}`}
-              onClick={() => onSeasonModeChange("all")}
+            <svg
+              width="24"
+              height="26"
+              viewBox="0 0 24 26"
+              fill="none"
+              aria-hidden="true"
+              style={{ flexShrink: 0 }}
             >
-              All-time
-            </button>
-            <button
-              className={`btn btn-sm ${seasonMode === "season" ? "btn-p" : "btn-g"}`}
-              onClick={() => onSeasonModeChange("season")}
-            >
-              Season
-            </button>
-            {seasonMode === "season" && (
-              <select
-                className="inp"
-                style={{ padding: "4px 8px", fontSize: 11, minWidth: 130 }}
-                value={selectedSeasonId || ""}
-                aria-label="Player profile season"
-                onChange={(e) => onSelectedSeasonIdChange(e.target.value)}
-              >
-                {(state.seasons || []).map((se) => (
-                  <option key={se.id} value={se.id}>
-                    {se.label}
-                  </option>
-                ))}
-              </select>
-            )}
-          </div>
-        </div>
-        <div className="fac" style={{ gap: 6 }}>
-          {isAdmin && (
-            <button className="btn btn-g btn-sm" onClick={onEdit}>
-              <UiIcon name="edit"/>Edit player
-            </button>
-          )}
-        </div>
-      </div>
-
-      <div className="grid-3 mb16 profile-primary-metrics">
-        <div className="stat-box">
-          <div className="stat-lbl">Points</div>
-          <div className="stat-val am">
-            {placements >= CONFIG.MAX_PLACEMENTS_PER_MONTH ? (
-              displayPts || 0
-            ) : (
-              <span
-                className="text-dd"
-                title="Complete placements to reveal points"
-              >
-                ?
-              </span>
-            )}
-          </div>
-        </div>
-        <div className="stat-box">
-          <div className="stat-lbl">Record</div>
-          <div className="stat-val" style={{ fontSize: 20 }}>
-            <span className="text-g">{displayWins}</span>
-            <span className="text-dd" style={{ fontSize: 13 }}>
-              /
-            </span>
-            <span className="text-r">{displayLosses}</span>
-          </div>
-        </div>
-        <div className="stat-box">
-          <div className="stat-lbl">Streak</div>
-          <div className="stat-val" style={{ fontSize: 20 }}>
-            <StreakBadge
-              streak={displayStreak}
-              streakPower={player.streakPower || 0}
-              showMult
-            />
-          </div>
-        </div>
-      </div>
-
-      <div className="grid-3 mb16 profile-secondary-metrics">
-        <div className="stat-box">
-          <div className="stat-lbl">Win Rate</div>
-          <div className="stat-val" style={{ fontSize: 20 }}>
-            {displayWins + displayLosses > 0 ? (
-              <span
-                className={
-                  displayWins / (displayWins + displayLosses) >= 0.5
-                    ? "text-g"
-                    : "text-r"
-                }
-              >
-                {Math.round(
-                  (displayWins / (displayWins + displayLosses)) * 100,
-                )}
-                %
-              </span>
-            ) : (
-              <span className="text-dd">—</span>
-            )}
-          </div>
-        </div>
-        <div className="stat-box">
-          {(player.wins_atk || 0) +
-            (player.losses_atk || 0) +
-            (player.wins_def || 0) +
-            (player.losses_def || 0) >
-          0 ? (
-            (() => {
-              const atkTotal =
-                (player.wins_atk || 0) + (player.losses_atk || 0);
-              const defTotal =
-                (player.wins_def || 0) + (player.losses_def || 0);
-              const atkWR = atkTotal
-                ? Math.round(((player.wins_atk || 0) / atkTotal) * 100)
-                : null;
-              const defWR = defTotal
-                ? Math.round(((player.wins_def || 0) / defTotal) * 100)
-                : null;
-              return (
-                <>
-                  <div className="stat-lbl" style={{ marginBottom: 8 }}>
-                    Current role ratings
-                  </div>
-                  <div
-                    style={{ display: "flex", flexDirection: "column", gap: 7 }}
-                  >
-                    <div
-                      style={{ display: "flex", alignItems: "center", gap: 7 }}
-                    >
-                      <span
-                        className="role-tag role-atk"
-                        style={{ pointerEvents: "none", flexShrink: 0 }}
-                      >
-                        <UiIcon name="swords"/> ATK
-                      </span>
-                      <div style={{ lineHeight: 1.25 }}>
-                        <div
-                          style={{
-                            fontWeight: 700,
-                            fontSize: 14,
-                            color: "var(--orange)",
-                          }}
-                        >
-                          {player.mmr_atk || player.mmr}{" "}
-                          <span
-                            style={{
-                              fontSize: 10,
-                              fontWeight: 500,
-                              color: "var(--dimmer)",
-                            }}
-                          >
-                            MMR
-                          </span>
-                        </div>
-                        <div className="xs text-dd">
-                          <span className="text-g">
-                            {player.wins_atk || 0}W
-                          </span>{" "}
-                          /{" "}
-                          <span className="text-r">
-                            {player.losses_atk || 0}L
-                          </span>
-                          {atkWR !== null && (
-                            <span
-                              style={{
-                                marginLeft: 5,
-                                color:
-                                  atkWR >= 50 ? "var(--green)" : "var(--red)",
-                              }}
-                            >
-                              {atkWR}%
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                    <div
-                      style={{ display: "flex", alignItems: "center", gap: 7 }}
-                    >
-                      <span
-                        className="role-tag role-def"
-                        style={{ pointerEvents: "none", flexShrink: 0 }}
-                      >
-                        <UiIcon name="shield"/> DEF
-                      </span>
-                      <div style={{ lineHeight: 1.25 }}>
-                        <div
-                          style={{
-                            fontWeight: 700,
-                            fontSize: 14,
-                            color: "var(--blue)",
-                          }}
-                        >
-                          {player.mmr_def || player.mmr}{" "}
-                          <span
-                            style={{
-                              fontSize: 10,
-                              fontWeight: 500,
-                              color: "var(--dimmer)",
-                            }}
-                          >
-                            MMR
-                          </span>
-                        </div>
-                        <div className="xs text-dd">
-                          <span className="text-g">
-                            {player.wins_def || 0}W
-                          </span>{" "}
-                          /{" "}
-                          <span className="text-r">
-                            {player.losses_def || 0}L
-                          </span>
-                          {defWR !== null && (
-                            <span
-                              style={{
-                                marginLeft: 5,
-                                color:
-                                  defWR >= 50 ? "var(--green)" : "var(--red)",
-                              }}
-                            >
-                              {defWR}%
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </>
-              );
-            })()
-          ) : (
-            <>
-              <div className="stat-lbl">Position</div>
-              <div style={{ marginTop: 8 }}>
-                <PosBadge pos={player.position} />
-              </div>
-            </>
-          )}
-        </div>
-        <div className="stat-box">
-          <div className="stat-lbl">Current season placements</div>
-          <div style={{ marginTop: 10 }}>
-            {placements >= CONFIG.MAX_PLACEMENTS_PER_MONTH ? (
-              <span className="placement-badge placement-done"><UiIcon name="check"/> Placed</span>
-            ) : (
-              <PlacementProgress
-                used={placements}
-                total={CONFIG.MAX_PLACEMENTS_PER_MONTH}
+              <polygon
+                points="12,0 22,8 12,26 2,8"
+                fill="rgba(96,168,232,.18)"
+                stroke="#a8d8f8"
+                strokeWidth="1.2"
               />
+              <polygon
+                points="12,0 22,8 12,13 2,8"
+                fill="rgba(165,133,232,.35)"
+              />
+            </svg>
+            <div style={{ flex: 1 }}>
+              <div
+                className="xs bold"
+                style={{
+                  letterSpacing: 2,
+                  textTransform: "uppercase",
+                  color: "#a8d8f8",
+                  marginBottom: 3,
+                }}
+              >
+                Triple Champion — {champs.length}× Title
+              </div>
+              <div className="sm text-d">
+                {champs.map((c, i) => (
+                  <span key={i}>
+                    {fmtMonth(c.month)}
+                    {c.partner ? ` (w/ ${c.partner})` : ""}
+                    {i < champs.length - 1 ? " · " : ""}
+                  </span>
+                ))}
+              </div>
+            </div>
+            {isAdmin && (
+              <button className="btn btn-warn btn-sm" onClick={onEdit}>
+                Edit
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Standard champion banner — 1-2 champs */}
+        {champs.length > 0 && !isDiamond && (
+          <div className="championship-banner">
+            <svg
+              width="22"
+              height="20"
+              viewBox="0 0 22 20"
+              fill="none"
+              aria-hidden="true"
+              style={{ flexShrink: 0 }}
+            >
+              <path
+                d="M11 1L14 7L20 8L15.5 12.5L16.5 19L11 16L5.5 19L6.5 12.5L2 8L8 7Z"
+                fill="rgba(232,184,74,.2)"
+                stroke="var(--gold)"
+                strokeWidth="1.2"
+              />
+            </svg>
+            <div style={{ flex: 1 }}>
+              <div
+                className="xs text-am bold"
+                style={{ letterSpacing: 2, textTransform: "uppercase" }}
+              >
+                Monthly Champion
+              </div>
+              <div className="sm text-d" style={{ marginTop: 2 }}>
+                {champs.map((c, i) => (
+                  <span key={i}>
+                    {fmtMonth(c.month)}
+                    {c.partner ? ` (w/ ${c.partner})` : ""}
+                    {i < champs.length - 1 ? " · " : ""}
+                  </span>
+                ))}
+              </div>
+            </div>
+            {isAdmin && !isDiamond && (
+              <button className="btn btn-warn btn-sm" onClick={onEdit}>
+                Edit
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Runner-up banner */}
+        {runnerUps.length > 0 && (
+          <div
+            className="championship-banner"
+            style={{
+              background:
+                "radial-gradient(ellipse 140% 140% at 0% 0%,rgba(176,200,192,.10) 0%,var(--s2) 100%)",
+              borderColor: "rgba(176,200,192,.32)",
+              marginBottom: 8,
+            }}
+          >
+            <svg
+              width="22"
+              height="20"
+              viewBox="0 0 22 20"
+              fill="none"
+              aria-hidden="true"
+              style={{ flexShrink: 0 }}
+            >
+              <path
+                d="M11 1L14 7L20 8L15.5 12.5L16.5 19L11 16L5.5 19L6.5 12.5L2 8L8 7Z"
+                fill="rgba(176,200,192,.12)"
+                stroke="#b0c8c0"
+                strokeWidth="1.2"
+              />
+            </svg>
+            <div>
+              <div
+                className="xs bold"
+                style={{
+                  letterSpacing: 2,
+                  textTransform: "uppercase",
+                  color: "#b0c8c0",
+                }}
+              >
+                Runner-Up
+              </div>
+              <div className="sm text-d" style={{ marginTop: 2 }}>
+                {runnerUps.map((c, i) => (
+                  <span key={i}>
+                    {fmtMonth(c.month)}
+                    {c.partner ? ` (w/ ${c.partner})` : ""}
+                    {i < runnerUps.length - 1 ? " · " : ""}
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Third-place banner */}
+        {thirdPlaces.length > 0 && (
+          <div
+            className="championship-banner"
+            style={{
+              background:
+                "radial-gradient(ellipse 140% 140% at 0% 0%,rgba(200,134,74,.09) 0%,var(--s2) 100%)",
+              borderColor: "rgba(200,134,74,.28)",
+              marginBottom: 8,
+            }}
+          >
+            <svg
+              width="22"
+              height="20"
+              viewBox="0 0 22 20"
+              fill="none"
+              aria-hidden="true"
+              style={{ flexShrink: 0 }}
+            >
+              <path
+                d="M11 1L14 7L20 8L15.5 12.5L16.5 19L11 16L5.5 19L6.5 12.5L2 8L8 7Z"
+                fill="rgba(200,134,74,.10)"
+                stroke="#c8864a"
+                strokeWidth="1.2"
+              />
+            </svg>
+            <div>
+              <div
+                className="xs bold"
+                style={{
+                  letterSpacing: 2,
+                  textTransform: "uppercase",
+                  color: "#c8864a",
+                }}
+              >
+                Third Place
+              </div>
+              <div className="sm text-d" style={{ marginTop: 2 }}>
+                {thirdPlaces.map((c, i) => (
+                  <span key={i}>
+                    {fmtMonth(c.month)}
+                    {c.partner ? ` (w/ ${c.partner})` : ""}
+                    {i < thirdPlaces.length - 1 ? " · " : ""}
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className="prof-head">
+          <div className="prof-av">{player.name[0].toUpperCase()}</div>
+          <div style={{ flex: 1 }}>
+            <div className="prof-name">{player.name}</div>
+            <div className="prof-sub">
+              Current rank #{rank} ·{" "}
+              {seasonMode === "all"
+                ? "All-time"
+                : selectedSeason?.label || "Current season"}
+            </div>
+            <div
+              className="fac"
+              style={{ gap: 6, marginTop: 8, flexWrap: "wrap" }}
+            >
+              <button
+                className={`btn btn-sm ${seasonMode === "all" ? "btn-p" : "btn-g"}`}
+                onClick={() => onSeasonModeChange("all")}
+              >
+                All-time
+              </button>
+              <button
+                className={`btn btn-sm ${seasonMode === "season" ? "btn-p" : "btn-g"}`}
+                onClick={() => onSeasonModeChange("season")}
+              >
+                Season
+              </button>
+              {seasonMode === "season" && (
+                <select
+                  className="inp"
+                  style={{ padding: "4px 8px", fontSize: 11, minWidth: 130 }}
+                  value={selectedSeasonId || ""}
+                  aria-label="Player profile season"
+                  onChange={(e) => onSelectedSeasonIdChange(e.target.value)}
+                >
+                  {(state.seasons || []).map((se) => (
+                    <option key={se.id} value={se.id}>
+                      {se.label}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+          </div>
+          <div className="fac" style={{ gap: 6 }}>
+            {isAdmin && (
+              <button className="btn btn-g btn-sm" onClick={onEdit}>
+                <UiIcon name="edit" />
+                Edit player
+              </button>
             )}
           </div>
         </div>
-      </div>
 
-      {seasonMode === "season" && myGames.length > 0 && (
-        <details className="profile-insights"
-          style={{
-            marginBottom: 16,
-            padding: 12,
-            borderRadius: 8,
-            background: "var(--s2)",
-            border: "1px solid var(--b1)",
-          }}
-        >
-          <summary>Season insights</summary>
-          <div className="grid-2" style={{ gap: 12 }}>
-            {(() => {
-              const best = getBestTeammate(player.id, myGames);
-              return (
-                <div>
-                  <div className="xs text-dd">Best Teammate</div>
-                  {best ? (
-                    <div>
-                      <span style={{ fontWeight: 600 }}>
-                        {pName(best.id, state.players)}
-                      </span>{" "}
-                      <span className="xs text-g">
-                        {Math.round((best.wins / best.total) * 100)}% (
-                        {best.wins}W)
-                      </span>
-                    </div>
-                  ) : (
-                    <div className="xs text-dd">—</div>
+        <div className="grid-3 mb16 profile-primary-metrics">
+          <div className="stat-box">
+            <div className="stat-lbl">Points</div>
+            <div className="stat-val am">
+              {placements >= CONFIG.MAX_PLACEMENTS_PER_MONTH ? (
+                displayPts || 0
+              ) : (
+                <span
+                  className="text-dd"
+                  title="Complete placements to reveal points"
+                >
+                  ?
+                </span>
+              )}
+            </div>
+          </div>
+          <div className="stat-box">
+            <div className="stat-lbl">Record</div>
+            <div className="stat-val" style={{ fontSize: 20 }}>
+              <span className="text-g">{displayWins}</span>
+              <span className="text-dd" style={{ fontSize: 13 }}>
+                /
+              </span>
+              <span className="text-r">{displayLosses}</span>
+            </div>
+          </div>
+          <div className="stat-box">
+            <div className="stat-lbl">Streak</div>
+            <div className="stat-val" style={{ fontSize: 20 }}>
+              <StreakBadge
+                streak={displayStreak}
+                streakPower={player.streakPower || 0}
+                showMult
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="grid-3 mb16 profile-secondary-metrics">
+          <div className="stat-box">
+            <div className="stat-lbl">Win Rate</div>
+            <div className="stat-val" style={{ fontSize: 20 }}>
+              {displayWins + displayLosses > 0 ? (
+                <span
+                  className={
+                    displayWins / (displayWins + displayLosses) >= 0.5
+                      ? "text-g"
+                      : "text-r"
+                  }
+                >
+                  {Math.round(
+                    (displayWins / (displayWins + displayLosses)) * 100,
                   )}
-                </div>
-              );
-            })()}
-            {(() => {
-              const tough = getToughestOpponent(player.id, myGames);
-              return (
-                <div>
-                  <div className="xs text-dd">Toughest Opponent</div>
-                  {tough ? (
-                    <div>
-                      <span style={{ fontWeight: 600 }}>
-                        {pName(tough.id, state.players)}
-                      </span>{" "}
-                      <span className="xs text-r">
-                        {Math.round((tough.wins / tough.total) * 100)}% (
-                        {tough.wins}W)
-                      </span>
-                    </div>
-                  ) : (
-                    <div className="xs text-dd">—</div>
-                  )}
-                </div>
-              );
-            })()}
-            {(() => {
-              const { goalsFor, goalsAgainst } = getAvgGoals(
-                player.id,
-                myGames,
-              );
-              return (
-                <div>
-                  <div className="xs text-dd">Avg Goals</div>
-                  <div>
-                    <span className="text-g">{goalsFor}</span>{" "}
-                    <span className="xs text-dd">For</span> /{" "}
-                    <span className="text-r">{goalsAgainst}</span>{" "}
-                    <span className="xs text-dd">Against</span>
-                  </div>
-                </div>
-              );
-            })()}
-            <div>
-              <div className="xs text-dd">PPG (Pts/Game)</div>
-              {(() => {
-                let totalPts = 0;
-                myGames.forEach((g) => {
-                  const won = didPlayerWin(player.id, g);
-                  const delta = won
-                    ? (g.perPlayerGains?.[player.id] ?? g.ptsGain)
-                    : -(g.perPlayerLosses?.[player.id] ?? g.ptsLoss);
-                  totalPts += delta;
-                });
+                  %
+                </span>
+              ) : (
+                <span className="text-dd">—</span>
+              )}
+            </div>
+          </div>
+          <div className="stat-box">
+            {(player.wins_atk || 0) +
+              (player.losses_atk || 0) +
+              (player.wins_def || 0) +
+              (player.losses_def || 0) >
+            0 ? (
+              (() => {
+                const atkTotal =
+                  (player.wins_atk || 0) + (player.losses_atk || 0);
+                const defTotal =
+                  (player.wins_def || 0) + (player.losses_def || 0);
+                const atkWR = atkTotal
+                  ? Math.round(((player.wins_atk || 0) / atkTotal) * 100)
+                  : null;
+                const defWR = defTotal
+                  ? Math.round(((player.wins_def || 0) / defTotal) * 100)
+                  : null;
                 return (
-                  <div style={{ fontWeight: 600 }}>
-                    {(totalPts / myGames.length).toFixed(2)}
+                  <>
+                    <div className="stat-lbl" style={{ marginBottom: 8 }}>
+                      Current role ratings
+                    </div>
+                    <div
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 7,
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 7,
+                        }}
+                      >
+                        <span
+                          className="role-tag role-atk"
+                          style={{ pointerEvents: "none", flexShrink: 0 }}
+                        >
+                          <UiIcon name="swords" /> ATK
+                        </span>
+                        <div style={{ lineHeight: 1.25 }}>
+                          <div
+                            style={{
+                              fontWeight: 700,
+                              fontSize: 14,
+                              color: "var(--orange)",
+                            }}
+                          >
+                            {player.mmr_atk || player.mmr}{" "}
+                            <span
+                              style={{
+                                fontSize: 10,
+                                fontWeight: 500,
+                                color: "var(--dimmer)",
+                              }}
+                            >
+                              MMR
+                            </span>
+                          </div>
+                          <div className="xs text-dd">
+                            <span className="text-g">
+                              {player.wins_atk || 0}W
+                            </span>{" "}
+                            /{" "}
+                            <span className="text-r">
+                              {player.losses_atk || 0}L
+                            </span>
+                            {atkWR !== null && (
+                              <span
+                                style={{
+                                  marginLeft: 5,
+                                  color:
+                                    atkWR >= 50 ? "var(--green)" : "var(--red)",
+                                }}
+                              >
+                                {atkWR}%
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 7,
+                        }}
+                      >
+                        <span
+                          className="role-tag role-def"
+                          style={{ pointerEvents: "none", flexShrink: 0 }}
+                        >
+                          <UiIcon name="shield" /> DEF
+                        </span>
+                        <div style={{ lineHeight: 1.25 }}>
+                          <div
+                            style={{
+                              fontWeight: 700,
+                              fontSize: 14,
+                              color: "var(--blue)",
+                            }}
+                          >
+                            {player.mmr_def || player.mmr}{" "}
+                            <span
+                              style={{
+                                fontSize: 10,
+                                fontWeight: 500,
+                                color: "var(--dimmer)",
+                              }}
+                            >
+                              MMR
+                            </span>
+                          </div>
+                          <div className="xs text-dd">
+                            <span className="text-g">
+                              {player.wins_def || 0}W
+                            </span>{" "}
+                            /{" "}
+                            <span className="text-r">
+                              {player.losses_def || 0}L
+                            </span>
+                            {defWR !== null && (
+                              <span
+                                style={{
+                                  marginLeft: 5,
+                                  color:
+                                    defWR >= 50 ? "var(--green)" : "var(--red)",
+                                }}
+                              >
+                                {defWR}%
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                );
+              })()
+            ) : (
+              <>
+                <div className="stat-lbl">Position</div>
+                <div style={{ marginTop: 8 }}>
+                  <PosBadge pos={player.position} />
+                </div>
+              </>
+            )}
+          </div>
+          <div className="stat-box">
+            <div className="stat-lbl">Current season placements</div>
+            <div style={{ marginTop: 10 }}>
+              {placements >= CONFIG.MAX_PLACEMENTS_PER_MONTH ? (
+                <span className="placement-badge placement-done">
+                  <UiIcon name="check" /> Placed
+                </span>
+              ) : (
+                <PlacementProgress
+                  used={placements}
+                  total={CONFIG.MAX_PLACEMENTS_PER_MONTH}
+                />
+              )}
+            </div>
+          </div>
+        </div>
+
+        {seasonMode === "season" && myGames.length > 0 && (
+          <details
+            className="profile-insights"
+            style={{
+              marginBottom: 16,
+              padding: 12,
+              borderRadius: 8,
+              background: "var(--s2)",
+              border: "1px solid var(--b1)",
+            }}
+          >
+            <summary>Season insights</summary>
+            <div className="grid-2" style={{ gap: 12 }}>
+              {(() => {
+                const best = getBestTeammate(player.id, myGames);
+                return (
+                  <div>
+                    <div className="xs text-dd">Best Teammate</div>
+                    {best ? (
+                      <div>
+                        <span style={{ fontWeight: 600 }}>
+                          {pName(best.id, state.players)}
+                        </span>{" "}
+                        <span className="xs text-g">
+                          {Math.round((best.wins / best.total) * 100)}% (
+                          {best.wins}W)
+                        </span>
+                      </div>
+                    ) : (
+                      <div className="xs text-dd">—</div>
+                    )}
                   </div>
                 );
               })()}
-            </div>
-          </div>
-        </details>
-      )}
-
-      <div className="sec profile-history-heading">Match history <span>{myGames.length} games</span></div>
-      {myGames.length === 0 && <div className="text-d sm">No games yet</div>}
-      {myGames.map((g) => {
-        const onA = g.sideA.includes(player.id);
-        const won = (onA && g.winner === "A") || (!onA && g.winner === "B");
-        const mates = (onA ? g.sideA : g.sideB)
-          .filter((id) => id !== player.id)
-          .map((id) => pName(id, state.players));
-        const opps = (onA ? g.sideB : g.sideA).map((id) =>
-          pName(id, state.players),
-        );
-        const myScore = onA ? g.scoreA : g.scoreB;
-        const oppScore = onA ? g.scoreB : g.scoreA;
-        return (
-          <button
-            key={g.id}
-            className="profile-history-row"
-            onClick={() => setDetailGameId(g.id)}
-            aria-label={`View match ${myScore} to ${oppScore}, ${fmtDate(g.date)}`}
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              padding: "7px 0",
-              borderBottom: "1px solid var(--b1)",
-              fontSize: 12,
-              gap: 6,
-              flexWrap: "wrap",
-            }}
-          >
-            <span className={`tag ${won ? "tag-w" : "tag-l"}`}>
-              {won ? "WIN" : "LOSS"}
-            </span>
-            <span className="profile-match-teams">
-            {mates.length > 0 && (
-              <span className="text-d sm">w/ {mates.join(" & ")}</span>
-            )}
-            <span className="text-d sm">vs {opps.join(" & ")}</span>
-            </span>
-            {g.roles?.[player.id] && (
-              <span
-                className={`role-tag ${g.roles[player.id] === "ATK" ? "role-atk" : g.roles[player.id] === "FLEX" ? "role-flex" : "role-def"}`}
-                style={{ marginRight: 3 }}
-              >
-                {g.roles[player.id] === "ATK"
-                  ? "ATK"
-                  : g.roles[player.id] === "FLEX"
-                    ? "FLEX"
-                    : "DEF"}
-              </span>
-            )}
-            <span className="disp text-am" style={{ fontSize: 15 }}>
-              {myScore}–{oppScore}
-            </span>
-            <span className={won ? "text-g" : "text-r"}>
               {(() => {
-                const delta = won
-                  ? (g.perPlayerGains?.[player.id] ??
-                    g.playerDeltas?.[player.id]?.gain ??
-                    g.ptsGain)
-                  : (g.perPlayerLosses?.[player.id] ??
-                    g.playerDeltas?.[player.id]?.loss ??
-                    g.ptsLoss);
-                return `${won ? "+" : "−"}${delta}pts`;
+                const tough = getToughestOpponent(player.id, myGames);
+                return (
+                  <div>
+                    <div className="xs text-dd">Toughest Opponent</div>
+                    {tough ? (
+                      <div>
+                        <span style={{ fontWeight: 600 }}>
+                          {pName(tough.id, state.players)}
+                        </span>{" "}
+                        <span className="xs text-r">
+                          {Math.round((tough.wins / tough.total) * 100)}% (
+                          {tough.wins}W)
+                        </span>
+                      </div>
+                    ) : (
+                      <div className="xs text-dd">—</div>
+                    )}
+                  </div>
+                );
               })()}
-            </span>
-            <span className="text-dd xs">{fmtDate(g.date)}</span>
-          </button>
-        );
-      })}
-      <button className="btn btn-g w-full mt16" onClick={onClose}>
-        Close
-      </button>
-    </Modal>
-    {detailGame && <GameDetail game={detailGame} state={state} setState={setState} isAdmin={isAdmin} showToast={showToast} onClose={() => setDetailGameId(null)} backLabel={`Back to ${player.name}`}/>}
+              {(() => {
+                const { goalsFor, goalsAgainst } = getAvgGoals(
+                  player.id,
+                  myGames,
+                );
+                return (
+                  <div>
+                    <div className="xs text-dd">Avg Goals</div>
+                    <div>
+                      <span className="text-g">{goalsFor}</span>{" "}
+                      <span className="xs text-dd">For</span> /{" "}
+                      <span className="text-r">{goalsAgainst}</span>{" "}
+                      <span className="xs text-dd">Against</span>
+                    </div>
+                  </div>
+                );
+              })()}
+              <div>
+                <div className="xs text-dd">PPG (Pts/Game)</div>
+                {(() => {
+                  let totalPts = 0;
+                  myGames.forEach((g) => {
+                    const won = didPlayerWin(player.id, g);
+                    const delta = won
+                      ? (g.perPlayerGains?.[player.id] ?? g.ptsGain)
+                      : -(g.perPlayerLosses?.[player.id] ?? g.ptsLoss);
+                    totalPts += delta;
+                  });
+                  return (
+                    <div style={{ fontWeight: 600 }}>
+                      {(totalPts / myGames.length).toFixed(2)}
+                    </div>
+                  );
+                })()}
+              </div>
+            </div>
+          </details>
+        )}
+
+        <div className="sec profile-history-heading">
+          Match history <span>{myGames.length} games</span>
+        </div>
+        {myGames.length === 0 && <div className="text-d sm">No games yet</div>}
+        {myGames.map((g) => {
+          const onA = g.sideA.includes(player.id);
+          const won = (onA && g.winner === "A") || (!onA && g.winner === "B");
+          const mates = (onA ? g.sideA : g.sideB)
+            .filter((id) => id !== player.id)
+            .map((id) => pName(id, state.players));
+          const opps = (onA ? g.sideB : g.sideA).map((id) =>
+            pName(id, state.players),
+          );
+          const myScore = onA ? g.scoreA : g.scoreB;
+          const oppScore = onA ? g.scoreB : g.scoreA;
+          return (
+            <button
+              key={g.id}
+              className="profile-history-row"
+              onClick={() => setDetailGameId(g.id)}
+              aria-label={`View match ${myScore} to ${oppScore}, ${fmtDate(g.date)}`}
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                padding: "7px 0",
+                borderBottom: "1px solid var(--b1)",
+                fontSize: 12,
+                gap: 6,
+                flexWrap: "wrap",
+              }}
+            >
+              <span className={`tag ${won ? "tag-w" : "tag-l"}`}>
+                {won ? "WIN" : "LOSS"}
+              </span>
+              <span className="profile-match-teams">
+                {mates.length > 0 && (
+                  <span className="text-d sm">w/ {mates.join(" & ")}</span>
+                )}
+                <span className="text-d sm">vs {opps.join(" & ")}</span>
+              </span>
+              {g.roles?.[player.id] && (
+                <span
+                  className={`role-tag ${g.roles[player.id] === "ATK" ? "role-atk" : g.roles[player.id] === "FLEX" ? "role-flex" : "role-def"}`}
+                  style={{ marginRight: 3 }}
+                >
+                  {g.roles[player.id] === "ATK"
+                    ? "ATK"
+                    : g.roles[player.id] === "FLEX"
+                      ? "FLEX"
+                      : "DEF"}
+                </span>
+              )}
+              <span className="disp text-am" style={{ fontSize: 15 }}>
+                {myScore}–{oppScore}
+              </span>
+              <span className={won ? "text-g" : "text-r"}>
+                {(() => {
+                  const delta = won
+                    ? (g.perPlayerGains?.[player.id] ??
+                      g.playerDeltas?.[player.id]?.gain ??
+                      g.ptsGain)
+                    : (g.perPlayerLosses?.[player.id] ??
+                      g.playerDeltas?.[player.id]?.loss ??
+                      g.ptsLoss);
+                  return `${won ? "+" : "−"}${delta}pts`;
+                })()}
+              </span>
+              <span className="text-dd xs">{fmtDate(g.date)}</span>
+            </button>
+          );
+        })}
+        <button className="btn btn-g w-full mt16" onClick={onClose}>
+          Close
+        </button>
+      </Modal>
+      {detailGame && (
+        <GameDetail
+          game={detailGame}
+          state={state}
+          setState={setState}
+          isAdmin={isAdmin}
+          showToast={showToast}
+          onClose={() => setDetailGameId(null)}
+          backLabel={`Back to ${player.name}`}
+        />
+      )}
     </>
   );
 }
@@ -3276,7 +3392,9 @@ function PlayerProfile({
 
 function EditPlayerModal({ player, state, setState, showToast, onClose }) {
   const [name, setName] = useState(player.name);
-  const [preferredRole,setPreferredRole] = useState(player.preferredRole || "FLEX");
+  const [preferredRole, setPreferredRole] = useState(
+    player.preferredRole || "FLEX",
+  );
   const [pts, setPts] = useState(String(player.pts || 0));
   const [streak, setStreak] = useState(String(player.streak || 0));
   const [positions, setPositions] = useState(() => {
@@ -3474,7 +3592,7 @@ function EditPlayerModal({ player, state, setState, showToast, onClose }) {
             }}
           >
             <span className="text-am">
-              <UiIcon name="trophy"/> {fmtMonth(c.month)}
+              <UiIcon name="trophy" /> {fmtMonth(c.month)}
               {c.partner ? ` (w/ ${c.partner})` : ""}
             </span>
             <button className="btn btn-d btn-sm" onClick={() => removeChamp(i)}>
@@ -3538,7 +3656,15 @@ function EditPlayerModal({ player, state, setState, showToast, onClose }) {
 
 // ── GAME DETAIL ────────────────────────────────────────────────────────────
 
-function GameDetail({ game, state, setState, isAdmin, showToast, onClose, backLabel }) {
+function GameDetail({
+  game,
+  state,
+  setState,
+  isAdmin,
+  showToast,
+  onClose,
+  backLabel,
+}) {
   const [editing, setEditing] = useState(false);
   const [scoreA, setScoreA] = useState(String(game.scoreA));
   const [scoreB, setScoreB] = useState(String(game.scoreB));
@@ -3559,7 +3685,7 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose, backLa
     setScoreA(String(game.scoreA));
     setScoreB(String(game.scoreB));
     setWinner(game.winner);
-    setEditRoles({...game.roles});
+    setEditRoles({ ...game.roles });
     setPenalties(game.penalties || {});
     setEditing(false);
   }
@@ -3750,7 +3876,12 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose, backLa
   return (
     <>
       <Modal onClose={onClose} variant="match-detail" label="Match detail">
-        {backLabel && <button className="btn btn-g match-back" onClick={onClose}><UiIcon name="previous"/>{backLabel}</button>}
+        {backLabel && (
+          <button className="btn btn-g match-back" onClick={onClose}>
+            <UiIcon name="previous" />
+            {backLabel}
+          </button>
+        )}
         <div className="fbc mb12 match-detail-header">
           <div>
             <div className="modal-title" style={{ marginBottom: 2 }}>
@@ -3764,16 +3895,19 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose, backLa
                 className="btn btn-warn btn-sm"
                 onClick={() => setEditing(true)}
               >
-                <UiIcon name="edit"/>Edit
+                <UiIcon name="edit" />
+                Edit
               </button>
               <button className="btn btn-d btn-sm" onClick={deleteGame}>
-                <UiIcon name="trash"/>Delete
+                <UiIcon name="trash" />
+                Delete
               </button>
             </div>
           )}
         </div>
 
-        <div className="match-scoreboard"
+        <div
+          className="match-scoreboard"
           style={{
             display: "grid",
             gridTemplateColumns: "1fr auto 1fr",
@@ -3791,7 +3925,7 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose, backLa
                 color: game.winner === "A" ? "var(--green)" : "var(--dimmer)",
               }}
             >
-              {game.winner === "A" ? <UiIcon name="trophy"/> : ""}Side A
+              {game.winner === "A" ? <UiIcon name="trophy" /> : ""}Side A
             </div>
             {sA.map((p) => {
               const gain = game.perPlayerGains?.[p.id] ?? game.ptsGain;
@@ -3857,7 +3991,7 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose, backLa
                     )}
                     {pen > 0 && (
                       <span style={{ color: "var(--orange)", marginLeft: 4 }}>
-                        −{pen} <UiIcon name="flag"/>
+                        −{pen} <UiIcon name="flag" />
                       </span>
                     )}
                   </div>
@@ -3939,7 +4073,7 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose, backLa
                 color: game.winner === "B" ? "var(--green)" : "var(--dimmer)",
               }}
             >
-              Side B{game.winner === "B" ? <UiIcon name="trophy"/> : ""}
+              Side B{game.winner === "B" ? <UiIcon name="trophy" /> : ""}
             </div>
             {sB.map((p) => {
               const gain = game.perPlayerGains?.[p.id] ?? game.ptsGain;
@@ -4010,7 +4144,7 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose, backLa
                     )}
                     {pen > 0 && (
                       <span style={{ color: "var(--orange)", marginLeft: 4 }}>
-                        −{pen} <UiIcon name="flag"/>
+                        −{pen} <UiIcon name="flag" />
                       </span>
                     )}
                   </div>
@@ -4020,14 +4154,21 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose, backLa
           </div>
         </div>
 
-        {!editing && <h2 className="match-breakdown-heading">Points breakdown</h2>}
+        {!editing && (
+          <h2 className="match-breakdown-heading">Points breakdown</h2>
+        )}
         {/* Recorded factors retain their original calculation and labels. */}
         {!editing &&
           (() => {
             const hasFactors = allPlayers.some(
               (p) => game.perPlayerFactors?.[p.id],
             );
-            if (!hasFactors) return <p className="text-d sm">Detailed factors were not recorded for this match.</p>;
+            if (!hasFactors)
+              return (
+                <p className="text-d sm">
+                  Detailed factors were not recorded for this match.
+                </p>
+              );
             const ranked = [...state.players].sort(
               (a, b) => (b.pts || 0) - (a.pts || 0),
             );
@@ -4175,30 +4316,30 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose, backLa
                         }}
                       >
                         <summary aria-label={`${p.name} points breakdown`}>
-                        <div
-                          style={{
-                            display: "flex",
-                            alignItems: "baseline",
-                            justifyContent: "space-between",
-                            marginBottom: 6,
-                          }}
-                        >
-                          <span style={{ fontWeight: 700, fontSize: 13 }}>
-                            {p.name}
-                          </span>
-                          <span
+                          <div
                             style={{
-                              fontFamily: "var(--disp)",
-                              fontWeight: 700,
-                              fontSize: 15,
-                              color: isWinner ? "var(--green)" : "var(--red)",
+                              display: "flex",
+                              alignItems: "baseline",
+                              justifyContent: "space-between",
+                              marginBottom: 6,
                             }}
                           >
-                            {isWinner ? "+" : "−"}
-                            {pts} pts
-                          </span>
-                        </div>
-                        <UiIcon name="chevron"/>
+                            <span style={{ fontWeight: 700, fontSize: 13 }}>
+                              {p.name}
+                            </span>
+                            <span
+                              style={{
+                                fontFamily: "var(--disp)",
+                                fontWeight: 700,
+                                fontSize: 15,
+                                color: isWinner ? "var(--green)" : "var(--red)",
+                              }}
+                            >
+                              {isWinner ? "+" : "−"}
+                              {pts} pts
+                            </span>
+                          </div>
+                          <UiIcon name="chevron" />
                         </summary>
                         <div
                           style={{
@@ -4423,7 +4564,13 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose, backLa
                                 <span
                                   style={{ fontSize: 10, color: col, flex: 1 }}
                                 >
-                                  {oop ? <UiIcon name="warning"/> : played === "FLEX" ? "" : <UiIcon name="check"/>}
+                                  {oop ? (
+                                    <UiIcon name="warning" />
+                                  ) : played === "FLEX" ? (
+                                    ""
+                                  ) : (
+                                    <UiIcon name="check" />
+                                  )}
                                   {label}
                                 </span>
                                 <span
@@ -4462,7 +4609,9 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose, backLa
 
         {isAdmin && (
           <details className="discipline-panel">
-            <summary>Disciplinary cards{hasPenalties ? " · Applied" : ""}</summary>
+            <summary>
+              Disciplinary cards{hasPenalties ? " · Applied" : ""}
+            </summary>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               {allPlayers.map((p) => {
                 const pen = penalties[p.id] || { yellow: 0, red: 0 };
@@ -4483,7 +4632,9 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose, backLa
                       {p.name}
                     </span>
                     <div className="fac" style={{ gap: 4 }}>
-                      <span style={{ fontSize: 16 }}><UiIcon name="yellow-card" label="Yellow card"/></span>
+                      <span style={{ fontSize: 16 }}>
+                        <UiIcon name="yellow-card" label="Yellow card" />
+                      </span>
                       <button
                         className="btn btn-g btn-sm"
                         style={{ padding: "2px 7px", minWidth: 22 }}
@@ -4521,7 +4672,9 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose, backLa
                       </span>
                     </div>
                     <div className="fac" style={{ gap: 4 }}>
-                      <span style={{ fontSize: 16 }}><UiIcon name="red-card" label="Red card"/></span>
+                      <span style={{ fontSize: 16 }}>
+                        <UiIcon name="red-card" label="Red card" />
+                      </span>
                       <button
                         className="btn btn-g btn-sm"
                         style={{ padding: "2px 7px", minWidth: 22 }}
@@ -4588,7 +4741,8 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose, backLa
 
         {!isAdmin && hasPenalties && (
           <div className="msg msg-e" style={{ marginTop: 8, fontSize: 11 }}>
-            <UiIcon name="warning"/> Disciplinary penalties have been applied to this match
+            <UiIcon name="warning" /> Disciplinary penalties have been applied
+            to this match
           </div>
         )}
 
@@ -4665,7 +4819,7 @@ function LiveTicker({ games, players, finals, monthKey, onNavToPlay }) {
             flexShrink: 0,
           }}
         >
-          <UiIcon name="trophy"/> LIVE
+          <UiIcon name="trophy" /> LIVE
         </span>
         <span style={{ flex: 1 }}>
           <span
@@ -4784,7 +4938,9 @@ function LeaderboardView({
   );
   const [showRecalcConfirm, setShowRecalcConfirm] = useState(false);
   const [rankingsExpanded, setRankingsExpanded] = useState(false);
-  const [rankingLimit, setRankingLimit] = useState(() => window.matchMedia("(max-width:980px)").matches ? 5 : 10);
+  const [rankingLimit, setRankingLimit] = useState(() =>
+    window.matchMedia("(max-width:980px)").matches ? 5 : 10,
+  );
   const standingsRef = useRef(null);
   useEffect(() => {
     const media = window.matchMedia("(max-width:980px)");
@@ -4792,7 +4948,9 @@ function LeaderboardView({
     media.addEventListener("change", update);
     return () => media.removeEventListener("change", update);
   }, []);
-  const visibleRanked = rankingsExpanded ? ranked : ranked.slice(0, rankingLimit);
+  const visibleRanked = rankingsExpanded
+    ? ranked
+    : ranked.slice(0, rankingLimit);
 
   function doRecalc() {
     const { players, games } = replayGames(
@@ -4815,17 +4973,35 @@ function LeaderboardView({
   useEffect(() => {
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     const animations = [];
-    standingsRef.current?.querySelectorAll("[data-player-id]").forEach(el => {
+    standingsRef.current?.querySelectorAll("[data-player-id]").forEach((el) => {
       const change = animMap[el.dataset.playerId];
       if (!change) return;
-      const color = change === "rank-down" ? "rgba(240,112,112,.3)" : change === "rank-up" ? "rgba(94,201,138,.4)" : "rgba(232,184,74,.3)";
-      animations.push(el.animate([
-        { backgroundColor:color, boxShadow:`inset 4px 0 ${change === "rank-down" ? "#f07070" : "#5ec98a"}`, transform:`translateY(${change === "rank-up" ? 7 : change === "rank-down" ? -7 : 0}px)` },
-        { backgroundColor:color, offset:.2, transform:"translateY(0)" },
-        { backgroundColor:"transparent", boxShadow:"inset 0 0 transparent", transform:"none" }
-      ], {duration:1100,easing:"cubic-bezier(.2,.8,.2,1)"}));
+      const color =
+        change === "rank-down"
+          ? "rgba(240,112,112,.3)"
+          : change === "rank-up"
+            ? "rgba(94,201,138,.4)"
+            : "rgba(232,184,74,.3)";
+      animations.push(
+        el.animate(
+          [
+            {
+              backgroundColor: color,
+              boxShadow: `inset 4px 0 ${change === "rank-down" ? "#f07070" : "#5ec98a"}`,
+              transform: `translateY(${change === "rank-up" ? 7 : change === "rank-down" ? -7 : 0}px)`,
+            },
+            { backgroundColor: color, offset: 0.2, transform: "translateY(0)" },
+            {
+              backgroundColor: "transparent",
+              boxShadow: "inset 0 0 transparent",
+              transform: "none",
+            },
+          ],
+          { duration: 1100, easing: "cubic-bezier(.2,.8,.2,1)" },
+        ),
+      );
     });
-    return () => animations.forEach(animation => animation.cancel());
+    return () => animations.forEach((animation) => animation.cancel());
   }, [animMap]);
 
   useEffect(() => {
@@ -4873,7 +5049,14 @@ function LeaderboardView({
           <div
             className="stat-box"
             style={{ cursor: "pointer" }}
-            role="button" tabIndex={0} onKeyDown={e => {if(e.key === "Enter" || e.key === " "){e.preventDefault();onNavToHistory();}}}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onNavToHistory();
+              }
+            }}
             onClick={onNavToHistory}
           >
             <div className="stat-lbl">Games This Month</div>
@@ -4886,7 +5069,16 @@ function LeaderboardView({
             <div className="stat-lbl">Top Points</div>
             <div className="stat-val am">{ranked[0]?.pts ?? 0}</div>
           </div>
-          {isAdmin && <button className="btn btn-g btn-sm" style={{marginLeft:"auto"}} onClick={() => setShowRecalcConfirm(true)}><UiIcon name="reset"/>Recalculate</button>}
+          {isAdmin && (
+            <button
+              className="btn btn-g btn-sm"
+              style={{ marginLeft: "auto" }}
+              onClick={() => setShowRecalcConfirm(true)}
+            >
+              <UiIcon name="reset" />
+              Recalculate
+            </button>
+          )}
         </div>
 
         {(() => {
@@ -4901,7 +5093,15 @@ function LeaderboardView({
             placedRanked.length >= 2 && (
               <div
                 className="card championship-race"
-                role="button" tabIndex={0} aria-label="Championship race. View finals" onKeyDown={e => {if(e.key === "Enter" || e.key === " "){e.preventDefault();onNavToPlay();}}}
+                role="button"
+                tabIndex={0}
+                aria-label="Championship race. View finals"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    onNavToPlay();
+                  }
+                }}
                 style={{ cursor: "pointer", transition: "border-color .15s" }}
                 onClick={() => onNavToPlay()}
                 onMouseEnter={(e) =>
@@ -4910,7 +5110,9 @@ function LeaderboardView({
                 onMouseLeave={(e) => (e.currentTarget.style.borderColor = "")}
               >
                 <div className="card-header">
-                  <span className="card-title"><UiIcon name="trophy"/> Championship Race</span>
+                  <span className="card-title">
+                    <UiIcon name="trophy" /> Championship Race
+                  </span>
                   <span className="tag tag-a" style={{ cursor: "pointer" }}>
                     View Finals →
                   </span>
@@ -4977,20 +5179,45 @@ function LeaderboardView({
                       >
                         {p.pts || 0} pts
                       </div>
-                      <div className="race-gap">{i === 0 ? "Pace leader" : `${Math.max(0,(placedRanked[0].pts || 0) - (p.pts || 0))} pts behind leader`}</div>
+                      <div className="race-gap">
+                        {i === 0
+                          ? "Pace leader"
+                          : `${Math.max(0, (placedRanked[0].pts || 0) - (p.pts || 0))} pts behind leader`}
+                      </div>
                     </div>
                   ))}
                 </div>
                 <div className="race-spread">
-                  <div><span>Point spread relative to leader</span><span>0 to {placedRanked[0].pts || 0} pts</span></div>
-                  <div className="race-track" aria-hidden="true">{placedRanked.map((p,i)=><i key={p.id} style={{left:`${Math.max(0,Math.min(100,(p.pts || 0) / Math.max(1,placedRanked[0].pts || 0) * 100))}%`,background:["var(--gold)","var(--silver)","var(--copper)","var(--amber)"][i]}}/>)}</div>
+                  <div>
+                    <span>Point spread relative to leader</span>
+                    <span>0 to {placedRanked[0].pts || 0} pts</span>
+                  </div>
+                  <div className="race-track" aria-hidden="true">
+                    {placedRanked.map((p, i) => (
+                      <i
+                        key={p.id}
+                        style={{
+                          left: `${Math.max(0, Math.min(100, ((p.pts || 0) / Math.max(1, placedRanked[0].pts || 0)) * 100))}%`,
+                          background: [
+                            "var(--gold)",
+                            "var(--silver)",
+                            "var(--copper)",
+                            "var(--amber)",
+                          ][i],
+                        }}
+                      />
+                    ))}
+                  </div>
                 </div>
               </div>
             )
           );
         })()}
 
-        <div ref={standingsRef} className={`card standings-card ${rankingsExpanded ? "rankings-expanded" : ""}`}>
+        <div
+          ref={standingsRef}
+          className={`card standings-card ${rankingsExpanded ? "rankings-expanded" : ""}`}
+        >
           <div className="card-header">
             <span className="card-title">
               Rankings — {currentSeason?.label || fmtMonth(monthKey)}
@@ -5029,386 +5256,422 @@ function LeaderboardView({
 
           {/* Desktop table */}
           <div className="rankings-entries" id="rankings-entries">
-          <div className="tbl-wrap">
-            <table className="tbl">
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>Player</th>
-                  <th>Points</th>
-                  <th>W</th>
-                  <th>L</th>
-                  <th>Win%</th>
-                  <th>Streak</th>
-                  <th>ATK / DEF</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(() => {
-                  let placedCount = 0;
-                  return visibleRanked.map((p, i) => {
-                    const placements =
-                      (state.monthlyPlacements[placementKey] || {})[p.id] || 0;
-                    const isPlaced =
-                      placements >= CONFIG.MAX_PLACEMENTS_PER_MONTH;
-                    const rankNum = isPlaced ? ++placedCount : null;
-                    const sStat = seasonStats[p.id] || {
-                      wins: 0,
-                      losses: 0,
-                      streak: 0,
-                    };
-                    const total = sStat.wins + sStat.losses;
-                    const pct = total
-                      ? Math.round((sStat.wins / total) * 100)
-                      : 0;
-                    const anim = animMap[p.id] || "";
-                    const champCount = (p.championships || []).length;
-                    return (
-                      <tr
-                        key={p.id}
-                        data-player-id={p.id}
-                        className={`lb-row ${anim}`}
-                        style={{
-                          animationDelay: `${i * 28}ms`,
-                          opacity: isPlaced ? 1 : 0.6,
-                        }}
-                        tabIndex={0}
-                        onKeyDown={e => { if (e.key === "Enter" || e.key === " ") {e.preventDefault();onSelectPlayer(p);} }}
-                        onClick={() => onSelectPlayer(p)}
-                      >
-                        <td>
-                          <span
-                            className={`rk ${isPlaced ? (rankNum === 1 ? "r1" : rankNum === 2 ? "r2" : rankNum === 3 ? "r3" : "") : ""}`}
-                            style={!isPlaced ? { color: "var(--dimmer)" } : {}}
-                          >
-                            {isPlaced ? (
-                              rankNum === 1 ? (
-                                "①"
-                              ) : rankNum === 2 ? (
-                                "②"
-                              ) : rankNum === 3 ? (
-                                "③"
-                              ) : (
-                                `#${rankNum}`
-                              )
-                            ) : (
-                              <span
-                                style={{
-                                  fontSize: 9,
-                                  letterSpacing: 0.5,
-                                  fontFamily: "var(--sans)",
-                                  fontWeight: 500,
-                                }}
-                              >
-                                UNRANKED
-                              </span>
-                            )}
-                          </span>
-                        </td>
-
-                        {/* Name cell — trophy tiers + trend indicator */}
-                        <td>
-                          <div
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              gap: 6,
-                              flexWrap: "wrap",
-                            }}
-                          >
-                            <span className="bold">{p.name}</span>
-                            {champCount >= 3 ? (
-                              <DiamondBadge count={champCount} />
-                            ) : champCount > 0 ? (
-                              <svg
-                                width="13"
-                                height="13"
-                                viewBox="0 0 22 20"
-                                fill="none"
-                                aria-label="Monthly Champion"
-                                title="Monthly Champion"
-                                style={{ flexShrink: 0 }}
-                              >
-                                <path
-                                  d="M11 1L14 7L20 8L15.5 12.5L16.5 19L11 16L5.5 19L6.5 12.5L2 8L8 7Z"
-                                  fill="rgba(232,184,74,.22)"
-                                  stroke="var(--gold)"
-                                  strokeWidth="1.4"
-                                />
-                              </svg>
-                            ) : null}
-                            {(p.runnerUps || []).length > 0 && (
-                              <RunnerUpBadge />
-                            )}
-                            {(p.thirdPlaces || []).length > 0 && (
-                              <ThirdPlaceBadge />
-                            )}
-                            <Sparkline pid={p.id} games={seasonGames} />
-                            <TrendIndicator pid={p.id} games={seasonGames} />
-                          </div>
-                        </td>
-
-                        <td>
-                          {isPlaced ? (
-                            <>
-                              <span className="bold" style={{ fontSize: 14 }}>
-                                {p.pts || 0}
-                              </span>
-                              {anim === "rank-up" && (
-                                <span
-                                  className="xs text-g"
-                                  style={{ marginLeft: 5 }}
-                                >
-                                  ▲
-                                </span>
-                              )}
-                              {anim === "rank-down" && (
-                                <span
-                                  className="xs text-r"
-                                  style={{ marginLeft: 5 }}
-                                >
-                                  ▼
-                                </span>
-                              )}
-                            </>
-                          ) : (
+            <div className="tbl-wrap">
+              <table className="tbl">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Player</th>
+                    <th>Points</th>
+                    <th>W</th>
+                    <th>L</th>
+                    <th>Win%</th>
+                    <th>Streak</th>
+                    <th>ATK / DEF</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(() => {
+                    let placedCount = 0;
+                    return visibleRanked.map((p, i) => {
+                      const placements =
+                        (state.monthlyPlacements[placementKey] || {})[p.id] ||
+                        0;
+                      const isPlaced =
+                        placements >= CONFIG.MAX_PLACEMENTS_PER_MONTH;
+                      const rankNum = isPlaced ? ++placedCount : null;
+                      const sStat = seasonStats[p.id] || {
+                        wins: 0,
+                        losses: 0,
+                        streak: 0,
+                      };
+                      const total = sStat.wins + sStat.losses;
+                      const pct = total
+                        ? Math.round((sStat.wins / total) * 100)
+                        : 0;
+                      const anim = animMap[p.id] || "";
+                      const champCount = (p.championships || []).length;
+                      return (
+                        <tr
+                          key={p.id}
+                          data-player-id={p.id}
+                          className={`lb-row ${anim}`}
+                          style={{
+                            animationDelay: `${i * 28}ms`,
+                            opacity: isPlaced ? 1 : 0.6,
+                          }}
+                          tabIndex={0}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              onSelectPlayer(p);
+                            }
+                          }}
+                          onClick={() => onSelectPlayer(p)}
+                        >
+                          <td>
                             <span
-                              className="text-dd"
+                              className={`rk ${isPlaced ? (rankNum === 1 ? "r1" : rankNum === 2 ? "r2" : rankNum === 3 ? "r3" : "") : ""}`}
+                              style={
+                                !isPlaced ? { color: "var(--dimmer)" } : {}
+                              }
+                            >
+                              {isPlaced ? (
+                                rankNum === 1 ? (
+                                  "①"
+                                ) : rankNum === 2 ? (
+                                  "②"
+                                ) : rankNum === 3 ? (
+                                  "③"
+                                ) : (
+                                  `#${rankNum}`
+                                )
+                              ) : (
+                                <span
+                                  style={{
+                                    fontSize: 9,
+                                    letterSpacing: 0.5,
+                                    fontFamily: "var(--sans)",
+                                    fontWeight: 500,
+                                  }}
+                                >
+                                  UNRANKED
+                                </span>
+                              )}
+                            </span>
+                          </td>
+
+                          {/* Name cell — trophy tiers + trend indicator */}
+                          <td>
+                            <div
                               style={{
-                                fontSize: 10,
-                                fontFamily: "var(--sans)",
-                                fontWeight: 500,
-                                letterSpacing: 0.3,
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 6,
+                                flexWrap: "wrap",
                               }}
                             >
-                              —
+                              <span className="bold">{p.name}</span>
+                              {champCount >= 3 ? (
+                                <DiamondBadge count={champCount} />
+                              ) : champCount > 0 ? (
+                                <svg
+                                  width="13"
+                                  height="13"
+                                  viewBox="0 0 22 20"
+                                  fill="none"
+                                  aria-label="Monthly Champion"
+                                  title="Monthly Champion"
+                                  style={{ flexShrink: 0 }}
+                                >
+                                  <path
+                                    d="M11 1L14 7L20 8L15.5 12.5L16.5 19L11 16L5.5 19L6.5 12.5L2 8L8 7Z"
+                                    fill="rgba(232,184,74,.22)"
+                                    stroke="var(--gold)"
+                                    strokeWidth="1.4"
+                                  />
+                                </svg>
+                              ) : null}
+                              {(p.runnerUps || []).length > 0 && (
+                                <RunnerUpBadge />
+                              )}
+                              {(p.thirdPlaces || []).length > 0 && (
+                                <ThirdPlaceBadge />
+                              )}
+                              <Sparkline pid={p.id} games={seasonGames} />
+                              <TrendIndicator pid={p.id} games={seasonGames} />
+                            </div>
+                          </td>
+
+                          <td>
+                            {isPlaced ? (
+                              <>
+                                <span className="bold" style={{ fontSize: 14 }}>
+                                  {p.pts || 0}
+                                </span>
+                                {anim === "rank-up" && (
+                                  <span
+                                    className="xs text-g"
+                                    style={{ marginLeft: 5 }}
+                                  >
+                                    ▲
+                                  </span>
+                                )}
+                                {anim === "rank-down" && (
+                                  <span
+                                    className="xs text-r"
+                                    style={{ marginLeft: 5 }}
+                                  >
+                                    ▼
+                                  </span>
+                                )}
+                              </>
+                            ) : (
+                              <span
+                                className="text-dd"
+                                style={{
+                                  fontSize: 10,
+                                  fontFamily: "var(--sans)",
+                                  fontWeight: 500,
+                                  letterSpacing: 0.3,
+                                }}
+                              >
+                                —
+                              </span>
+                            )}
+                          </td>
+                          <td>
+                            <span className="text-g bold">{sStat.wins}</span>
+                          </td>
+                          <td>
+                            <span className="text-r bold">{sStat.losses}</span>
+                          </td>
+                          <td>
+                            <span className={pct >= 50 ? "text-g" : "text-d"}>
+                              {total ? `${pct}%` : "—"}
                             </span>
-                          )}
-                        </td>
-                        <td>
-                          <span className="text-g bold">{sStat.wins}</span>
-                        </td>
-                        <td>
-                          <span className="text-r bold">{sStat.losses}</span>
-                        </td>
-                        <td>
-                          <span className={pct >= 50 ? "text-g" : "text-d"}>
-                            {total ? `${pct}%` : "—"}
+                          </td>
+                          <td>
+                            <StreakBadge
+                              streak={sStat.streak}
+                              streakPower={p.streakPower || 0}
+                              showMult
+                            />
+                          </td>
+                          <td>
+                            {(p.wins_atk || 0) +
+                              (p.losses_atk || 0) +
+                              (p.wins_def || 0) +
+                              (p.losses_def || 0) >
+                            0 ? (
+                              <div style={{ lineHeight: 1.3 }}>
+                                <div className="fac" style={{ gap: 4 }}>
+                                  <span
+                                    className="role-tag role-atk"
+                                    style={{ pointerEvents: "none" }}
+                                  >
+                                    <UiIcon name="swords" />
+                                  </span>
+                                  <span
+                                    style={{
+                                      fontSize: 12,
+                                      fontWeight: 600,
+                                      color: "var(--orange)",
+                                    }}
+                                  >
+                                    {p.mmr_atk || p.mmr}
+                                  </span>
+                                  <span className="xs text-dd">
+                                    {p.wins_atk || 0}W
+                                  </span>
+                                </div>
+                                <div
+                                  className="fac"
+                                  style={{ gap: 4, marginTop: 3 }}
+                                >
+                                  <span
+                                    className="role-tag role-def"
+                                    style={{ pointerEvents: "none" }}
+                                  >
+                                    <UiIcon name="shield" />
+                                  </span>
+                                  <span
+                                    style={{
+                                      fontSize: 12,
+                                      fontWeight: 600,
+                                      color: "var(--blue)",
+                                    }}
+                                  >
+                                    {p.mmr_def || p.mmr}
+                                  </span>
+                                  <span className="xs text-dd">
+                                    {p.wins_def || 0}W
+                                  </span>
+                                </div>
+                              </div>
+                            ) : (
+                              <PosBadge pos={p.position} />
+                            )}
+                          </td>
+
+                          {/* Placement status — progress bar for unranked */}
+                          <td>
+                            {isPlaced ? (
+                              <span className="placement-badge placement-done">
+                                <UiIcon name="check" /> Placed
+                              </span>
+                            ) : (
+                              <PlacementProgress
+                                used={placements}
+                                total={CONFIG.MAX_PLACEMENTS_PER_MONTH}
+                              />
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    });
+                  })()}
+                  {ranked.length === 0 && (
+                    <tr>
+                      <td
+                        colSpan={9}
+                        style={{
+                          textAlign: "center",
+                          padding: 32,
+                          color: "var(--dimmer)",
+                        }}
+                      >
+                        No players yet — ask an admin to onboard players
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Mobile card layout */}
+            <div className="lb-cards">
+              {(() => {
+                let placedCount = 0;
+                return visibleRanked.map((p, i) => {
+                  const placements =
+                    (state.monthlyPlacements[placementKey] || {})[p.id] || 0;
+                  const isPlaced =
+                    placements >= CONFIG.MAX_PLACEMENTS_PER_MONTH;
+                  const rankNum = isPlaced ? ++placedCount : null;
+                  const sStat = seasonStats[p.id] || {
+                    wins: 0,
+                    losses: 0,
+                    streak: 0,
+                  };
+                  const total = sStat.wins + sStat.losses;
+                  const pct = total
+                    ? Math.round((sStat.wins / total) * 100)
+                    : 0;
+                  const champCount = (p.championships || []).length;
+                  return (
+                    <div
+                      key={p.id}
+                      className={`lb-card ${animMap[p.id] || ""}`}
+                      data-player-id={p.id}
+                      role="button"
+                      tabIndex={0}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          onSelectPlayer(p);
+                        }
+                      }}
+                      onClick={() => onSelectPlayer(p)}
+                    >
+                      <div className="lb-card-rank">
+                        {isPlaced ? (
+                          <span
+                            style={{
+                              color:
+                                rankNum === 1
+                                  ? "var(--gold)"
+                                  : rankNum === 2
+                                    ? "#c0c8c4"
+                                    : rankNum === 3
+                                      ? "#c8864a"
+                                      : "var(--dim)",
+                            }}
+                          >
+                            #{rankNum}
                           </span>
-                        </td>
-                        <td>
+                        ) : (
+                          <span
+                            style={{
+                              fontSize: 9,
+                              color: "var(--dimmer)",
+                              fontFamily: "var(--sans)",
+                            }}
+                          >
+                            —
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 5,
+                            flexWrap: "wrap",
+                          }}
+                        >
+                          <span className="lb-card-name">{p.name}</span>
+                          {champCount >= 3 ? (
+                            <DiamondBadge count={champCount} />
+                          ) : champCount > 0 ? (
+                            <svg
+                              width="11"
+                              height="11"
+                              viewBox="0 0 22 20"
+                              fill="none"
+                              aria-hidden="true"
+                            >
+                              <path
+                                d="M11 1L14 7L20 8L15.5 12.5L16.5 19L11 16L5.5 19L6.5 12.5L2 8L8 7Z"
+                                fill="rgba(232,184,74,.22)"
+                                stroke="var(--gold)"
+                                strokeWidth="1.4"
+                              />
+                            </svg>
+                          ) : null}
+                          {(p.runnerUps || []).length > 0 && <RunnerUpBadge />}
+                          <Sparkline pid={p.id} games={seasonGames} />
+                        </div>
+                        <div className="lb-card-meta">
+                          <span className="text-g">{sStat.wins}W</span>{" "}
+                          <span className="text-r">{sStat.losses}L</span>
+                          {" · "}
+                          {total ? `${pct}%` : "—"}
+                          {" · "}
                           <StreakBadge
                             streak={sStat.streak}
                             streakPower={p.streakPower || 0}
                             showMult
                           />
-                        </td>
-                        <td>
-                          {(p.wins_atk || 0) +
-                            (p.losses_atk || 0) +
-                            (p.wins_def || 0) +
-                            (p.losses_def || 0) >
-                          0 ? (
-                            <div style={{ lineHeight: 1.3 }}>
-                              <div className="fac" style={{ gap: 4 }}>
-                                <span
-                                  className="role-tag role-atk"
-                                  style={{ pointerEvents: "none" }}
-                                >
-                                  <UiIcon name="swords"/>
-                                </span>
-                                <span
-                                  style={{
-                                    fontSize: 12,
-                                    fontWeight: 600,
-                                    color: "var(--orange)",
-                                  }}
-                                >
-                                  {p.mmr_atk || p.mmr}
-                                </span>
-                                <span className="xs text-dd">
-                                  {p.wins_atk || 0}W
-                                </span>
-                              </div>
-                              <div
-                                className="fac"
-                                style={{ gap: 4, marginTop: 3 }}
-                              >
-                                <span
-                                  className="role-tag role-def"
-                                  style={{ pointerEvents: "none" }}
-                                >
-                                  <UiIcon name="shield"/>
-                                </span>
-                                <span
-                                  style={{
-                                    fontSize: 12,
-                                    fontWeight: 600,
-                                    color: "var(--blue)",
-                                  }}
-                                >
-                                  {p.mmr_def || p.mmr}
-                                </span>
-                                <span className="xs text-dd">
-                                  {p.wins_def || 0}W
-                                </span>
-                              </div>
-                            </div>
-                          ) : (
-                            <PosBadge pos={p.position} />
-                          )}
-                        </td>
-
-                        {/* Placement status — progress bar for unranked */}
-                        <td>
-                          {isPlaced ? (
-                            <span className="placement-badge placement-done">
-                              <UiIcon name="check"/> Placed
-                            </span>
-                          ) : (
-                            <PlacementProgress
-                              used={placements}
-                              total={CONFIG.MAX_PLACEMENTS_PER_MONTH}
-                            />
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  });
-                })()}
-                {ranked.length === 0 && (
-                  <tr>
-                    <td
-                      colSpan={9}
-                      style={{
-                        textAlign: "center",
-                        padding: 32,
-                        color: "var(--dimmer)",
-                      }}
-                    >
-                      No players yet — ask an admin to onboard players
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Mobile card layout */}
-          <div className="lb-cards">
-            {(() => {
-              let placedCount = 0;
-              return visibleRanked.map((p, i) => {
-                const placements =
-                  (state.monthlyPlacements[placementKey] || {})[p.id] || 0;
-                const isPlaced = placements >= CONFIG.MAX_PLACEMENTS_PER_MONTH;
-                const rankNum = isPlaced ? ++placedCount : null;
-                const sStat = seasonStats[p.id] || {
-                  wins: 0,
-                  losses: 0,
-                  streak: 0,
-                };
-                const total = sStat.wins + sStat.losses;
-                const pct = total ? Math.round((sStat.wins / total) * 100) : 0;
-                const champCount = (p.championships || []).length;
-                return (
-                  <div
-                    key={p.id}
-                    className={`lb-card ${animMap[p.id] || ""}`}
-                    data-player-id={p.id}
-                    role="button"
-                    tabIndex={0}
-                    onKeyDown={e => {if(e.key === "Enter" || e.key === " "){e.preventDefault();onSelectPlayer(p);}}}
-                    onClick={() => onSelectPlayer(p)}
-                  >
-                    <div className="lb-card-rank">
-                      {isPlaced ? (
-                        <span
-                          style={{
-                            color:
-                              rankNum === 1
-                                ? "var(--gold)"
-                                : rankNum === 2
-                                  ? "#c0c8c4"
-                                  : rankNum === 3
-                                    ? "#c8864a"
-                                    : "var(--dim)",
-                          }}
-                        >
-                          #{rankNum}
-                        </span>
-                      ) : (
-                        <span
-                          style={{
-                            fontSize: 9,
-                            color: "var(--dimmer)",
-                            fontFamily: "var(--sans)",
-                          }}
-                        >
-                          —
-                        </span>
-                      )}
-                    </div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 5,
-                          flexWrap: "wrap",
-                        }}
-                      >
-                        <span className="lb-card-name">{p.name}</span>
-                        {champCount >= 3 ? (
-                          <DiamondBadge count={champCount} />
-                        ) : champCount > 0 ? (
-                          <svg
-                            width="11"
-                            height="11"
-                            viewBox="0 0 22 20"
-                            fill="none"
-                            aria-hidden="true"
-                          >
-                            <path
-                              d="M11 1L14 7L20 8L15.5 12.5L16.5 19L11 16L5.5 19L6.5 12.5L2 8L8 7Z"
-                              fill="rgba(232,184,74,.22)"
-                              stroke="var(--gold)"
-                              strokeWidth="1.4"
-                            />
-                          </svg>
-                        ) : null}
-                        {(p.runnerUps || []).length > 0 && <RunnerUpBadge />}
-                        <Sparkline pid={p.id} games={seasonGames} />
+                          {" · "}
+                          <TrendIndicator pid={p.id} games={seasonGames} />
+                        </div>
                       </div>
-                      <div className="lb-card-meta">
-                        <span className="text-g">{sStat.wins}W</span>{" "}
-                        <span className="text-r">{sStat.losses}L</span>
-                        {" · "}
-                        {total ? `${pct}%` : "—"}
-                        {" · "}
-                        <StreakBadge
-                          streak={sStat.streak}
-                          streakPower={p.streakPower || 0}
-                          showMult
-                        />
-                        {" · "}
-                        <TrendIndicator pid={p.id} games={seasonGames} />
+                      <div className="lb-card-pts">
+                        {isPlaced ? p.pts || 0 : "—"}
                       </div>
                     </div>
-                    <div className="lb-card-pts">
-                      {isPlaced ? p.pts || 0 : "—"}
-                    </div>
-                  </div>
-                );
-              });
-            })()}
+                  );
+                });
+              })()}
+            </div>
           </div>
-          </div>
-          {ranked.length > rankingLimit && <div className="rankings-disclosure"><span>{rankingsExpanded ? ranked.length : rankingLimit} of {ranked.length} players</span><button className="btn btn-g" aria-expanded={rankingsExpanded} aria-controls="rankings-entries" onClick={() => setRankingsExpanded(value => !value)}><UiIcon name={rankingsExpanded ? "x" : "ranks"}/>{rankingsExpanded ? "Show fewer" : "View all rankings"}</button></div>}
+          {ranked.length > rankingLimit && (
+            <div className="rankings-disclosure">
+              <span>
+                {rankingsExpanded ? ranked.length : rankingLimit} of{" "}
+                {ranked.length} players
+              </span>
+              <button
+                className="btn btn-g"
+                aria-expanded={rankingsExpanded}
+                aria-controls="rankings-entries"
+                onClick={() => setRankingsExpanded((value) => !value)}
+              >
+                <UiIcon name={rankingsExpanded ? "x" : "ranks"} />
+                {rankingsExpanded ? "Show fewer" : "View all rankings"}
+              </button>
+            </div>
+          )}
         </div>
       </div>
-      <RecentResults games={seasonGames} players={state.players} onOpen={onNavToHistory}/>
+      <RecentResults
+        games={seasonGames}
+        players={state.players}
+        onOpen={onNavToHistory}
+      />
       {showRecalcConfirm && (
         <ConfirmDialog
           title="Recalculate All Stats?"
@@ -5423,72 +5686,218 @@ function LeaderboardView({
 
 // ── HISTORY VIEW ───────────────────────────────────────────────────────────
 
-function HistoryView({ state, setState, isAdmin, showToast, seasonFilter, setSeasonFilter, active }) {
+function HistoryView({
+  state,
+  setState,
+  isAdmin,
+  showToast,
+  seasonFilter,
+  setSeasonFilter,
+  active,
+}) {
   const [playerFilter, setPlayerFilter] = useState("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [showFilters, setShowFilters] = useState(false);
   const [selectedGameId, setSelectedGameId] = useState(null);
   const [visibleDays, setVisibleDays] = useState(5);
-  useEffect(() => { if (!active) setSelectedGameId(null); }, [active]);
-  useEffect(() => { setVisibleDays(5); }, [playerFilter, dateFrom, dateTo, seasonFilter]);
+  useEffect(() => {
+    if (!active) setSelectedGameId(null);
+  }, [active]);
+  useEffect(() => {
+    setVisibleDays(5);
+  }, [playerFilter, dateFrom, dateTo, seasonFilter]);
 
   const currentSeason = getCurrentSeason(state);
-  const scopedSeason = seasonFilter === "current" ? currentSeason : (state.seasons || []).find(s => s.id === seasonFilter);
-  const allGames = (state.games || []).filter(g => seasonFilter === "all" || gameInSeason(g, scopedSeason))
-    .sort((a,b) => new Date(b.date) - new Date(a.date));
+  const scopedSeason =
+    seasonFilter === "current"
+      ? currentSeason
+      : (state.seasons || []).find((s) => s.id === seasonFilter);
+  const allGames = (state.games || [])
+    .filter((g) => seasonFilter === "all" || gameInSeason(g, scopedSeason))
+    .sort((a, b) => new Date(b.date) - new Date(a.date));
   const invalidRange = Boolean(dateFrom && dateTo && dateFrom > dateTo);
   const query = playerFilter.trim().toLowerCase();
   // Date inputs describe local calendar days, with an exclusive next-midnight boundary.
   const from = dateFrom ? new Date(dateFrom + "T00:00:00") : null;
   const until = dateTo ? new Date(dateTo + "T00:00:00") : null;
   if (until) until.setDate(until.getDate() + 1);
-  const filtered = invalidRange ? [] : allGames.filter(g => {
-    if (query && ![...g.sideA,...g.sideB].some(id => pName(id,state.players).toLowerCase().includes(query))) return false;
-    const date = new Date(g.date);
-    return (!from || date >= from) && (!until || date < until);
-  });
+  const filtered = invalidRange
+    ? []
+    : allGames.filter((g) => {
+        if (
+          query &&
+          ![...g.sideA, ...g.sideB].some((id) =>
+            pName(id, state.players).toLowerCase().includes(query),
+          )
+        )
+          return false;
+        const date = new Date(g.date);
+        return (!from || date >= from) && (!until || date < until);
+      });
   const groups = [];
   for (const game of filtered) {
-    const day = new Date(game.date).toLocaleDateString("en-GB",{weekday:"long",day:"numeric",month:"short",year:"numeric"});
-    if (groups.at(-1)?.day !== day) groups.push({day,games:[]});
+    const day = new Date(game.date).toLocaleDateString("en-GB", {
+      weekday: "long",
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+    });
+    if (groups.at(-1)?.day !== day) groups.push({ day, games: [] });
     groups.at(-1).games.push(game);
   }
   const hasFilters = Boolean(playerFilter || dateFrom || dateTo);
-  const selectedGame = (state.games || []).find(g => g.id === selectedGameId);
-  function clearFilters() { setPlayerFilter(""); setDateFrom(""); setDateTo(""); }
+  const selectedGame = (state.games || []).find((g) => g.id === selectedGameId);
+  function clearFilters() {
+    setPlayerFilter("");
+    setDateFrom("");
+    setDateTo("");
+  }
 
   return (
     <div className="stack page-fade history-workspace">
-      {selectedGame && <GameDetail game={selectedGame} state={state} setState={setState} isAdmin={isAdmin} showToast={showToast} onClose={() => setSelectedGameId(null)}/>}
+      {selectedGame && (
+        <GameDetail
+          game={selectedGame}
+          state={state}
+          setState={setState}
+          isAdmin={isAdmin}
+          showToast={showToast}
+          onClose={() => setSelectedGameId(null)}
+        />
+      )}
       <section className="history-controls" aria-label="Match filters">
         <div className="history-filter-bar">
-          <label className="history-search"><span>Player</span><span className="history-input-wrap"><UiIcon name="search"/><input className="inp" type="search" placeholder="Search players" value={playerFilter} onChange={e => setPlayerFilter(e.target.value)}/></span></label>
-          <label className="history-season"><span>Season</span><select className="inp" value={seasonFilter} onChange={e => setSeasonFilter(e.target.value)}>
-            <option value="current">Current season</option>
-            <option value="all">All seasons</option>
-            {(state.seasons || []).map(se => <option key={se.id} value={se.id}>{se.label}</option>)}
-          </select></label>
-          <button className={`btn ${showFilters ? "btn-p" : "btn-g"}`} aria-expanded={showFilters} aria-controls="history-dates" onClick={() => setShowFilters(value => !value)}><UiIcon name="calendar"/>Dates{dateFrom || dateTo ? " (set)" : ""}</button>
-          {hasFilters && <button className="btn btn-g history-clear" onClick={clearFilters}><UiIcon name="x"/>Clear filters</button>}
+          <label className="history-search">
+            <span>Player</span>
+            <span className="history-input-wrap">
+              <UiIcon name="search" />
+              <input
+                className="inp"
+                type="search"
+                placeholder="Search players"
+                value={playerFilter}
+                onChange={(e) => setPlayerFilter(e.target.value)}
+              />
+            </span>
+          </label>
+          <label className="history-season">
+            <span>Season</span>
+            <select
+              className="inp"
+              value={seasonFilter}
+              onChange={(e) => setSeasonFilter(e.target.value)}
+            >
+              <option value="current">Current season</option>
+              <option value="all">All seasons</option>
+              {(state.seasons || []).map((se) => (
+                <option key={se.id} value={se.id}>
+                  {se.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            className={`btn ${showFilters ? "btn-p" : "btn-g"}`}
+            aria-expanded={showFilters}
+            aria-controls="history-dates"
+            onClick={() => setShowFilters((value) => !value)}
+          >
+            <UiIcon name="calendar" />
+            Dates{dateFrom || dateTo ? " (set)" : ""}
+          </button>
+          {hasFilters && (
+            <button className="btn btn-g history-clear" onClick={clearFilters}>
+              <UiIcon name="x" />
+              Clear filters
+            </button>
+          )}
         </div>
-        {showFilters && <div className="history-date-filters" id="history-dates">
-          <label><span>From</span><input className="inp" type="date" value={dateFrom} aria-invalid={invalidRange || undefined} aria-describedby={invalidRange ? "history-date-error" : undefined} onChange={e => setDateFrom(e.target.value)}/></label>
-          <label><span>To</span><input className="inp" type="date" value={dateTo} min={dateFrom || undefined} aria-invalid={invalidRange || undefined} aria-describedby={invalidRange ? "history-date-error" : undefined} onChange={e => setDateTo(e.target.value)}/></label>
-        </div>}
-        {invalidRange && <p className="history-date-error" id="history-date-error" role="alert">The end date must be on or after the start date.</p>}
+        {showFilters && (
+          <div className="history-date-filters" id="history-dates">
+            <label>
+              <span>From</span>
+              <input
+                className="inp"
+                type="date"
+                value={dateFrom}
+                aria-invalid={invalidRange || undefined}
+                aria-describedby={
+                  invalidRange ? "history-date-error" : undefined
+                }
+                onChange={(e) => setDateFrom(e.target.value)}
+              />
+            </label>
+            <label>
+              <span>To</span>
+              <input
+                className="inp"
+                type="date"
+                value={dateTo}
+                min={dateFrom || undefined}
+                aria-invalid={invalidRange || undefined}
+                aria-describedby={
+                  invalidRange ? "history-date-error" : undefined
+                }
+                onChange={(e) => setDateTo(e.target.value)}
+              />
+            </label>
+          </div>
+        )}
+        {invalidRange && (
+          <p
+            className="history-date-error"
+            id="history-date-error"
+            role="alert"
+          >
+            The end date must be on or after the start date.
+          </p>
+        )}
         <div className="history-results-summary" role="status">
-          <span><strong>{filtered.length}</strong> {filtered.length === 1 ? "match" : "matches"}{hasFilters ? ` of ${allGames.length}` : ""}</span>
-          <span>{seasonFilter === "all" ? "All seasons" : scopedSeason?.label || "Current season"} · {groups.length} {groups.length === 1 ? "matchday" : "matchdays"}</span>
+          <span>
+            <strong>{filtered.length}</strong>{" "}
+            {filtered.length === 1 ? "match" : "matches"}
+            {hasFilters ? ` of ${allGames.length}` : ""}
+          </span>
+          <span>
+            {seasonFilter === "all"
+              ? "All seasons"
+              : scopedSeason?.label || "Current season"}{" "}
+            · {groups.length} {groups.length === 1 ? "matchday" : "matchdays"}
+          </span>
         </div>
       </section>
-      {!filtered.length && !invalidRange && <div className="history-empty">
-        <UiIcon name="history" size={28}/>
-        <h2>{hasFilters ? "No matching games" : "No games in this season"}</h2>
-        {hasFilters && <button className="btn btn-g" onClick={clearFilters}>Clear filters</button>}
-      </div>}
-      <HistoryRecords groups={groups.slice(0,visibleDays)} players={state.players} onSelect={setSelectedGameId}/>
-      {groups.length > visibleDays && <div className="history-load-more"><button className="btn btn-g" onClick={() => setVisibleDays(value => value + 5)}><UiIcon name="plus"/>Load more · {groups.length - visibleDays} {groups.length - visibleDays === 1 ? "matchday" : "matchdays"} remaining</button></div>}
+      {!filtered.length && !invalidRange && (
+        <div className="history-empty">
+          <UiIcon name="history" size={28} />
+          <h2>
+            {hasFilters ? "No matching games" : "No games in this season"}
+          </h2>
+          {hasFilters && (
+            <button className="btn btn-g" onClick={clearFilters}>
+              Clear filters
+            </button>
+          )}
+        </div>
+      )}
+      <HistoryRecords
+        groups={groups.slice(0, visibleDays)}
+        players={state.players}
+        onSelect={setSelectedGameId}
+      />
+      {groups.length > visibleDays && (
+        <div className="history-load-more">
+          <button
+            className="btn btn-g"
+            onClick={() => setVisibleDays((value) => value + 5)}
+          >
+            <UiIcon name="plus" />
+            Load more · {groups.length - visibleDays}{" "}
+            {groups.length - visibleDays === 1 ? "matchday" : "matchdays"}{" "}
+            remaining
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -5664,56 +6073,257 @@ function OnboardView({ state, setState, showToast, onEdit }) {
     });
   }
 
-  const roster = [...state.players].sort((a,b) => (b.pts || 0) - (a.pts || 0)).filter(p => `${p.name} ${p.preferredRole || "FLEX"}`.toLowerCase().includes(rosterSearch.trim().toLowerCase()));
+  const roster = [...state.players]
+    .sort((a, b) => (b.pts || 0) - (a.pts || 0))
+    .filter((p) =>
+      `${p.name} ${p.preferredRole || "FLEX"}`
+        .toLowerCase()
+        .includes(rosterSearch.trim().toLowerCase()),
+    );
   const activity = useMemo(() => {
     const result = {};
-    for (const game of state.games) for (const id of [...game.sideA,...game.sideB]) {
-      const previous = result[id] || {games:0,last:null};
-      result[id] = {games:previous.games + 1,last:!previous.last || new Date(game.date) > new Date(previous.last) ? game.date : previous.last};
-    }
+    for (const game of state.games)
+      for (const id of [...game.sideA, ...game.sideB]) {
+        const previous = result[id] || { games: 0, last: null };
+        result[id] = {
+          games: previous.games + 1,
+          last:
+            !previous.last || new Date(game.date) > new Date(previous.last)
+              ? game.date
+              : previous.last,
+        };
+      }
     return result;
-  },[state.games]);
-  const page = Math.min(rosterPage,Math.max(0,Math.ceil(roster.length / 8)-1));
-  const shownRoster = roster.slice(page * 8,page * 8 + 8);
-  const placements = state.monthlyPlacements?.[getCurrentPlacementKey(state)] || {};
+  }, [state.games]);
+  const page = Math.min(
+    rosterPage,
+    Math.max(0, Math.ceil(roster.length / 8) - 1),
+  );
+  const shownRoster = roster.slice(page * 8, page * 8 + 8);
+  const placements =
+    state.monthlyPlacements?.[getCurrentPlacementKey(state)] || {};
   return (
     <div className="stack page-fade roster-workspace">
       <div className="roster-toolbar">
-        <div className="roster-title"><h2>Active roster</h2><span className="roster-count">{state.players.length} registered players</span></div>
-        <label className="roster-search"><UiIcon name="search"/><input className="inp" aria-label="Search roster by name or role" placeholder="Filter by name or role" value={rosterSearch} onChange={e => {setRosterSearch(e.target.value);setRosterPage(0);}} /></label>
-        <div className="roster-actions"><button className="btn btn-g" onClick={() => setEntryMode(entryMode === "bulk" ? null : "bulk")}><UiIcon name="upload"/>Import names</button><button className="btn btn-p" onClick={() => setEntryMode(entryMode === "single" ? null : "single")}><UiIcon name="plus"/>Add player</button></div>
+        <div className="roster-title">
+          <h2>Active roster</h2>
+          <span className="roster-count">
+            {state.players.length} registered players
+          </span>
+        </div>
+        <label className="roster-search">
+          <UiIcon name="search" />
+          <input
+            className="inp"
+            aria-label="Search roster by name or role"
+            placeholder="Filter by name or role"
+            value={rosterSearch}
+            onChange={(e) => {
+              setRosterSearch(e.target.value);
+              setRosterPage(0);
+            }}
+          />
+        </label>
+        <div className="roster-actions">
+          <button
+            className="btn btn-g"
+            onClick={() => setEntryMode(entryMode === "bulk" ? null : "bulk")}
+          >
+            <UiIcon name="upload" />
+            Import names
+          </button>
+          <button
+            className="btn btn-p"
+            onClick={() =>
+              setEntryMode(entryMode === "single" ? null : "single")
+            }
+          >
+            <UiIcon name="plus" />
+            Add player
+          </button>
+        </div>
       </div>
-      {entryMode === "single" && <div className="card" style={{padding:16}}>
-        <label className="lbl" htmlFor="new-player-name">Player name</label>
-        <form className="fac" onSubmit={e => {e.preventDefault();addSingle();}}>
-          <input id="new-player-name" className="inp" autoFocus value={single} onChange={e => setSingle(e.target.value)} />
-          <button className="btn btn-p" disabled={!single.trim()}>Add</button>
-          <button type="button" className="btn btn-g" onClick={() => setEntryMode(null)}>Cancel</button>
-        </form>
-      </div>}
-      {entryMode === "bulk" && <div className="card" style={{padding:16}}>
-        <label className="lbl" htmlFor="bulk-player-names">Names, one per line or comma-separated</label>
-        <textarea id="bulk-player-names" className="inp" rows={4} value={bulk} onChange={e => {setBulk(e.target.value);setPreview(parseBulk(e.target.value));}} />
-        {preview.length > 0 && <div className="msg msg-w">{preview.length} players: {preview.join(", ")}</div>}
-        <div className="fac mt12"><button className="btn btn-p" disabled={!preview.length} onClick={confirmBulk}>Add {preview.length || ""} players</button><button className="btn btn-g" onClick={() => setEntryMode(null)}>Cancel</button></div>
-      </div>}
+      {entryMode === "single" && (
+        <div className="card" style={{ padding: 16 }}>
+          <label className="lbl" htmlFor="new-player-name">
+            Player name
+          </label>
+          <form
+            className="fac"
+            onSubmit={(e) => {
+              e.preventDefault();
+              addSingle();
+            }}
+          >
+            <input
+              id="new-player-name"
+              className="inp"
+              autoFocus
+              value={single}
+              onChange={(e) => setSingle(e.target.value)}
+            />
+            <button className="btn btn-p" disabled={!single.trim()}>
+              Add
+            </button>
+            <button
+              type="button"
+              className="btn btn-g"
+              onClick={() => setEntryMode(null)}
+            >
+              Cancel
+            </button>
+          </form>
+        </div>
+      )}
+      {entryMode === "bulk" && (
+        <div className="card" style={{ padding: 16 }}>
+          <label className="lbl" htmlFor="bulk-player-names">
+            Names, one per line or comma-separated
+          </label>
+          <textarea
+            id="bulk-player-names"
+            className="inp"
+            rows={4}
+            value={bulk}
+            onChange={(e) => {
+              setBulk(e.target.value);
+              setPreview(parseBulk(e.target.value));
+            }}
+          />
+          {preview.length > 0 && (
+            <div className="msg msg-w">
+              {preview.length} players: {preview.join(", ")}
+            </div>
+          )}
+          <div className="fac mt12">
+            <button
+              className="btn btn-p"
+              disabled={!preview.length}
+              onClick={confirmBulk}
+            >
+              Add {preview.length || ""} players
+            </button>
+            <button className="btn btn-g" onClick={() => setEntryMode(null)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
       <div className="roster-record">
         <table className="tbl roster-table">
-          <thead><tr><th scope="col">Name</th><th scope="col">Role / Position</th><th scope="col">Status</th><th scope="col">Games</th><th scope="col">Last played</th><th scope="col">Actions</th></tr></thead>
-          <tbody>{shownRoster.map(p => <tr key={p.id}>
-            <td><span className="roster-player-name">{p.name}</span><small className="roster-mobile-meta">{activity[p.id]?.games || 0} games{activity[p.id]?.last ? ` · ${fmtDate(activity[p.id].last)}` : " · Not yet played"}</small></td>
-            <td><span className={`role-tag role-${(p.preferredRole || "FLEX").toLowerCase()}`}>{p.preferredRole || "FLEX"}</span></td>
-            <td><span className={`roster-status ${placements[p.id] >= CONFIG.MAX_PLACEMENTS_PER_MONTH ? "placed" : "provisional"}`}><i/>{placements[p.id] >= CONFIG.MAX_PLACEMENTS_PER_MONTH ? "Placed" : `Provisional (${placements[p.id] || 0}/${CONFIG.MAX_PLACEMENTS_PER_MONTH})`}</span></td>
-            <td className="roster-games">{activity[p.id]?.games || 0}</td>
-            <td className="roster-last">{activity[p.id]?.last ? fmtDate(activity[p.id].last) : "Not yet played"}</td>
-            <td><div className="roster-row-actions"><button className="icon-button" title={`Edit ${p.name}`} aria-label={`Edit ${p.name}`} onClick={() => onEdit(p)}><UiIcon name="edit"/></button><button className="icon-button remove-player" title={`Remove ${p.name}`} aria-label={`Remove ${p.name}`} onClick={() => removePlayer(p.id)}><UiIcon name="trash"/></button></div></td>
-          </tr>)}</tbody>
+          <thead>
+            <tr>
+              <th scope="col">Name</th>
+              <th scope="col">Role / Position</th>
+              <th scope="col">Status</th>
+              <th scope="col">Games</th>
+              <th scope="col">Last played</th>
+              <th scope="col">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {shownRoster.map((p) => (
+              <tr key={p.id}>
+                <td>
+                  <span className="roster-player-name">{p.name}</span>
+                  <small className="roster-mobile-meta">
+                    {activity[p.id]?.games || 0} games
+                    {activity[p.id]?.last
+                      ? ` · ${fmtDate(activity[p.id].last)}`
+                      : " · Not yet played"}
+                  </small>
+                </td>
+                <td>
+                  <span
+                    className={`role-tag role-${(p.preferredRole || "FLEX").toLowerCase()}`}
+                  >
+                    {p.preferredRole || "FLEX"}
+                  </span>
+                </td>
+                <td>
+                  <span
+                    className={`roster-status ${placements[p.id] >= CONFIG.MAX_PLACEMENTS_PER_MONTH ? "placed" : "provisional"}`}
+                  >
+                    <i />
+                    {placements[p.id] >= CONFIG.MAX_PLACEMENTS_PER_MONTH
+                      ? "Placed"
+                      : `Provisional (${placements[p.id] || 0}/${CONFIG.MAX_PLACEMENTS_PER_MONTH})`}
+                  </span>
+                </td>
+                <td className="roster-games">{activity[p.id]?.games || 0}</td>
+                <td className="roster-last">
+                  {activity[p.id]?.last
+                    ? fmtDate(activity[p.id].last)
+                    : "Not yet played"}
+                </td>
+                <td>
+                  <div className="roster-row-actions">
+                    <button
+                      className="icon-button"
+                      title={`Edit ${p.name}`}
+                      aria-label={`Edit ${p.name}`}
+                      onClick={() => onEdit(p)}
+                    >
+                      <UiIcon name="edit" />
+                    </button>
+                    <button
+                      className="icon-button remove-player"
+                      title={`Remove ${p.name}`}
+                      aria-label={`Remove ${p.name}`}
+                      onClick={() => removePlayer(p.id)}
+                    >
+                      <UiIcon name="trash" />
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
         </table>
-        {!roster.length && <p className="text-d" style={{padding:24}}>{rosterSearch ? "No matching players" : "No players yet"}</p>}
-        <div className="roster-pagination"><span role="status">{roster.length ? `Showing ${page * 8 + 1}-${Math.min(page * 8 + 8,roster.length)} of ${roster.length} players` : "0 players"}</span><div><button className="icon-button" title="Previous roster page" aria-label="Previous roster page" disabled={page === 0} onClick={() => setRosterPage(page - 1)}><UiIcon name="previous"/></button><button className="icon-button" title="Next roster page" aria-label="Next roster page" disabled={(page + 1) * 8 >= roster.length} onClick={() => setRosterPage(page + 1)}><UiIcon name="next"/></button></div></div>
+        {!roster.length && (
+          <p className="text-d" style={{ padding: 24 }}>
+            {rosterSearch ? "No matching players" : "No players yet"}
+          </p>
+        )}
+        <div className="roster-pagination">
+          <span role="status">
+            {roster.length
+              ? `Showing ${page * 8 + 1}-${Math.min(page * 8 + 8, roster.length)} of ${roster.length} players`
+              : "0 players"}
+          </span>
+          <div>
+            <button
+              className="icon-button"
+              title="Previous roster page"
+              aria-label="Previous roster page"
+              disabled={page === 0}
+              onClick={() => setRosterPage(page - 1)}
+            >
+              <UiIcon name="previous" />
+            </button>
+            <button
+              className="icon-button"
+              title="Next roster page"
+              aria-label="Next roster page"
+              disabled={(page + 1) * 8 >= roster.length}
+              onClick={() => setRosterPage(page + 1)}
+            >
+              <UiIcon name="next" />
+            </button>
+          </div>
+        </div>
       </div>
-      <button className="btn btn-g" style={{alignSelf:"flex-start"}} onClick={() => exportPlayersCsv(state,"current")}><UiIcon name="download"/>Export roster as CSV</button>
-      {confirm && <ConfirmDialog {...confirm} onCancel={() => setConfirm(null)}/>}
+      <button
+        className="btn btn-g"
+        style={{ alignSelf: "flex-start" }}
+        onClick={() => exportPlayersCsv(state, "current")}
+      >
+        <UiIcon name="download" />
+        Export roster as CSV
+      </button>
+      {confirm && (
+        <ConfirmDialog {...confirm} onCancel={() => setConfirm(null)} />
+      )}
     </div>
   );
 }
@@ -5759,7 +6369,10 @@ function LogView({ state, setState, showToast, active, syncStatus }) {
   useEffect(() => {
     if (!active) return;
     const handler = (e) => {
-      if (e.ctrlKey && e.key === "Enter") {e.preventDefault();submitAll();}
+      if (e.ctrlKey && e.key === "Enter") {
+        e.preventDefault();
+        submitAll();
+      }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
@@ -5769,21 +6382,55 @@ function LogView({ state, setState, showToast, active, syncStatus }) {
     if (!pendingSubmission || syncStatus !== "saved") return;
     let cancelled = false;
     // Confirm the submitted IDs exist remotely before discarding the entry draft.
-    supabase.from("app_state").select("state").eq("id", 1).single().then(({data,error}) => {
-      if (cancelled) return;
-      const saved = !error && pendingSubmission.games.every(expected => data?.state?.games?.some(g => g.id === expected.id && g.scoreA === expected.scoreA && g.scoreB === expected.scoreB && JSON.stringify(g.sideA) === JSON.stringify(expected.sideA) && JSON.stringify(g.sideB) === JSON.stringify(expected.sideB)));
-      if (saved) {
-        setRows(current => {
-          const remaining = current.filter(row => !pendingSubmission.rows.some(sent => JSON.stringify(sent) === JSON.stringify(row)));
-          return remaining.length ? remaining : [EMPTY_ROW()];
-        });
-        setLastLogged(receipt => receipt ? {...receipt, confirmed:true} : receipt);
-        setPendingSubmission(null);
-        setSubmissionNotice("");
-      } else setSubmissionNotice("Submission could not be confirmed. Your draft is still here; check History before trying again.");
-    }).catch(() => {if(!cancelled)setSubmissionNotice("Could not confirm the save. Your draft is still here.");});
-    return () => {cancelled=true;};
-  }, [syncStatus,pendingSubmission]);
+    supabase
+      .from("app_state")
+      .select("state")
+      .eq("id", 1)
+      .single()
+      .then(({ data, error }) => {
+        if (cancelled) return;
+        const saved =
+          !error &&
+          pendingSubmission.games.every((expected) =>
+            data?.state?.games?.some(
+              (g) =>
+                g.id === expected.id &&
+                g.scoreA === expected.scoreA &&
+                g.scoreB === expected.scoreB &&
+                JSON.stringify(g.sideA) === JSON.stringify(expected.sideA) &&
+                JSON.stringify(g.sideB) === JSON.stringify(expected.sideB),
+            ),
+          );
+        if (saved) {
+          setRows((current) => {
+            const remaining = current.filter(
+              (row) =>
+                !pendingSubmission.rows.some(
+                  (sent) => JSON.stringify(sent) === JSON.stringify(row),
+                ),
+            );
+            return remaining.length ? remaining : [EMPTY_ROW()];
+          });
+          setLastLogged((receipt) =>
+            receipt ? { ...receipt, confirmed: true } : receipt,
+          );
+          setPendingSubmission(null);
+          setSubmissionNotice("");
+        } else
+          setSubmissionNotice(
+            "Submission could not be confirmed. Your draft is still here; check History before trying again.",
+          );
+      })
+      .catch(() => {
+        if (!cancelled)
+          setSubmissionNotice(
+            "Could not confirm the save. Your draft is still here.",
+          );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [syncStatus, pendingSubmission]);
 
   function setRowPenalty(rowId, pid, type, delta) {
     setRows((r) =>
@@ -6074,7 +6721,10 @@ function LogView({ state, setState, showToast, active, syncStatus }) {
       games: newGames,
       monthlyPlacements: newPlacements,
     }));
-    setPendingSubmission({games:pendingGames,rows:JSON.parse(JSON.stringify(rows))});
+    setPendingSubmission({
+      games: pendingGames,
+      rows: JSON.parse(JSON.stringify(rows)),
+    });
     setSubmissionNotice("");
     setLastLogged({
       games: loggedWithDeltas,
@@ -6106,20 +6756,61 @@ function LogView({ state, setState, showToast, active, syncStatus }) {
   return (
     <>
       <div className="stack page-fade">
-        {pendingSubmission && <div className={submissionNotice || syncStatus === "error" || syncStatus === "conflict" ? "msg msg-w" : "msg msg-i"} role="status">
-          {submissionNotice || (syncStatus === "error" || syncStatus === "conflict" ? "Save not confirmed. Your draft has been retained." : "Saving submission. Your draft stays here until the save is confirmed.")}
-          {(syncStatus === "error" || submissionNotice) && <button className="btn btn-g btn-sm" style={{marginLeft:12}} onClick={() => {
-            if(pendingSubmission.games.every(g => state.games.some(saved => saved.id === g.id))) {setSubmissionNotice("");setState(s => ({...s}));}
-            else {setPendingSubmission(null);setSubmissionNotice("");setLastLogged(null);}
-          }}>{pendingSubmission.games.every(g => state.games.some(saved => saved.id === g.id)) ? "Retry save" : "Return to draft"}</button>}
-        </div>}
+        {pendingSubmission && (
+          <div
+            className={
+              submissionNotice ||
+              syncStatus === "error" ||
+              syncStatus === "conflict"
+                ? "msg msg-w"
+                : "msg msg-i"
+            }
+            role="status"
+          >
+            {submissionNotice ||
+              (syncStatus === "error" || syncStatus === "conflict"
+                ? "Save not confirmed. Your draft has been retained."
+                : "Saving submission. Your draft stays here until the save is confirmed.")}
+            {(syncStatus === "error" || submissionNotice) && (
+              <button
+                className="btn btn-g btn-sm"
+                style={{ marginLeft: 12 }}
+                onClick={() => {
+                  if (
+                    pendingSubmission.games.every((g) =>
+                      state.games.some((saved) => saved.id === g.id),
+                    )
+                  ) {
+                    setSubmissionNotice("");
+                    setState((s) => ({ ...s }));
+                  } else {
+                    setPendingSubmission(null);
+                    setSubmissionNotice("");
+                    setLastLogged(null);
+                  }
+                }}
+              >
+                {pendingSubmission.games.every((g) =>
+                  state.games.some((saved) => saved.id === g.id),
+                )
+                  ? "Retry save"
+                  : "Return to draft"}
+              </button>
+            )}
+          </div>
+        )}
         {lastLogged && (
           <div className="card" style={{ borderColor: "var(--amber-d)" }}>
             <div
               className="card-header"
               style={{ background: "var(--amber-g)" }}
             >
-              <span className="card-title"><UiIcon name={lastLogged.confirmed ? "check" : "history"}/>{lastLogged.confirmed ? "Saved submission" : "Submission preview"}</span>
+              <span className="card-title">
+                <UiIcon name={lastLogged.confirmed ? "check" : "history"} />
+                {lastLogged.confirmed
+                  ? "Saved submission"
+                  : "Submission preview"}
+              </span>
               <button
                 className="btn btn-g btn-sm"
                 onClick={() => setLastLogged(null)}
@@ -6334,7 +7025,11 @@ function LogView({ state, setState, showToast, active, syncStatus }) {
                               ● enter scores
                             </span>
                           );
-                        return <span className="xs text-g"><UiIcon name="check"/> ready</span>;
+                        return (
+                          <span className="xs text-g">
+                            <UiIcon name="check" /> ready
+                          </span>
+                        );
                       })()}
                     </div>
                     {rows.length > 1 && (
@@ -6428,7 +7123,15 @@ function LogView({ state, setState, showToast, active, syncStatus }) {
                               full = !onA && row.sideA.length >= 2;
                             if (onA) return null;
                             return (
-                              <div role="button" tabIndex={0} onKeyDown={e => {if(e.key === "Enter" || e.key === " "){e.preventDefault();e.currentTarget.click();}}}
+                              <div
+                                role="button"
+                                tabIndex={0}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter" || e.key === " ") {
+                                    e.preventDefault();
+                                    e.currentTarget.click();
+                                  }
+                                }}
                                 key={p.id}
                                 className={`player-chip ${onB || full ? "disabled" : ""}`}
                                 onClick={() => {
@@ -6591,7 +7294,7 @@ function LogView({ state, setState, showToast, active, syncStatus }) {
                                 letterSpacing: 0.3,
                               }}
                             >
-                              <UiIcon name="warning"/> Low-value game
+                              <UiIcon name="warning" /> Low-value game
                             </div>
                           )}
                         </div>
@@ -6668,7 +7371,15 @@ function LogView({ state, setState, showToast, active, syncStatus }) {
                               full = !onB && row.sideB.length >= 2;
                             if (onB) return null;
                             return (
-                              <div role="button" tabIndex={0} onKeyDown={e => {if(e.key === "Enter" || e.key === " "){e.preventDefault();e.currentTarget.click();}}}
+                              <div
+                                role="button"
+                                tabIndex={0}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter" || e.key === " ") {
+                                    e.preventDefault();
+                                    e.currentTarget.click();
+                                  }
+                                }}
                                 key={p.id}
                                 className={`player-chip ${onA || full ? "disabled" : ""}`}
                                 onClick={() => {
@@ -6723,7 +7434,15 @@ function LogView({ state, setState, showToast, active, syncStatus }) {
                         );
                         if (isFlex)
                           return (
-                            <div role="button" tabIndex={0} onKeyDown={e => {if(e.key === "Enter" || e.key === " "){e.preventDefault();e.currentTarget.click();}}}
+                            <div
+                              role="button"
+                              tabIndex={0}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" || e.key === " ") {
+                                  e.preventDefault();
+                                  e.currentTarget.click();
+                                }
+                              }}
                               className="role-slot role-slot-flex"
                               onClick={onClickSlot}
                               title="Click to re-assign"
@@ -6739,7 +7458,7 @@ function LogView({ state, setState, showToast, active, syncStatus }) {
                                   marginBottom: 2,
                                 }}
                               >
-                                <UiIcon name="zap"/> FLEX
+                                <UiIcon name="zap" /> FLEX
                               </div>
                               <div
                                 className="xs text-dd"
@@ -6750,7 +7469,15 @@ function LogView({ state, setState, showToast, active, syncStatus }) {
                             </div>
                           );
                         return (
-                          <div role="button" tabIndex={0} onKeyDown={e => {if(e.key === "Enter" || e.key === " "){e.preventDefault();e.currentTarget.click();}}}
+                          <div
+                            role="button"
+                            tabIndex={0}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                e.currentTarget.click();
+                              }
+                            }}
                             className={`role-slot ${occupant ? "role-slot-" + roleToShow.toLowerCase() : "role-slot-empty"}`}
                             onClick={onClickSlot}
                             title={
@@ -6779,7 +7506,7 @@ function LogView({ state, setState, showToast, active, syncStatus }) {
                               <div style={{ fontWeight: 600, fontSize: 12 }}>
                                 {pName(occupant, state.players)}{" "}
                                 <span className="xs text-dd">
-                                   click to swap
+                                  click to swap
                                 </span>
                               </div>
                             ) : (
@@ -6831,7 +7558,7 @@ function LogView({ state, setState, showToast, active, syncStatus }) {
                                   className="xs"
                                   style={{ color: "var(--green)" }}
                                 >
-                                  <UiIcon name="check"/> Positional MMR active
+                                  <UiIcon name="check" /> Positional MMR active
                                 </span>
                               ) : bothSidesFull ? (
                                 <span
@@ -6898,7 +7625,7 @@ function LogView({ state, setState, showToast, active, syncStatus }) {
                                     sideIds={row.sideA}
                                     roleToShow="ATK"
                                     label="ATK"
-                                    icon={<UiIcon name="swords"/>}
+                                    icon={<UiIcon name="swords" />}
                                     slotClass="role-slot-atk"
                                     onClickSlot={() =>
                                       setRows((r) =>
@@ -6910,7 +7637,7 @@ function LogView({ state, setState, showToast, active, syncStatus }) {
                                     sideIds={row.sideA}
                                     roleToShow="DEF"
                                     label="DEF"
-                                    icon={<UiIcon name="shield"/>}
+                                    icon={<UiIcon name="shield" />}
                                     slotClass="role-slot-def"
                                     onClickSlot={() =>
                                       setRows((r) =>
@@ -6929,7 +7656,7 @@ function LogView({ state, setState, showToast, active, syncStatus }) {
                                   }
                                   title="Team swapped positions at the 5-goal mark (§3.7)"
                                 >
-                                   FLEX (swap at 5 goals)
+                                  FLEX (swap at 5 goals)
                                 </button>
                               </div>
                               {/* Side B */}
@@ -6956,7 +7683,7 @@ function LogView({ state, setState, showToast, active, syncStatus }) {
                                     sideIds={row.sideB}
                                     roleToShow="ATK"
                                     label="ATK"
-                                    icon={<UiIcon name="swords"/>}
+                                    icon={<UiIcon name="swords" />}
                                     slotClass="role-slot-atk"
                                     onClickSlot={() =>
                                       setRows((r) =>
@@ -6968,7 +7695,7 @@ function LogView({ state, setState, showToast, active, syncStatus }) {
                                     sideIds={row.sideB}
                                     roleToShow="DEF"
                                     label="DEF"
-                                    icon={<UiIcon name="shield"/>}
+                                    icon={<UiIcon name="shield" />}
                                     slotClass="role-slot-def"
                                     onClickSlot={() =>
                                       setRows((r) =>
@@ -6987,7 +7714,7 @@ function LogView({ state, setState, showToast, active, syncStatus }) {
                                   }
                                   title="Team swapped positions at the 5-goal mark (§3.7)"
                                 >
-                                   FLEX (swap at 5 goals)
+                                  FLEX (swap at 5 goals)
                                 </button>
                               </div>
                             </div>
@@ -7010,7 +7737,7 @@ function LogView({ state, setState, showToast, active, syncStatus }) {
                       className="msg msg-e mt8"
                       style={{ fontWeight: 600, fontSize: 12 }}
                     >
-                      <UiIcon name="warning"/> {errors[row.id]}
+                      <UiIcon name="warning" /> {errors[row.id]}
                     </div>
                   )}
 
@@ -7070,7 +7797,11 @@ function LogView({ state, setState, showToast, active, syncStatus }) {
                                     setRowPenalty(row.id, pid, "yellow", 1)
                                   }
                                 >
-                                  <UiIcon name="yellow-card" label="Add yellow card"/>+
+                                  <UiIcon
+                                    name="yellow-card"
+                                    label="Add yellow card"
+                                  />
+                                  +
                                 </button>
                                 <button
                                   className="btn btn-g btn-sm"
@@ -7079,7 +7810,11 @@ function LogView({ state, setState, showToast, active, syncStatus }) {
                                     setRowPenalty(row.id, pid, "red", 1)
                                   }
                                 >
-                                  <UiIcon name="red-card" label="Add red card"/>+
+                                  <UiIcon
+                                    name="red-card"
+                                    label="Add red card"
+                                  />
+                                  +
                                 </button>
                               </div>
                             );
@@ -7101,7 +7836,12 @@ function LogView({ state, setState, showToast, active, syncStatus }) {
                                 {pName(pid, state.players)}
                               </span>
                               <div className="fac" style={{ gap: 3 }}>
-                                <span><UiIcon name="yellow-card" label="Yellow card"/></span>
+                                <span>
+                                  <UiIcon
+                                    name="yellow-card"
+                                    label="Yellow card"
+                                  />
+                                </span>
                                 <button
                                   className="btn btn-g btn-sm"
                                   style={{ padding: "1px 6px" }}
@@ -7131,7 +7871,9 @@ function LogView({ state, setState, showToast, active, syncStatus }) {
                                 </button>
                               </div>
                               <div className="fac" style={{ gap: 3 }}>
-                                <span><UiIcon name="red-card" label="Red card"/></span>
+                                <span>
+                                  <UiIcon name="red-card" label="Red card" />
+                                </span>
                                 <button
                                   className="btn btn-g btn-sm"
                                   style={{ padding: "1px 6px" }}
@@ -7234,7 +7976,7 @@ function LogView({ state, setState, showToast, active, syncStatus }) {
               </button>
               {undoStack.length > 0 && (
                 <button className="btn btn-warn" onClick={undoLast}>
-                   Undo Last Submit
+                  Undo Last Submit
                 </button>
               )}
             </div>
@@ -7446,43 +8188,175 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
         : "var(--green)";
 
   function renderCountdown(compact = false) {
-    return <EventCountdown days={cdDays} hours={cdHours} mins={cdMins} secs={cdSecs} diff={cdDiff} complete={compact}/>;
+    return (
+      <EventCountdown
+        days={cdDays}
+        hours={cdHours}
+        mins={cdMins}
+        secs={cdSecs}
+        diff={cdDiff}
+        complete={compact}
+      />
+    );
   }
 
   function renderChampionshipHeader(stage) {
-    const steps = [["preview","Preview"],["semis","Semifinals"],["final","Final"],["complete","Complete"]];
-    const current = Math.max(0,steps.findIndex(([key]) => key === stage));
-    return <>
-      <header className="championship-event-header">
-        <div className="championship-event-title"><h1><UiIcon name="trophy"/>Monthly Champions</h1><p>{fmtMonth(monthKey)}</p><span className="championship-status">{stage === "preview" ? "Bracket preview" : stage === "semis" ? "Semifinals in progress" : stage === "final" ? "Final in progress" : "Competition complete"}</span><span className="championship-schedule"><UiIcon name="calendar"/>{state.finalsDate ? new Date(state.finalsDate).toLocaleString("en-GB",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"}) : `Last day of ${fmtMonth(monthKey)}`}</span></div>
-        <div className="championship-event-clock">{renderCountdown(stage === "complete")}</div>
-        <div className="championship-date-control"><FinalsDateEditor finalsDate={state.finalsDate} setState={setState} showToast={showToast} isAdmin={isAdmin}/></div>
-      </header>
-      <ol className="championship-stages" aria-label="Competition stages">{steps.map(([key,label],index)=><li key={key} aria-current={current === index ? "step" : undefined} className={index < current ? "finished" : ""}><span>{index < current ? <UiIcon name="check" size={14}/> : index + 1}</span>{label}</li>)}</ol>
-    </>;
+    const steps = [
+      ["preview", "Preview"],
+      ["semis", "Semifinals"],
+      ["final", "Final"],
+      ["complete", "Complete"],
+    ];
+    const current = Math.max(
+      0,
+      steps.findIndex(([key]) => key === stage),
+    );
+    return (
+      <>
+        <header className="championship-event-header">
+          <div className="championship-event-title">
+            <h1>
+              <UiIcon name="trophy" />
+              Monthly Champions
+            </h1>
+            <p>{fmtMonth(monthKey)}</p>
+            <span className="championship-status">
+              {stage === "preview"
+                ? "Bracket preview"
+                : stage === "semis"
+                  ? "Semifinals in progress"
+                  : stage === "final"
+                    ? "Final in progress"
+                    : "Competition complete"}
+            </span>
+            <span className="championship-schedule">
+              <UiIcon name="calendar" />
+              {state.finalsDate
+                ? new Date(state.finalsDate).toLocaleString("en-GB", {
+                    day: "numeric",
+                    month: "short",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })
+                : `Last day of ${fmtMonth(monthKey)}`}
+            </span>
+          </div>
+          <div className="championship-event-clock">
+            {renderCountdown(stage === "complete")}
+          </div>
+          <div className="championship-date-control">
+            <FinalsDateEditor
+              finalsDate={state.finalsDate}
+              setState={setState}
+              showToast={showToast}
+              isAdmin={isAdmin}
+            />
+          </div>
+        </header>
+        <ol className="championship-stages" aria-label="Competition stages">
+          {steps.map(([key, label], index) => (
+            <li
+              key={key}
+              aria-current={current === index ? "step" : undefined}
+              className={index < current ? "finished" : ""}
+            >
+              <span>
+                {index < current ? (
+                  <UiIcon name="check" size={14} />
+                ) : (
+                  index + 1
+                )}
+              </span>
+              {label}
+            </li>
+          ))}
+        </ol>
+      </>
+    );
   }
 
   function renderBracketBoard(upper, lower, final, preview = false) {
-    return <div className={`competition-board ${lower ? "" : "single-fixture"}`}>
-      <header className="competition-round-heading"><span>Stage 1 · Semifinals</span><span>{lower ? 2 : 1} {lower ? "fixtures" : "fixture"}{preview ? " · Preview" : ""}</span></header>
-      <header className="competition-round-heading final-round-heading"><span>Championship match · Final</span><span><UiIcon name="medal" size={16}/>Title decider</span></header>
-      <div className="competition-semi first-semi">{upper}</div>
-      {lower && <div className="competition-semi second-semi">{lower}</div>}
-      <div className="competition-path" aria-hidden="true"><i/></div>
-      <div className="competition-final">{final || <section className="pending-final">
-        <h3><UiIcon name="trophy"/>Grand Final</h3>
-        <div className="final-qualifier"><span>1</span><p>Winner of Semifinal 1</p><small>TBD</small></div>
-        <div className="final-versus">vs</div>
-        <div className="final-qualifier"><span>2</span><p>{lower ? "Winner of Semifinal 2" : "Awaiting opponent"}</p><small>TBD</small></div>
-        <footer><span><UiIcon name="history" size={15}/>Awaiting semifinal results</span><span>Scoring locked</span></footer>
-      </section>}</div>
-    </div>;
+    return (
+      <div className={`competition-board ${lower ? "" : "single-fixture"}`}>
+        <header className="competition-round-heading">
+          <span>Stage 1 · Semifinals</span>
+          <span>
+            {lower ? 2 : 1} {lower ? "fixtures" : "fixture"}
+            {preview ? " · Preview" : ""}
+          </span>
+        </header>
+        <header className="competition-round-heading final-round-heading">
+          <span>Championship match · Final</span>
+          <span>
+            <UiIcon name="medal" size={16} />
+            Title decider
+          </span>
+        </header>
+        <div className="competition-semi first-semi">{upper}</div>
+        {lower && <div className="competition-semi second-semi">{lower}</div>}
+        <div className="competition-path" aria-hidden="true">
+          <i />
+        </div>
+        <div className="competition-final">
+          {final || (
+            <section className="pending-final">
+              <h3>
+                <UiIcon name="trophy" />
+                Grand Final
+              </h3>
+              <div className="final-qualifier">
+                <span>1</span>
+                <p>Winner of Semifinal 1</p>
+                <small>TBD</small>
+              </div>
+              <div className="final-versus">vs</div>
+              <div className="final-qualifier">
+                <span>2</span>
+                <p>{lower ? "Winner of Semifinal 2" : "Awaiting opponent"}</p>
+                <small>TBD</small>
+              </div>
+              <footer>
+                <span>
+                  <UiIcon name="history" size={15} />
+                  Awaiting semifinal results
+                </span>
+                <span>Scoring locked</span>
+              </footer>
+            </section>
+          )}
+        </div>
+      </div>
+    );
   }
 
   function renderPastChampions() {
-    const previous = Object.entries(state.finals || {}).filter(([key,value]) => key !== monthKey && value.status === "complete" && value.bracket?.champion?.length).sort(([a],[b]) => b.localeCompare(a));
+    const previous = Object.entries(state.finals || {})
+      .filter(
+        ([key, value]) =>
+          key !== monthKey &&
+          value.status === "complete" &&
+          value.bracket?.champion?.length,
+      )
+      .sort(([a], [b]) => b.localeCompare(a));
     if (!previous.length) return null;
-    return <details className="championship-archive"><summary><UiIcon name="medal"/>Previous champions <span>{previous.length} completed</span></summary>{previous.map(([key,value])=><div key={key}><span>{fmtMonth(key)}</span><strong>{value.bracket.champion.map(id => pName(id,state.players)).join(" & ")}</strong></div>)}</details>;
+    return (
+      <details className="championship-archive">
+        <summary>
+          <UiIcon name="medal" />
+          Previous champions <span>{previous.length} completed</span>
+        </summary>
+        {previous.map(([key, value]) => (
+          <div key={key}>
+            <span>{fmtMonth(key)}</span>
+            <strong>
+              {value.bracket.champion
+                .map((id) => pName(id, state.players))
+                .join(" & ")}
+            </strong>
+          </div>
+        ))}
+      </details>
+    );
   }
 
   // Sequential slot picking order
@@ -7726,7 +8600,13 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
     });
   }
 
-  function renderBracketMatch({ matchKey, label, overrideSideA, overrideSideB, preview }) {
+  function renderBracketMatch({
+    matchKey,
+    label,
+    overrideSideA,
+    overrideSideB,
+    preview,
+  }) {
     const m = preview
       ? { sideA: overrideSideA, sideB: overrideSideB }
       : finals?.bracket?.[matchKey];
@@ -7761,20 +8641,23 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
     const pA = m.sideA.map((id) => {
       const pl = state.players.find((p) => p.id === id);
       return pl
-        ? { name: pl.name, pos: pl.position, role:pl.preferredRole }
+        ? { name: pl.name, pos: pl.position, role: pl.preferredRole }
         : { name: "?", pos: null };
     });
     const pB = (m.sideB || []).map((id) => {
       const pl = state.players.find((p) => p.id === id);
       return pl
-        ? { name: pl.name, pos: pl.position, role:pl.preferredRole }
+        ? { name: pl.name, pos: pl.position, role: pl.preferredRole }
         : { name: "?", pos: null };
     });
     const done = !!m.winner;
     const live = !preview && !done ? getLive(matchKey) : null;
     const isLive = live?.active;
     return (
-      <article className={`championship-fixture ${isLive ? "is-live" : ""}`} aria-label={label}>
+      <article
+        className={`championship-fixture ${isLive ? "is-live" : ""}`}
+        aria-label={label}
+      >
         <div
           className="championship-fixture-heading"
           style={{
@@ -7856,7 +8739,16 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
                   >
                     {pl.name}
                   </span>
-                  {pl.role ? <span className={`role-tag role-${pl.role.toLowerCase()}`} title="Preferred role">{pl.role}</span> : <PosBadge pos={pl.pos} />}
+                  {pl.role ? (
+                    <span
+                      className={`role-tag role-${pl.role.toLowerCase()}`}
+                      title="Preferred role"
+                    >
+                      {pl.role}
+                    </span>
+                  ) : (
+                    <PosBadge pos={pl.pos} />
+                  )}
                 </div>
               ))}
             </div>
@@ -7865,14 +8757,30 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
                 <div
                   style={{ display: "flex", flexDirection: "column", gap: 3 }}
                 >
-                  <div role="button" tabIndex={0} onKeyDown={e => {if(e.key === "Enter" || e.key === " "){e.preventDefault();e.currentTarget.click();}}}
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        e.currentTarget.click();
+                      }
+                    }}
                     className="score-btn"
                     aria-label={`Add a goal to Team A in ${label}`}
                     onClick={() => setLiveScore(matchKey, "A", 1)}
                   >
                     +
                   </div>
-                  <div role="button" tabIndex={0} onKeyDown={e => {if(e.key === "Enter" || e.key === " "){e.preventDefault();e.currentTarget.click();}}}
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        e.currentTarget.click();
+                      }
+                    }}
                     className="score-btn"
                     aria-label={`Remove a goal from Team A in ${label}`}
                     style={{ fontSize: 14 }}
@@ -7954,7 +8862,16 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
                     >
                       {pl.name}
                     </span>
-                    {pl.role ? <span className={`role-tag role-${pl.role.toLowerCase()}`} title="Preferred role">{pl.role}</span> : <PosBadge pos={pl.pos} />}
+                    {pl.role ? (
+                      <span
+                        className={`role-tag role-${pl.role.toLowerCase()}`}
+                        title="Preferred role"
+                      >
+                        {pl.role}
+                      </span>
+                    ) : (
+                      <PosBadge pos={pl.pos} />
+                    )}
                   </div>
                 ))}
               </div>
@@ -7968,14 +8885,30 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
                 <div
                   style={{ display: "flex", flexDirection: "column", gap: 3 }}
                 >
-                  <div role="button" tabIndex={0} onKeyDown={e => {if(e.key === "Enter" || e.key === " "){e.preventDefault();e.currentTarget.click();}}}
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        e.currentTarget.click();
+                      }
+                    }}
                     className="score-btn"
                     aria-label={`Add a goal to Team B in ${label}`}
                     onClick={() => setLiveScore(matchKey, "B", 1)}
                   >
                     +
                   </div>
-                  <div role="button" tabIndex={0} onKeyDown={e => {if(e.key === "Enter" || e.key === " "){e.preventDefault();e.currentTarget.click();}}}
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        e.currentTarget.click();
+                      }
+                    }}
                     className="score-btn"
                     aria-label={`Remove a goal from Team B in ${label}`}
                     style={{ fontSize: 14 }}
@@ -8030,7 +8963,7 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
                 className="btn btn-g btn-sm w-full"
                 onClick={() => startLive(matchKey)}
               >
-                <UiIcon name="play"/> Start live scoring
+                <UiIcon name="play" /> Start live scoring
               </button>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
@@ -8053,14 +8986,15 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
                     }}
                     disabled={live.scoreA === live.scoreB}
                   >
-                    <UiIcon name="check"/> Confirm ({live.scoreA}–{live.scoreB})
+                    <UiIcon name="check" /> Confirm ({live.scoreA}–{live.scoreB}
+                    )
                   </button>
                   <button
                     className="btn btn-d btn-sm"
                     onClick={() => clearLiveScore(matchKey)}
                     title="Reset"
                   >
-                    <UiIcon name="reset"/>
+                    <UiIcon name="reset" />
                   </button>
                 </div>
                 <button
@@ -8174,10 +9108,11 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
                     className="xs text-dd"
                     style={{ marginBottom: 6, lineHeight: 1.6 }}
                   >
-                    {placedRanked.length} placed players available for balanced seeding.
+                    {placedRanked.length} placed players available for balanced
+                    seeding.
                   </div>
                   <button className="btn btn-p" onClick={initFinals}>
-                    <UiIcon name="plus"/> Generate Bracket
+                    <UiIcon name="plus" /> Generate Bracket
                   </button>
                 </div>
               )}
@@ -8190,12 +9125,14 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
                     setBracketSearch("");
                   }}
                 >
-                  <UiIcon name="edit"/>{manualMode ? "Cancel custom bracket" : "Custom Bracket"}
+                  <UiIcon name="edit" />
+                  {manualMode ? "Cancel custom bracket" : "Custom Bracket"}
                 </button>
               </div>
               {placedRanked.length < 4 && !manualMode && (
                 <div className="championship-empty" role="status">
-                  {placedRanked.length}/4 placed players. Automatic seeding becomes available when four players finish placements.
+                  {placedRanked.length}/4 placed players. Automatic seeding
+                  becomes available when four players finish placements.
                 </div>
               )}
             </div>
@@ -8491,7 +9428,15 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
                     }}
                   >
                     {filteredUnassigned.map((p) => (
-                      <div role="button" tabIndex={0} onKeyDown={e => {if(e.key === "Enter" || e.key === " "){e.preventDefault();e.currentTarget.click();}}}
+                      <div
+                        role="button"
+                        tabIndex={0}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            e.currentTarget.click();
+                          }
+                        }}
                         key={p.id}
                         className={`player-chip ${!pickingTeam ? "disabled" : ""}`}
                         style={{
@@ -8527,7 +9472,7 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
                       setBracketSearch("");
                     }}
                   >
-                    <UiIcon name="check"/> Confirm Bracket
+                    <UiIcon name="check" /> Confirm Bracket
                   </button>
                 )}
                 <button
@@ -8545,12 +9490,33 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
         </section>
 
         {/* Preview */}
-        {!previewUpper && !previewLower && !isAdmin && <p className="championship-empty">The bracket will appear when enough players have completed placements.</p>}
-        {(previewUpper || previewLower) && renderBracketBoard(
-          previewUpper && renderBracketMatch({matchKey:"upper",label:"Semifinal 1",overrideSideA:previewUpper.teamA,overrideSideB:previewUpper.teamB,preview:true}),
-          previewLower && renderBracketMatch({matchKey:"lower",label:"Semifinal 2",overrideSideA:previewLower.teamA,overrideSideB:previewLower.teamB,preview:true}),
-          null, true
+        {!previewUpper && !previewLower && !isAdmin && (
+          <p className="championship-empty">
+            The bracket will appear when enough players have completed
+            placements.
+          </p>
         )}
+        {(previewUpper || previewLower) &&
+          renderBracketBoard(
+            previewUpper &&
+              renderBracketMatch({
+                matchKey: "upper",
+                label: "Semifinal 1",
+                overrideSideA: previewUpper.teamA,
+                overrideSideB: previewUpper.teamB,
+                preview: true,
+              }),
+            previewLower &&
+              renderBracketMatch({
+                matchKey: "lower",
+                label: "Semifinal 2",
+                overrideSideA: previewLower.teamA,
+                overrideSideB: previewLower.teamB,
+                preview: true,
+              }),
+            null,
+            true,
+          )}
         {renderPastChampions()}
       </div>
     );
@@ -8592,7 +9558,7 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
             Monthly Champions
           </div>
           <div className="disp text-am" style={{ fontSize: 38 }}>
-            <UiIcon name="trophy"/> {champ.join(" & ")}
+            <UiIcon name="trophy" /> {champ.join(" & ")}
           </div>
           {runnerUpNames?.length > 0 && (
             <div className="xs" style={{ color: "#b0c8c0", marginTop: 8 }}>
@@ -8617,25 +9583,36 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
 
       <div className="championship-bracket">
         {renderBracketBoard(
-          renderBracketMatch({matchKey:"upper",label:"Semifinal 1"}),
-          bracket?.lower && renderBracketMatch({matchKey:"lower",label:"Semifinal 2"}),
-          (status === "final" || status === "complete") && renderBracketMatch({matchKey:"final",label:"Grand Final"})
+          renderBracketMatch({ matchKey: "upper", label: "Semifinal 1" }),
+          bracket?.lower &&
+            renderBracketMatch({ matchKey: "lower", label: "Semifinal 2" }),
+          (status === "final" || status === "complete") &&
+            renderBracketMatch({ matchKey: "final", label: "Grand Final" }),
         )}
         {isAdmin && (
           <div className="bracket-reset">
-            <button
-              className="btn btn-g"
-              onClick={() => setConfirmReset(true)}
-            >
-              <UiIcon name="reset"/> Reset bracket to preview
+            <button className="btn btn-g" onClick={() => setConfirmReset(true)}>
+              <UiIcon name="reset" /> Reset bracket to preview
             </button>
           </div>
         )}
-        {confirmReset && <ConfirmDialog title="Reset bracket to preview?" msg="Clear this month's bracket and live scores, then return to the pairing preview. Previously awarded profile achievements are not removed." danger onCancel={() => setConfirmReset(false)} onConfirm={() => {
-          setState(s => { const f = { ...s.finals }; delete f[monthKey]; return { ...s, finals:f }; });
-          setConfirmReset(false);
-          showToast("Bracket returned to preview");
-        }}/>} 
+        {confirmReset && (
+          <ConfirmDialog
+            title="Reset bracket to preview?"
+            msg="Clear this month's bracket and live scores, then return to the pairing preview. Previously awarded profile achievements are not removed."
+            danger
+            onCancel={() => setConfirmReset(false)}
+            onConfirm={() => {
+              setState((s) => {
+                const f = { ...s.finals };
+                delete f[monthKey];
+                return { ...s, finals: f };
+              });
+              setConfirmReset(false);
+              showToast("Bracket returned to preview");
+            }}
+          />
+        )}
       </div>
       {renderPastChampions()}
     </div>
@@ -8709,6 +9686,9 @@ function PtsChart({ pid, games, players, roleFilter }) {
     pathD +
     ` L${toX(data.length - 1).toFixed(1)},${H} L${toX(0).toFixed(1)},${H} Z`;
   const lastPts = data[data.length - 1].pts;
+  const sameDay =
+    new Date(playerGames[0].date).toDateString() ===
+    new Date(playerGames[playerGames.length - 1].date).toDateString();
   const isPos = lastPts >= 0;
   const lineCol =
     roleFilter === "ATK"
@@ -8773,6 +9753,24 @@ function PtsChart({ pid, games, players, roleFilter }) {
             strokeWidth="1"
           />
         ))}
+        <text
+          x={PAD}
+          y={PAD - 2}
+          textAnchor="start"
+          fontSize="8"
+          fill="var(--dimmer)"
+        >
+          {Math.round(maxP)}
+        </text>
+        <text
+          x={PAD}
+          y={H - PAD + 9}
+          textAnchor="start"
+          fontSize="8"
+          fill="var(--dimmer)"
+        >
+          {Math.round(minP)}
+        </text>
         {minP < 0 && (
           <line
             x1={PAD}
@@ -8875,16 +9873,27 @@ function PtsChart({ pid, games, players, roleFilter }) {
         }}
       >
         <span className="xs text-dd">
-          {new Date(playerGames[0].date).toLocaleDateString("en-GB", {
-            day: "numeric",
-            month: "short",
-          })}
+          {sameDay
+            ? new Date(playerGames[0].date).toLocaleTimeString("en-GB", {
+                hour: "2-digit",
+                minute: "2-digit",
+              })
+            : new Date(playerGames[0].date).toLocaleDateString("en-GB", {
+                day: "numeric",
+                month: "short",
+              })}
         </span>
-        <span className="xs text-dd">{lastPts} pts</span>
         <span className="xs text-dd">
-          {new Date(
-            playerGames[playerGames.length - 1].date,
-          ).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}
+          {sameDay
+            ? new Date(
+                playerGames[playerGames.length - 1].date,
+              ).toLocaleTimeString("en-GB", {
+                hour: "2-digit",
+                minute: "2-digit",
+              })
+            : new Date(
+                playerGames[playerGames.length - 1].date,
+              ).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}
         </span>
       </div>
     </div>
@@ -8954,7 +9963,11 @@ function WinDonut({ wins, losses }) {
 // ── STATS VIEW ─────────────────────────────────────────────────────────────
 
 function StatsView({ state, onSelectPlayer, seasonFilter, setSeasonFilter }) {
-  const [selectedId, setSelectedId] = useState(() => [...state.players].sort((a,b) => (b.pts || 0) - (a.pts || 0))[0]?.id || null);
+  const [selectedId, setSelectedId] = useState(
+    () =>
+      [...state.players].sort((a, b) => (b.pts || 0) - (a.pts || 0))[0]?.id ||
+      null,
+  );
   const [search, setSearch] = useState("");
   const [posFilter, setPosFilter] = useState("ALL");
   const currentSeason = getCurrentSeason(state);
@@ -9136,9 +10149,52 @@ function StatsView({ state, onSelectPlayer, seasonFilter, setSeasonFilter }) {
         </div>
       )}
       <div className="stats-mobile-controls">
-        <label className="lbl">Season<select className="inp" aria-label="Statistics season" value={seasonFilter} onChange={e => setSeasonFilter(e.target.value)}><option value="current">Current season</option><option value="all">All seasons</option>{(state.seasons || []).map(se => <option key={se.id} value={se.id}>{se.label}</option>)}</select></label>
-        <label className="lbl">Player<select className="inp" aria-label="Statistics player" value={selectedId || ""} onChange={e => setSelectedId(e.target.value)}><option value="" disabled>Select a player</option>{sorted.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
-        <div className="segmented" role="group" aria-label="Position filter">{["ALL","ATK","DEF"].map(role => <button key={role} aria-pressed={posFilter === role} onClick={() => setPosFilter(role)}>{role}</button>)}</div>
+        <label className="lbl">
+          Season
+          <select
+            className="inp"
+            aria-label="Statistics season"
+            value={seasonFilter}
+            onChange={(e) => setSeasonFilter(e.target.value)}
+          >
+            <option value="current">Current season</option>
+            <option value="all">All seasons</option>
+            {(state.seasons || []).map((se) => (
+              <option key={se.id} value={se.id}>
+                {se.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="lbl">
+          Player
+          <select
+            className="inp"
+            aria-label="Statistics player"
+            value={selectedId || ""}
+            onChange={(e) => setSelectedId(e.target.value)}
+          >
+            <option value="" disabled>
+              Select a player
+            </option>
+            {sorted.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="segmented" role="group" aria-label="Position filter">
+          {["ALL", "ATK", "DEF"].map((role) => (
+            <button
+              key={role}
+              aria-pressed={posFilter === role}
+              onClick={() => setPosFilter(role)}
+            >
+              {role}
+            </button>
+          ))}
+        </div>
       </div>
       <div className="grid-2 stats-columns" style={{ alignItems: "start" }}>
         <div className="card stats-picker">
@@ -9179,7 +10235,8 @@ function StatsView({ state, onSelectPlayer, seasonFilter, setSeasonFilter }) {
               onChange={(e) => setSearch(e.target.value)}
               style={{ marginBottom: 10, fontSize: 12 }}
             />
-            <div className="stats-roster"
+            <div
+              className="stats-roster"
               style={{
                 display: "flex",
                 flexDirection: "column",
@@ -9197,63 +10254,57 @@ function StatsView({ state, onSelectPlayer, seasonFilter, setSeasonFilter }) {
                 .map((p) => (
                   <div
                     key={p.id}
-                    className={`player-chip ${selectedId === p.id ? "sel-a" : ""}`}
+                    className={`player-chip stat-chip ${selectedId === p.id ? "sel-a" : ""}`}
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "stretch",
+                      gap: 0,
+                    }}
                     role="button"
                     tabIndex={0}
                     aria-pressed={selectedId === p.id}
-                    onKeyDown={e => {if(e.key === "Enter" || e.key === " "){e.preventDefault();setSelectedId(p.id);}}}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        setSelectedId(p.id);
+                      }
+                    }}
                     onClick={() => setSelectedId(p.id)}
                   >
-                    <span style={{ fontWeight: 600 }}>{p.name}</span>
                     <div
-                      style={{ display: "flex", alignItems: "center", gap: 6 }}
+                      className="fac"
+                      style={{ justifyContent: "space-between", width: "100%" }}
+                    >
+                      <span
+                        style={{
+                          fontWeight: 600,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {p.name}
+                      </span>
+                      <span
+                        className="xs bold"
+                        style={{ flexShrink: 0, marginLeft: 8 }}
+                      >
+                        {scopedStats[p.id]?.pts || 0}pts
+                      </span>
+                    </div>
+                    <div
+                      className="fac stat-chip-detail"
+                      style={{ gap: 6, width: "100%", marginTop: 2 }}
                     >
                       <Sparkline pid={p.id} games={scopedGames} />
                       <span className="xs text-dd">
-                        {posFilter === "ATK" ? (
-                          <>
-                            <span
-                              style={{
-                                color: "var(--orange)",
-                                fontWeight: 600,
-                              }}
-                            >
-                              <UiIcon name="swords"/> {p.mmr_atk || p.mmr}
-                            </span>{" "}
-                            ATK
-                          </>
-                        ) : posFilter === "DEF" ? (
-                          <>
-                            <span
-                              style={{ color: "var(--blue)", fontWeight: 600 }}
-                            >
-                              <UiIcon name="shield"/> {p.mmr_def || p.mmr}
-                            </span>{" "}
-                            DEF
-                          </>
-                        ) : (
-                          <>
-                            {p.mmr || 1000} MMR
-                            {(p.wins_atk || 0) +
-                              (p.losses_atk || 0) +
-                              (p.wins_def || 0) +
-                              (p.losses_def || 0) >
-                              0 && (
-                              <>
-                                {" "}
-                                ·{" "}
-                                <span style={{ color: "var(--orange)" }}>
-                                  A {p.mmr_atk || p.mmr}
-                                </span>
-                                /
-                                <span style={{ color: "var(--blue)" }}>
-                                  D {p.mmr_def || p.mmr}
-                                </span>
-                              </>
-                            )}
-                          </>
-                        )}{" "}
-                        · {scopedStats[p.id]?.pts || 0}pts
+                        {posFilter === "ATK"
+                          ? p.mmr_atk || p.mmr
+                          : posFilter === "DEF"
+                            ? p.mmr_def || p.mmr
+                            : p.mmr || 1000}{" "}
+                        MMR
                       </span>
                     </div>
                   </div>
@@ -9313,8 +10364,7 @@ function StatsView({ state, onSelectPlayer, seasonFilter, setSeasonFilter }) {
                   <div
                     style={{
                       display: "grid",
-                      gridTemplateColumns:
-                        totalStarts > 0 ? "1fr 1fr 1.2fr" : "1fr 1fr",
+                      gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))",
                       gap: 10,
                     }}
                   >
@@ -9326,13 +10376,24 @@ function StatsView({ state, onSelectPlayer, seasonFilter, setSeasonFilter }) {
                         <span className="text-r">{st.losses}L</span>
                       </div>
                     </div>
+                    <div className="stat-box" style={{ padding: "8px 12px" }}>
+                      <div className="stat-lbl">MMR</div>
+                      <div className="stat-val" style={{ fontSize: 18 }}>
+                        {selected.mmr || 1000}
+                      </div>
+                      <div className="xs" style={{ marginTop: 2 }}>
+                        <span style={{ color: "var(--orange)" }}>
+                          A {selected.mmr_atk || selected.mmr || 1000}
+                        </span>
+                        {" / "}
+                        <span style={{ color: "var(--blue)" }}>
+                          D {selected.mmr_def || selected.mmr || 1000}
+                        </span>
+                      </div>
+                    </div>
                     {last5.length > 0 && (
                       <div className="stat-box" style={{ padding: "8px 12px" }}>
-                        <div className="stat-lbl">Form (last {last5.length})</div>
-                        <div
-                          className="fac"
-                          style={{ gap: 4, marginTop: 3 }}
-                        >
+                        <div className="fac" style={{ gap: 4 }}>
                           {last5.map((g) => {
                             const won =
                               (g.sideA.includes(selected.id) &&
@@ -9377,10 +10438,16 @@ function StatsView({ state, onSelectPlayer, seasonFilter, setSeasonFilter }) {
                             marginBottom: 3,
                           }}
                         >
-                          <span className="xs" style={{ color: "var(--orange)", fontWeight: 600 }}>
+                          <span
+                            className="xs"
+                            style={{ color: "var(--orange)", fontWeight: 600 }}
+                          >
                             ATK {Math.round((startsAtk / totalStarts) * 100)}%
                           </span>
-                          <span className="xs" style={{ color: "var(--blue)", fontWeight: 600 }}>
+                          <span
+                            className="xs"
+                            style={{ color: "var(--blue)", fontWeight: 600 }}
+                          >
                             DEF {Math.round((startsDef / totalStarts) * 100)}%
                           </span>
                         </div>
@@ -9406,10 +10473,7 @@ function StatsView({ state, onSelectPlayer, seasonFilter, setSeasonFilter }) {
                             }}
                           />
                         </div>
-                        <div
-                          className="xs text-dd"
-                          style={{ marginTop: 3 }}
-                        >
+                        <div className="xs text-dd" style={{ marginTop: 3 }}>
                           {startsAtk} ATK starts · {startsDef} DEF starts
                         </div>
                       </div>
@@ -9662,46 +10726,45 @@ function StatsView({ state, onSelectPlayer, seasonFilter, setSeasonFilter }) {
                       </>
                     );
                   })()}
-                  {(() => {
-                    const recent = scopedGames
-                      .filter(
-                        (g) =>
-                          g.sideA.includes(selected.id) ||
-                          g.sideB.includes(selected.id),
-                      )
-                      .sort((a, b) => new Date(b.date) - new Date(a.date))
-                      .slice(0, 10)
-                      .reverse();
-                    if (!recent.length) return null;
-                    return (
-                      <div>
-                        <div
-                          className="xs text-dd"
-                          style={{
-                            marginBottom: 6,
-                            letterSpacing: 0.5,
-                            textTransform: "uppercase",
-                            fontWeight: 600,
-                          }}
-                        >
-                          Recent form
-                        </div>
-                        <div style={{ display: "flex", gap: 3 }}>
-                          {recent.map((g) => {
+                  <div
+                    className="grid-2 stats-encounters"
+                    style={{ gap: 14, alignItems: "start" }}
+                  >
+                    <div>
+                      <div
+                        className="fac"
+                        style={{
+                          justifyContent: "space-between",
+                          marginBottom: 6,
+                        }}
+                      >
+                        <div className="sec">Recent Results</div>
+                        <span className="xs text-dd">2v2</span>
+                      </div>
+                      <div
+                        style={{
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 4,
+                          maxHeight: 220,
+                          overflowY: "auto",
+                        }}
+                      >
+                        {[...pGames]
+                          .sort((a, b) => new Date(b.date) - new Date(a.date))
+                          .slice(0, 6)
+                          .map((g) => {
+                            const onA = g.sideA.includes(selected.id);
                             const won =
-                              (g.sideA.includes(selected.id) &&
-                                g.winner === "A") ||
-                              (g.sideB.includes(selected.id) &&
-                                g.winner === "B");
-                            const role = g.roles?.[selected.id];
-                            const roleIcon =
-                              role === "ATK"
-                                ? <UiIcon name="swords"/>
-                                : role === "DEF"
-                                  ? <UiIcon name="shield"/>
-                                  : role === "FLEX"
-                                    ? ""
-                                    : null;
+                              (onA && g.winner === "A") ||
+                              (!onA && g.winner === "B");
+                            const partner = (onA ? g.sideA : g.sideB)
+                              .filter((id) => id !== selected.id)
+                              .map((id) => pName(id, state.players))
+                              .join(" & ");
+                            const opps = (onA ? g.sideB : g.sideA)
+                              .map((id) => pName(id, state.players))
+                              .join(" & ");
                             const delta = won
                               ? (g.perPlayerGains?.[selected.id] ??
                                 g.ptsGain ??
@@ -9711,285 +10774,270 @@ function StatsView({ state, onSelectPlayer, seasonFilter, setSeasonFilter }) {
                                   g.ptsLoss ??
                                   0
                                 );
-                            const opps = (
-                              g.sideA.includes(selected.id) ? g.sideB : g.sideA
-                            )
-                              .map((id) => pName(id, state.players))
-                              .join(" & ");
+                            const role = g.roles?.[selected.id];
                             return (
                               <div
                                 key={g.id}
-                                title={`${won ? "W" : "L"}${role ? ` (${role})` : ""}  vs ${opps} · ${delta >= 0 ? "+" : ""}${delta}pts`}
                                 style={{
-                                  flex: 1,
-                                  borderRadius: 4,
-                                  minHeight: 28,
-                                  background: won
-                                    ? "rgba(94,201,138,.18)"
-                                    : "rgba(240,112,112,.14)",
-                                  border: `1px solid ${won ? "rgba(94,201,138,.45)" : "rgba(240,112,112,.35)"}`,
+                                  padding: "8px 10px",
+                                  borderRadius: 8,
+                                  background: "var(--s2)",
+                                  border: "1px solid var(--b1)",
                                   display: "flex",
                                   flexDirection: "column",
-                                  alignItems: "center",
-                                  justifyContent: "center",
-                                  fontSize: 9,
-                                  fontWeight: 700,
-                                  color: won ? "var(--green)" : "var(--red)",
-                                  cursor: "default",
-                                  gap: 1,
-                                  paddingTop: roleIcon ? 3 : 0,
+                                  gap: 3,
                                 }}
                               >
-                                {won ? "W" : "L"}
-                                {roleIcon && (
+                                <div
+                                  className="fac"
+                                  style={{ justifyContent: "space-between" }}
+                                >
+                                  <div className="fac" style={{ gap: 6 }}>
+                                    <span
+                                      className={`tag ${won ? "tag-w" : "tag-l"}`}
+                                    >
+                                      {won ? "WIN" : "LOSS"}
+                                    </span>
+                                    <span className="xs text-dd">
+                                      w/ {partner}
+                                    </span>
+                                  </div>
                                   <span
+                                    className="bold"
+                                    style={{ fontSize: 13 }}
+                                  >
+                                    {g.scoreA}–{g.scoreB}
+                                  </span>
+                                </div>
+                                <div
+                                  className="fac"
+                                  style={{ justifyContent: "space-between" }}
+                                >
+                                  <span className="xs text-dd">
+                                    vs {opps}
+                                    {role && (
+                                      <>
+                                        {" · "}
+                                        <span
+                                          style={{
+                                            color:
+                                              role === "ATK"
+                                                ? "var(--orange)"
+                                                : role === "DEF"
+                                                  ? "var(--blue)"
+                                                  : "var(--purple, #b08af0)",
+                                            fontWeight: 600,
+                                          }}
+                                        >
+                                          {role} Role
+                                        </span>
+                                      </>
+                                    )}
+                                  </span>
+                                  <span
+                                    className="xs bold"
                                     style={{
-                                      fontSize: 8,
-                                      opacity: 0.7,
-                                      lineHeight: 1,
+                                      color: won
+                                        ? "var(--green)"
+                                        : "var(--red)",
                                     }}
                                   >
-                                    {roleIcon}
+                                    {delta >= 0 ? "+" : ""}
+                                    {delta}pts
                                   </span>
-                                )}
+                                </div>
+                                <div className="xs text-dd">
+                                  {new Date(g.date).toLocaleDateString(
+                                    "en-GB",
+                                    { day: "numeric", month: "short" },
+                                  )}
+                                  ,{" "}
+                                  {new Date(g.date).toLocaleTimeString(
+                                    "en-GB",
+                                    { hour: "2-digit", minute: "2-digit" },
+                                  )}
+                                </div>
                               </div>
                             );
                           })}
-                        </div>
+                        {!pGames.length && (
+                          <div
+                            className="xs text-dd"
+                            style={{ padding: "8px 0" }}
+                          >
+                            No matches yet
+                          </div>
+                        )}
                       </div>
-                    );
-                  })()}
-                  <div
-                    className="grid-2 stats-encounters"
-                    style={{ gap: 14, alignItems: "start" }}
-                  >
-                  <div>
-                    <div className="fac" style={{ justifyContent: "space-between", marginBottom: 6 }}>
-                      <div className="sec">Recent Results</div>
-                      <span className="xs text-dd">2v2</span>
                     </div>
-                    <div
-                      style={{
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: 4,
-                        maxHeight: 220,
-                        overflowY: "auto",
-                      }}
-                    >
-                      {[...pGames]
-                        .sort((a, b) => new Date(b.date) - new Date(a.date))
-                        .slice(0, 6)
-                        .map((g) => {
-                          const onA = g.sideA.includes(selected.id);
-                          const won =
-                            (onA && g.winner === "A") ||
-                            (!onA && g.winner === "B");
-                          const partner = (onA ? g.sideA : g.sideB)
-                            .filter((id) => id !== selected.id)
-                            .map((id) => pName(id, state.players))
-                            .join(" & ");
-                          const opps = (onA ? g.sideB : g.sideA)
-                            .map((id) => pName(id, state.players))
-                            .join(" & ");
-                          const delta = won
-                            ? (g.perPlayerGains?.[selected.id] ?? g.ptsGain ?? 0)
-                            : -(g.perPlayerLosses?.[selected.id] ?? g.ptsLoss ?? 0);
-                          const role = g.roles?.[selected.id];
-                          return (
-                            <div
-                              key={g.id}
-                              style={{
-                                padding: "6px 10px",
-                                borderRadius: 8,
-                                background: "var(--s2)",
-                                border: "1px solid var(--b1)",
-                              }}
-                            >
-                              <div className="fac" style={{ justifyContent: "space-between" }}>
+                    <div>
+                      <div
+                        className="fac"
+                        style={{
+                          justifyContent: "space-between",
+                          marginBottom: 6,
+                        }}
+                      >
+                        <div className="sec">Head to Head</div>
+                        <span className="xs text-dd">
+                          {activeSeason ? activeSeason.label : "All seasons"}{" "}
+                          encounters
+                        </span>
+                      </div>
+                      <div
+                        style={{
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 4,
+                          maxHeight: 220,
+                          overflowY: "auto",
+                        }}
+                      >
+                        {(() => {
+                          const opponents = sorted
+                            .filter((p) => p.id !== selected.id)
+                            .map((p) => ({ p, h: getH2H(selected.id, p.id) }))
+                            .filter(({ h }) => h.games > 0);
+                          if (!opponents.length) {
+                            return (
+                              <div
+                                className="xs text-dd"
+                                style={{ padding: "8px 0" }}
+                              >
+                                No H2H data yet
+                              </div>
+                            );
+                          }
+                          let totalGames = 0,
+                            totalW = 0,
+                            totalNet = 0;
+                          const rows = opponents.map(({ p, h }) => {
+                            const pct = Math.round((h.winsA / h.games) * 100);
+                            const shared = scopedGames.filter(
+                              (g) =>
+                                (g.sideA.includes(selected.id) ||
+                                  g.sideB.includes(selected.id)) &&
+                                (g.sideA.includes(p.id) ||
+                                  g.sideB.includes(p.id)),
+                            );
+                            const netVsOpp = calcNetPts(selected.id, shared);
+                            totalGames += h.games;
+                            totalW += h.winsA;
+                            totalNet += netVsOpp;
+                            const oppRole =
+                              shared[shared.length - 1]?.roles?.[p.id];
+                            return (
+                              <div
+                                key={p.id}
+                                style={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: 8,
+                                  padding: "6px 10px",
+                                  borderRadius: 8,
+                                  background: "var(--s2)",
+                                  border: "1px solid var(--b1)",
+                                }}
+                              >
+                                {oppRole && (
+                                  <span
+                                    style={{
+                                      fontSize: 10,
+                                      fontWeight: 700,
+                                      padding: "2px 5px",
+                                      borderRadius: 4,
+                                      color:
+                                        oppRole === "ATK"
+                                          ? "var(--orange)"
+                                          : oppRole === "DEF"
+                                            ? "var(--blue)"
+                                            : "var(--purple, #b08af0)",
+                                      background:
+                                        oppRole === "ATK"
+                                          ? "rgba(240,144,80,.14)"
+                                          : oppRole === "DEF"
+                                            ? "rgba(96,168,232,.14)"
+                                            : "rgba(176,138,240,.14)",
+                                    }}
+                                  >
+                                    {oppRole}
+                                  </span>
+                                )}
+                                <span
+                                  style={{
+                                    flex: 1,
+                                    fontWeight: 600,
+                                    fontSize: 13,
+                                  }}
+                                >
+                                  vs {p.name}
+                                </span>
+                                <span
+                                  className="xs text-dd"
+                                  style={{ minWidth: 74, textAlign: "right" }}
+                                >
+                                  {h.games} match{h.games === 1 ? "" : "es"}
+                                </span>
                                 <span
                                   className="bold"
                                   style={{
                                     fontSize: 12,
-                                    color: won ? "var(--green)" : "var(--red)",
-                                  }}
-                                >
-                                  {won ? "W" : "L"} w/ {partner}
-                                </span>
-                                <span className="bold" style={{ fontSize: 13 }}>
-                                  {g.scoreA}–{g.scoreB}
-                                </span>
-                              </div>
-                              <div className="fac" style={{ justifyContent: "space-between", marginTop: 2 }}>
-                                <span className="xs text-dd">
-                                  vs {opps}
-                                  {role ? ` · ${role} Role` : ""}
-                                </span>
-                                <span
-                                  className="xs bold"
-                                  style={{ color: won ? "var(--green)" : "var(--red)" }}
-                                >
-                                  {delta >= 0 ? "+" : ""}
-                                  {delta}pts
-                                </span>
-                              </div>
-                              <div className="xs text-dd" style={{ marginTop: 2 }}>
-                                {new Date(g.date).toLocaleDateString("en-GB", {
-                                  day: "numeric",
-                                  month: "short",
-                                })}
-                                , {new Date(g.date).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
-                              </div>
-                            </div>
-                          );
-                        })}
-                      {!pGames.length && (
-                        <div className="xs text-dd" style={{ padding: "8px 0" }}>
-                          No matches yet
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="fac" style={{ justifyContent: "space-between", marginBottom: 6 }}>
-                      <div className="sec">Head to Head</div>
-                      <span className="xs text-dd">
-                        {activeSeason ? activeSeason.label : "All seasons"} encounters
-                      </span>
-                    </div>
-                    <div
-                      style={{
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: 4,
-                        maxHeight: 220,
-                        overflowY: "auto",
-                      }}
-                    >
-                      {(() => {
-                        const opponents = sorted
-                          .filter((p) => p.id !== selected.id)
-                          .map((p) => ({ p, h: getH2H(selected.id, p.id) }))
-                          .filter(({ h }) => h.games > 0);
-                        if (!opponents.length) {
-                          return (
-                            <div className="xs text-dd" style={{ padding: "8px 0" }}>
-                              No H2H data yet
-                            </div>
-                          );
-                        }
-                        let totalGames = 0,
-                          totalW = 0,
-                          totalNet = 0;
-                        const rows = opponents.map(({ p, h }) => {
-                          const pct = Math.round((h.winsA / h.games) * 100);
-                          const shared = scopedGames.filter(
-                            (g) =>
-                              (g.sideA.includes(selected.id) ||
-                                g.sideB.includes(selected.id)) &&
-                              (g.sideA.includes(p.id) || g.sideB.includes(p.id)),
-                          );
-                          const netVsOpp = calcNetPts(selected.id, shared);
-                          totalGames += h.games;
-                          totalW += h.winsA;
-                          totalNet += netVsOpp;
-                          const oppRole = shared[shared.length - 1]?.roles?.[p.id];
-                          return (
-                            <div
-                              key={p.id}
-                              style={{
-                                display: "flex",
-                                alignItems: "center",
-                                gap: 8,
-                                padding: "6px 10px",
-                                borderRadius: 8,
-                                background: "var(--s2)",
-                                border: "1px solid var(--b1)",
-                              }}
-                            >
-                              {oppRole && (
-                                <span
-                                  style={{
-                                    fontSize: 10,
-                                    fontWeight: 700,
-                                    padding: "2px 5px",
-                                    borderRadius: 4,
+                                    minWidth: 68,
+                                    textAlign: "right",
                                     color:
-                                      oppRole === "ATK"
-                                        ? "var(--orange)"
-                                        : oppRole === "DEF"
-                                          ? "var(--blue)"
-                                          : "var(--purple, #b08af0)",
-                                    background:
-                                      oppRole === "ATK"
-                                        ? "rgba(240,144,80,.14)"
-                                        : oppRole === "DEF"
-                                          ? "rgba(96,168,232,.14)"
-                                          : "rgba(176,138,240,.14)",
+                                      netVsOpp >= 0
+                                        ? "var(--green)"
+                                        : "var(--red)",
                                   }}
                                 >
-                                  {oppRole}
+                                  {netVsOpp >= 0 ? "+" : ""}
+                                  {netVsOpp} net
                                 </span>
-                              )}
-                              <span
+                                <span
+                                  className="xs text-dd"
+                                  style={{ minWidth: 46, textAlign: "right" }}
+                                >
+                                  {pct}% W
+                                </span>
+                              </div>
+                            );
+                          });
+                          return (
+                            <>
+                              {rows}
+                              <div
+                                className="fac"
                                 style={{
-                                  flex: 1,
-                                  fontWeight: 600,
-                                  fontSize: 13,
+                                  justifyContent: "space-between",
+                                  padding: "8px 10px 2px",
+                                  borderTop: "1px solid var(--b1)",
+                                  marginTop: 2,
                                 }}
                               >
-                                vs {p.name}
-                              </span>
-                              <span className="xs text-dd" style={{ minWidth: 74, textAlign: "right" }}>
-                                {h.games} match{h.games === 1 ? "" : "es"}
-                              </span>
-                              <span
-                                className="bold"
-                                style={{
-                                  fontSize: 12,
-                                  minWidth: 68,
-                                  textAlign: "right",
-                                  color: netVsOpp >= 0 ? "var(--green)" : "var(--red)",
-                                }}
-                              >
-                                {netVsOpp >= 0 ? "+" : ""}
-                                {netVsOpp} net
-                              </span>
-                              <span className="xs text-dd" style={{ minWidth: 46, textAlign: "right" }}>
-                                {pct}% W
-                              </span>
-                            </div>
+                                <span className="xs text-dd">
+                                  Total {totalGames} opposing encounter
+                                  {totalGames === 1 ? "" : "s"}
+                                </span>
+                                <span className="xs bold">
+                                  {totalW}W – {totalGames - totalW}L{" "}
+                                  <span
+                                    style={{
+                                      color:
+                                        totalNet >= 0
+                                          ? "var(--green)"
+                                          : "var(--red)",
+                                    }}
+                                  >
+                                    ({totalNet >= 0 ? "+" : ""}
+                                    {totalNet} net)
+                                  </span>
+                                </span>
+                              </div>
+                            </>
                           );
-                        });
-                        return (
-                          <>
-                            {rows}
-                            <div
-                              className="fac"
-                              style={{
-                                justifyContent: "space-between",
-                                padding: "8px 10px 2px",
-                                borderTop: "1px solid var(--b1)",
-                                marginTop: 2,
-                              }}
-                            >
-                              <span className="xs text-dd">
-                                Total {totalGames} opposing encounter{totalGames === 1 ? "" : "s"}
-                              </span>
-                              <span className="xs bold">
-                                {totalW}W – {totalGames - totalW}L
-                                {" "}
-                                <span style={{ color: totalNet >= 0 ? "var(--green)" : "var(--red)" }}>
-                                  ({totalNet >= 0 ? "+" : ""}
-                                  {totalNet} net)
-                                </span>
-                              </span>
-                            </div>
-                          </>
-                        );
-                      })()}
+                        })()}
+                      </div>
                     </div>
-                  </div>
                   </div>
                 </div>
               </div>
@@ -10006,7 +11054,9 @@ function StatsView({ state, onSelectPlayer, seasonFilter, setSeasonFilter }) {
             }}
           >
             <div style={{ textAlign: "center" }}>
-              <div style={{ fontSize: 28, marginBottom: 8 }}><UiIcon name="chart"/></div>
+              <div style={{ fontSize: 28, marginBottom: 8 }}>
+                <UiIcon name="chart" />
+              </div>
               <span className="text-dd" style={{ fontSize: 13 }}>
                 Select a player to view stats
               </span>
@@ -10081,7 +11131,9 @@ function TeamBalancer({ players }) {
   return (
     <div className="card">
       <div className="card-header">
-        <span className="card-title"><UiIcon name="balance"/> Team Balancer</span>
+        <span className="card-title">
+          <UiIcon name="balance" /> Team Balancer
+        </span>
         {selected.length > 0 && (
           <button className="btn btn-g btn-sm" onClick={() => setSelected([])}>
             Clear
@@ -10146,7 +11198,15 @@ function TeamBalancer({ players }) {
             const sel = selected.includes(p.id);
             const full = !sel && selected.length >= 4;
             return (
-              <div role="button" tabIndex={0} onKeyDown={e => {if(e.key === "Enter" || e.key === " "){e.preventDefault();e.currentTarget.click();}}}
+              <div
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    e.currentTarget.click();
+                  }
+                }}
                 key={p.id}
                 className={`player-chip ${sel ? "sel-a" : ""} ${full ? "disabled" : ""}`}
                 onClick={() => !full && toggle(p.id)}
@@ -10265,13 +11325,15 @@ function SeasonsArchiveView({
   onStartNewSeason,
 }) {
   const allSeasons = state.seasons || [];
-  const closedSeasons = allSeasons.filter(s => s.endAt);
+  const closedSeasons = allSeasons.filter((s) => s.endAt);
   const currentSeason = getCurrentSeason(state);
-  const localDateInput = value => {
+  const localDateInput = (value) => {
     if (!value) return "";
     const date = new Date(value);
     if (!Number.isFinite(date.getTime())) return "";
-    return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0,16);
+    return new Date(date.getTime() - date.getTimezoneOffset() * 60000)
+      .toISOString()
+      .slice(0, 16);
   };
   const [tick, setTick] = useState(0);
   const [editingNextDate, setEditingNextDate] = useState(false);
@@ -10284,9 +11346,7 @@ function SeasonsArchiveView({
     if (state.nextSeasonDate === prevNextSeasonDate.current) return;
     prevNextSeasonDate.current = state.nextSeasonDate;
     if (!editingNextDate)
-      setNextDateInput(
-        localDateInput(state.nextSeasonDate),
-      );
+      setNextDateInput(localDateInput(state.nextSeasonDate));
   }, [state.nextSeasonDate, editingNextDate]);
   useEffect(() => {
     const id = setInterval(() => setTick((t) => t + 1), 60000);
@@ -10298,12 +11358,15 @@ function SeasonsArchiveView({
     if (!Number.isFinite(start)) return null;
     const now = Date.now();
     const elapsed = now - start;
-    const elapsedDays = Math.max(0,Math.floor(elapsed / 86400000));
+    const elapsedDays = Math.max(0, Math.floor(elapsed / 86400000));
     if (state.nextSeasonDate) {
       const end = Date.parse(state.nextSeasonDate);
       if (Number.isFinite(end) && end > start) {
         const total = end - start;
-        const pct = Math.max(0,Math.min(100, Math.round((elapsed / total) * 100)));
+        const pct = Math.max(
+          0,
+          Math.min(100, Math.round((elapsed / total) * 100)),
+        );
         const remaining = Math.max(0, end - now);
         const remDays = Math.floor(remaining / 86400000);
         const remHours = Math.floor((remaining % 86400000) / 3600000);
@@ -10327,7 +11390,11 @@ function SeasonsArchiveView({
   })();
   function saveNextDate() {
     const date = nextDateInput ? new Date(nextDateInput) : null;
-    if (date && (!Number.isFinite(date.getTime()) || date.getTime() <= Date.parse(currentSeason.startAt))) {
+    if (
+      date &&
+      (!Number.isFinite(date.getTime()) ||
+        date.getTime() <= Date.parse(currentSeason.startAt))
+    ) {
       showToast("Choose an end date after the season start", "error");
       return;
     }
@@ -10383,10 +11450,14 @@ function SeasonsArchiveView({
               {isAdmin && (
                 <button
                   className="btn btn-g btn-sm"
-                  onClick={() => {setNextDateInput(localDateInput(state.nextSeasonDate));setEditingNextDate(v => !v);}}
+                  onClick={() => {
+                    setNextDateInput(localDateInput(state.nextSeasonDate));
+                    setEditingNextDate((v) => !v);
+                  }}
                   aria-expanded={editingNextDate}
                 >
-                  <UiIcon name="calendar"/> {state.nextSeasonDate ? "Edit end date" : "Set end date"}
+                  <UiIcon name="calendar" />{" "}
+                  {state.nextSeasonDate ? "Edit end date" : "Set end date"}
                 </button>
               )}
             </div>
@@ -10406,7 +11477,9 @@ function SeasonsArchiveView({
                 }}
               >
                 <div style={{ flex: "1 1 200px" }}>
-                  <label className="lbl" htmlFor="season-end-date">Scheduled season end</label>
+                  <label className="lbl" htmlFor="season-end-date">
+                    Scheduled season end
+                  </label>
                   <input
                     id="season-end-date"
                     className="inp"
@@ -10445,40 +11518,76 @@ function SeasonsArchiveView({
               className="season-metrics"
               style={{
                 display: "grid",
-                gridTemplateColumns: seasonProgress.hasEnd ? "1fr 1fr 1fr" : "1fr",
+                gridTemplateColumns: seasonProgress.hasEnd
+                  ? "1fr 1fr 1fr"
+                  : "1fr",
                 gap: 16,
                 marginBottom: 16,
               }}
             >
               <div>
                 <div className="stat-lbl">Started</div>
-                <div style={{ fontFamily: "var(--disp)", fontSize: 18, fontWeight: 700, marginTop: 2 }}>
-                  {currentSeason.startAt && !isNaN(Date.parse(currentSeason.startAt))
-                    ? new Date(currentSeason.startAt).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })
+                <div
+                  style={{
+                    fontFamily: "var(--disp)",
+                    fontSize: 18,
+                    fontWeight: 700,
+                    marginTop: 2,
+                  }}
+                >
+                  {currentSeason.startAt &&
+                  !isNaN(Date.parse(currentSeason.startAt))
+                    ? new Date(currentSeason.startAt).toLocaleDateString(
+                        "en-GB",
+                        { day: "numeric", month: "short", year: "numeric" },
+                      )
                     : "—"}
                 </div>
                 <div className="xs text-dd">
-                  {seasonProgress.elapsedDays} day{seasonProgress.elapsedDays !== 1 ? "s" : ""} in
+                  {seasonProgress.elapsedDays} day
+                  {seasonProgress.elapsedDays !== 1 ? "s" : ""} in
                 </div>
               </div>
               {seasonProgress.hasEnd && (
                 <>
                   <div>
                     <div className="stat-lbl">Ends</div>
-                    <div style={{ fontFamily: "var(--disp)", fontSize: 18, fontWeight: 700, marginTop: 2 }}>
-                      {seasonProgress.endDate.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
+                    <div
+                      style={{
+                        fontFamily: "var(--disp)",
+                        fontSize: 18,
+                        fontWeight: 700,
+                        marginTop: 2,
+                      }}
+                    >
+                      {seasonProgress.endDate.toLocaleDateString("en-GB", {
+                        day: "numeric",
+                        month: "short",
+                        year: "numeric",
+                      })}
                     </div>
                     <div className="xs text-dd">
-                      {seasonProgress.reached ? "Scheduled end reached" : `${seasonProgress.remDays} day${seasonProgress.remDays !== 1 ? "s" : ""} left`}
+                      {seasonProgress.reached
+                        ? "Scheduled end reached"
+                        : `${seasonProgress.remDays} day${seasonProgress.remDays !== 1 ? "s" : ""} left`}
                     </div>
                   </div>
                   <div>
                     <div className="stat-lbl">Progress</div>
-                    <div style={{ fontFamily: "var(--disp)", fontSize: 18, fontWeight: 700, marginTop: 2, color: "var(--green)" }}>
+                    <div
+                      style={{
+                        fontFamily: "var(--disp)",
+                        fontSize: 18,
+                        fontWeight: 700,
+                        marginTop: 2,
+                        color: "var(--green)",
+                      }}
+                    >
                       {seasonProgress.pct}% through
                     </div>
                     <div className="xs text-dd">
-                      Day {seasonProgress.elapsedDays} of {seasonProgress.totalDays} total
+                      Day {seasonProgress.elapsedDays} of{" "}
+                      {seasonProgress.totalDays} total
                     </div>
                   </div>
                 </>
@@ -10488,7 +11597,11 @@ function SeasonsArchiveView({
               <div>
                 <div
                   className="season-progress-track"
-                  role="progressbar" aria-label="Season progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={seasonProgress.pct}
+                  role="progressbar"
+                  aria-label="Season progress"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={seasonProgress.pct}
                   style={{
                     height: 6,
                     background: "var(--b1)",
@@ -10501,7 +11614,9 @@ function SeasonsArchiveView({
                       height: "100%",
                       width: `${seasonProgress.pct}%`,
                       borderRadius: 3,
-                      background: seasonProgress.reached ? "linear-gradient(90deg,#a47825,#e8b84a)" : "linear-gradient(90deg,#87dfac 0%,#4dbd81 48%,#23714b 100%)",
+                      background: seasonProgress.reached
+                        ? "linear-gradient(90deg,#a47825,#e8b84a)"
+                        : "linear-gradient(90deg,#87dfac 0%,#4dbd81 48%,#23714b 100%)",
                       transition: "width 1s linear",
                     }}
                   />
@@ -10515,11 +11630,19 @@ function SeasonsArchiveView({
                 >
                   <span className="xs text-dd">
                     {currentSeason.startAt
-                      ? new Date(currentSeason.startAt).toLocaleDateString("en-GB", { day: "numeric", month: "short" })
-                      : ""}{" (Start)"}
+                      ? new Date(currentSeason.startAt).toLocaleDateString(
+                          "en-GB",
+                          { day: "numeric", month: "short" },
+                        )
+                      : ""}
+                    {" (Start)"}
                   </span>
                   <span className="xs text-dd">
-                    {seasonProgress.endDate.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}{" (Deadline)"}
+                    {seasonProgress.endDate.toLocaleDateString("en-GB", {
+                      day: "numeric",
+                      month: "short",
+                    })}
+                    {" (Deadline)"}
                   </span>
                 </div>
               </div>
@@ -10581,10 +11704,11 @@ function SeasonsArchiveView({
                       })
                     }
                   >
-                    <UiIcon name="zap"/> Start New Season
+                    <UiIcon name="zap" /> Start New Season
                   </button>
                   <div className="xs text-dd" style={{ marginTop: 6 }}>
-                    Resets points, MMR and streaks. History and stats are preserved.
+                    Resets points, MMR and streaks. History and stats are
+                    preserved.
                   </div>
                 </div>
                 <span className="xs text-dd" style={{ textAlign: "right" }}>
@@ -10599,7 +11723,9 @@ function SeasonsArchiveView({
           className="card"
           style={{ padding: "28px 24px", textAlign: "center" }}
         >
-          <div style={{ fontSize: 32, marginBottom: 10 }}><UiIcon name="flag"/></div>
+          <div style={{ fontSize: 32, marginBottom: 10 }}>
+            <UiIcon name="flag" />
+          </div>
           <div
             style={{
               fontFamily: "var(--disp)",
@@ -10631,20 +11757,28 @@ function SeasonsArchiveView({
                 })
               }
             >
-              <UiIcon name="zap"/> Start Season 1
+              <UiIcon name="zap" /> Start Season 1
             </button>
           )}
         </div>
       )}
 
-      <div className="fac season-archive-heading" style={{ justifyContent: "space-between", margin: "4px 0 0" }}>
+      <div
+        className="fac season-archive-heading"
+        style={{ justifyContent: "space-between", margin: "4px 0 0" }}
+      >
         <h2>Archive</h2>
         <span className="xs text-dd">
-          {closedSeasons.length} completed season{closedSeasons.length === 1 ? "" : "s"}
+          {closedSeasons.length} completed season
+          {closedSeasons.length === 1 ? "" : "s"}
         </span>
       </div>
       {closedSeasons.length === 0 ? (
-        <div className="season-archive-empty"><UiIcon name="calendar"/><h3>No completed seasons</h3><p>Finished seasons and their results will appear here.</p></div>
+        <div className="season-archive-empty">
+          <UiIcon name="calendar" />
+          <h3>No completed seasons</h3>
+          <p>Finished seasons and their results will appear here.</p>
+        </div>
       ) : (
         [...closedSeasons].reverse().map((season, idx) => {
           const isCurrent = !season.endAt;
@@ -10691,7 +11825,10 @@ function SeasonsArchiveView({
               : null;
           return (
             <article key={season.id} className="season-archive-record">
-              <div className="season-archive-header" style={{ alignItems: "flex-start" }}>
+              <div
+                className="season-archive-header"
+                style={{ alignItems: "flex-start" }}
+              >
                 <div>
                   <div
                     style={{
@@ -10701,7 +11838,10 @@ function SeasonsArchiveView({
                     }}
                   >
                     {season.label}
-                    <span className="xs text-dd" style={{ fontWeight: 400, marginLeft: 8 }}>
+                    <span
+                      className="xs text-dd"
+                      style={{ fontWeight: 400, marginLeft: 8 }}
+                    >
                       {startDate} – {endDate}
                     </span>
                   </div>
@@ -10712,10 +11852,16 @@ function SeasonsArchiveView({
                   </div>
                 </div>
                 <div className="fac season-archive-links" style={{ gap: 12 }}>
-                  <button className="btn-link xs" onClick={() => onNavToHistory?.(season)}>
+                  <button
+                    className="btn-link xs"
+                    onClick={() => onNavToHistory?.(season)}
+                  >
                     View {season.label} History →
                   </button>
-                  <button className="btn-link xs" onClick={() => onNavToStats?.(season)}>
+                  <button
+                    className="btn-link xs"
+                    onClick={() => onNavToStats?.(season)}
+                  >
                     View {season.label} Stats →
                   </button>
                 </div>
@@ -10731,7 +11877,12 @@ function SeasonsArchiveView({
                   }}
                 >
                   {topThree.map((p, i) => {
-                    const placeLabel = i === 0 ? "Champion" : i === 1 ? "Runner-up" : "3rd Place";
+                    const placeLabel =
+                      i === 0
+                        ? "Champion"
+                        : i === 1
+                          ? "Runner-up"
+                          : "3rd Place";
                     const role = p.preferredRole;
                     return (
                       <div
@@ -10741,21 +11892,39 @@ function SeasonsArchiveView({
                           gap: 10,
                           padding: "10px 14px",
                           borderRadius: 10,
-                          background: i === 0 ? "rgba(232,184,74,.07)" : "var(--s2)",
+                          background:
+                            i === 0 ? "rgba(232,184,74,.07)" : "var(--s2)",
                           border: `1px solid ${i === 0 ? "rgba(232,184,74,.28)" : "var(--b1)"}`,
                         }}
                       >
-                        <span style={{ color: i === 0 ? "var(--gold)" : i === 1 ? "var(--dim)" : "var(--orange)" }}>
-                          <UiIcon name="medal"/>
+                        <span
+                          style={{
+                            color:
+                              i === 0
+                                ? "var(--gold)"
+                                : i === 1
+                                  ? "var(--dim)"
+                                  : "var(--orange)",
+                          }}
+                        >
+                          <UiIcon name="medal" />
                         </span>
                         <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontWeight: 600, fontSize: 14, overflowWrap: "anywhere" }}>
+                          <div
+                            style={{
+                              fontWeight: 600,
+                              fontSize: 14,
+                              overflowWrap: "anywhere",
+                            }}
+                          >
                             {p.name}
                           </div>
                           <div className="fac" style={{ gap: 6 }}>
                             <span
                               className="xs"
-                              style={{ color: i === 0 ? "var(--gold)" : "var(--dim)" }}
+                              style={{
+                                color: i === 0 ? "var(--gold)" : "var(--dim)",
+                              }}
                             >
                               {placeLabel}
                             </span>
@@ -10769,7 +11938,13 @@ function SeasonsArchiveView({
                           </div>
                         </div>
                         <div style={{ textAlign: "right" }}>
-                          <div style={{ fontFamily: "var(--disp)", fontWeight: 800, fontSize: 18 }}>
+                          <div
+                            style={{
+                              fontFamily: "var(--disp)",
+                              fontWeight: 800,
+                              fontSize: 18,
+                            }}
+                          >
                             {seasonStats[p.id]?.pts || 0}
                           </div>
                           <div className="xs text-dd">pts</div>
@@ -10779,7 +11954,11 @@ function SeasonsArchiveView({
                   })}
                 </div>
               )}
-              {!topThree.length && <p className="season-no-results">No matches were recorded in this season.</p>}
+              {!topThree.length && (
+                <p className="season-no-results">
+                  No matches were recorded in this season.
+                </p>
+              )}
             </article>
           );
         })
@@ -10878,7 +12057,13 @@ function RulesView({ state, setState, isAdmin, showToast }) {
 
 // ── ADVANCED PANEL ─────────────────────────────────────────────────────────
 
-function AdvancedPanel({ state, setState, showToast, onStartNewSeason, section = "recovery" }) {
+function AdvancedPanel({
+  state,
+  setState,
+  showToast,
+  onStartNewSeason,
+  section = "recovery",
+}) {
   const [loading, setLoading] = useState(false);
   const [history, setHistory] = useState([]);
   const [selected, setSelected] = useState(null);
@@ -11046,7 +12231,7 @@ function AdvancedPanel({ state, setState, showToast, onStartNewSeason, section =
             />
             Auto season announcement{" "}
             <span className="xs text-dd" style={{ marginLeft: 2 }}>
-              (defaults to <UiIcon name="zap"/> Hype)
+              (defaults to <UiIcon name="zap" /> Hype)
             </span>
           </label>
           <button className="btn btn-d" onClick={hardReset}>
@@ -11099,7 +12284,11 @@ function AdvancedPanel({ state, setState, showToast, onStartNewSeason, section =
           </div>
         </div>
 
-        <div className="card" hidden={section !== "announcements"} style={{ marginTop: 12 }}>
+        <div
+          className="card"
+          hidden={section !== "announcements"}
+          style={{ marginTop: 12 }}
+        >
           <div className="card-header">
             <span className="card-title">Announcement</span>
             <div className="fac" style={{ gap: 6 }}>
@@ -11143,7 +12332,15 @@ function AdvancedPanel({ state, setState, showToast, onStartNewSeason, section =
                 >
                   Preview
                 </div>
-                <AnnouncementContent preview announcement={{title:annTitle,subtitle:annSubtitle,body:annBody,type:annHype ? "hype" : annFlashy ? "flashy" : "standard"}}/>
+                <AnnouncementContent
+                  preview
+                  announcement={{
+                    title: annTitle,
+                    subtitle: annSubtitle,
+                    body: annBody,
+                    type: annHype ? "hype" : annFlashy ? "flashy" : "standard",
+                  }}
+                />
               </div>
             ) : (
               <div style={{ display: "grid", gap: 10 }}>
@@ -11311,7 +12508,11 @@ function AdvancedPanel({ state, setState, showToast, onStartNewSeason, section =
           </div>
         </div>
 
-        <div className="card" hidden={section !== "exports"} style={{ marginTop: 12 }}>
+        <div
+          className="card"
+          hidden={section !== "exports"}
+          style={{ marginTop: 12 }}
+        >
           <div className="card-header">
             <span className="card-title">Exports</span>
           </div>
@@ -11355,7 +12556,11 @@ function AdvancedPanel({ state, setState, showToast, onStartNewSeason, section =
           </div>
         </div>
 
-        <div className="card" hidden={section !== "diagnostics"} style={{ marginTop: 12 }}>
+        <div
+          className="card"
+          hidden={section !== "diagnostics"}
+          style={{ marginTop: 12 }}
+        >
           <div className="card-header">
             <span className="card-title">Audit</span>
           </div>
@@ -11438,7 +12643,9 @@ function SyncTestPanel({ state, setState, showToast }) {
   return (
     <div className="card">
       <div className="card-header">
-        <span className="card-title"><UiIcon name="settings"/> Sync Test Panel</span>
+        <span className="card-title">
+          <UiIcon name="settings" /> Sync Test Panel
+        </span>
         <button className="btn btn-d btn-sm" onClick={() => setLog([])}>
           Clear log
         </button>
@@ -11824,8 +13031,14 @@ export default function App() {
       if (p) setAdminProfile(p);
     });
   }, []);
-  const { view: tab, task: adminTab, season: seasonFilter, navigate, visited } = useLeagueNavigation();
-  const setSeasonFilter = value => navigate(tab, adminTab, value);
+  const {
+    view: tab,
+    task: adminTab,
+    season: seasonFilter,
+    navigate,
+    visited,
+  } = useLeagueNavigation();
+  const setSeasonFilter = (value) => navigate(tab, adminTab, value);
   const [showBalancer, setShowBalancer] = useState(false);
   const [loadError, setLoadError] = useState(null);
   const [loadAttempt, setLoadAttempt] = useState(0);
@@ -12028,7 +13241,10 @@ export default function App() {
   }, []);
   showToastRef.current = showToast;
   useEffect(() => {
-    syncToast = (msg, type) => { showToast(msg, type); if (type === "error" || type === "err") setSyncFor("error", 0); };
+    syncToast = (msg, type) => {
+      showToast(msg, type);
+      if (type === "error" || type === "err") setSyncFor("error", 0);
+    };
     return () => {
       syncToast = null;
     };
@@ -12143,82 +13359,293 @@ export default function App() {
     setSelPlayer(player);
     setEditPlayer(null);
     setProfileSeasonMode(seasonFilter === "all" ? "all" : "season");
-    setProfileSeasonId(seasonFilter === "current" ? getCurrentSeason(state)?.id || "" : seasonFilter);
+    setProfileSeasonId(
+      seasonFilter === "current"
+        ? getCurrentSeason(state)?.id || ""
+        : seasonFilter,
+    );
   }
   const commonProps = { state, setState, isAdmin, showToast };
-  const seasonLabel = seasonFilter === "all" ? "All seasons" : seasonFilter === "current" ? getCurrentSeason(state)?.label : state.seasons?.find(s => s.id === seasonFilter)?.label;
+  const seasonLabel =
+    seasonFilter === "all"
+      ? "All seasons"
+      : seasonFilter === "current"
+        ? getCurrentSeason(state)?.label
+        : state.seasons?.find((s) => s.id === seasonFilter)?.label;
 
   return (
     <>
-      <style>{CSS + leagueCSS + sectionCSS + seasonsCSS + championshipCSS + historyCSS + announcementCSS + motionCSS}</style>
+      <style>
+        {CSS +
+          leagueCSS +
+          sectionCSS +
+          seasonsCSS +
+          championshipCSS +
+          historyCSS +
+          announcementCSS +
+          motionCSS}
+      </style>
       <div className="app">
-        <LeagueHeader view={tab} task={adminTab} navigate={navTo} profile={adminProfile} connected={rtConnected} loading={loading}
+        <LeagueHeader
+          view={tab}
+          task={adminTab}
+          navigate={navTo}
+          profile={adminProfile}
+          connected={rtConnected}
+          loading={loading}
           onLogin={() => setShowLogin(true)}
-          onLogout={() => { signOutAdmin(); setAdminProfile(null); navTo("ranks"); }} />
+          onLogout={() => {
+            signOutAdmin();
+            setAdminProfile(null);
+            navTo("ranks");
+          }}
+        />
         <main className="main" id="main-content" tabIndex={-1}>
-          {loading ? <LeagueSkeleton /> : loadError ? (
+          {loading ? (
+            <LeagueSkeleton />
+          ) : loadError ? (
             <section className="load-error" role="alert">
               <h1>Unable to load the league</h1>
-              <p>Your connection may be unavailable. No sample results have been substituted.</p>
-              <button className="btn btn-p" onClick={() => {setLoading(true);setLoadError(null);setLoadAttempt(n => n + 1);}}><UiIcon name="reset"/>Try again</button>
+              <p>
+                Your connection may be unavailable. No sample results have been
+                substituted.
+              </p>
+              <button
+                className="btn btn-p"
+                onClick={() => {
+                  setLoading(true);
+                  setLoadError(null);
+                  setLoadAttempt((n) => n + 1);
+                }}
+              >
+                <UiIcon name="reset" />
+                Try again
+              </button>
             </section>
-          ) : <>
-            {(tab === "ranks" || tab === "stats") && <RanksHeading view={tab} navigate={navTo} seasonLabel={tab === "ranks" ? getCurrentSeason(state)?.label : seasonLabel} />}
-            <section hidden={tab !== "ranks"} className="ranks-view" aria-label="Standings">
-              {visited.has("ranks") && <LeaderboardView {...commonProps} rtConnected={rtConnected} syncStatus={syncStatus} onNavToPlay={() => navTo("play")} onNavToHistory={() => navTo("history")} onSelectPlayer={p => {setSelPlayer(p);setEditPlayer(null);setProfileSeasonMode("season");setProfileSeasonId(getCurrentSeason(state)?.id || "");}} />}
-            </section>
-            <section hidden={tab !== "history"} className="history-view" aria-label="History">
-              {visited.has("history") && <><div className="history-toolbar"><h1>History</h1><button className="btn btn-g" onClick={() => setShowBalancer(true)}><UiIcon name="balance"/>Balance teams</button></div><HistoryView {...commonProps} active={tab === "history"} seasonFilter={seasonFilter} setSeasonFilter={setSeasonFilter}/></>}
-            </section>
-            <section hidden={tab !== "stats"} className="stats-view" aria-label="Player statistics">
-              {visited.has("stats") && <StatsView state={state} seasonFilter={seasonFilter} setSeasonFilter={setSeasonFilter} onSelectPlayer={selectProfile} />}
-            </section>
-            <section hidden={tab !== "seasons"} className="season-view" aria-label="Seasons">
-              {visited.has("seasons") && <><div className="page-heading"><h1>Seasons</h1></div><SeasonsArchiveView {...commonProps} onNavToHistory={season => navTo("history",undefined,season.id)} onNavToStats={season => navTo("stats",undefined,season.id)} onStartNewSeason={startNewSeason}/></>}
-            </section>
-            <section hidden={tab !== "play"} className="champions-view" aria-label="Champions">
-              {visited.has("play") && <FinalsView {...commonProps}/>}
-            </section>
-            <section hidden={tab !== "rules"} className="rules-view" aria-label="Rules">
-              {visited.has("rules") && <RulesView {...commonProps}/>}
-            </section>
-            {visited.has("admin") && <section hidden={tab !== "admin"} aria-label="Administration">
-              {!isAdmin ? <AdminLogin onLogin={setAdminProfile}/> : <>
-                <div hidden={adminTab !== "logGames"} className="log-view">
-                  <div className="page-heading"><h1>Log game</h1><button className="btn btn-g" onClick={() => setShowBalancer(true)}><UiIcon name="balance"/>Balance teams</button></div>
-                  <LogView {...commonProps} active={tab === "admin" && adminTab === "logGames"} syncStatus={syncStatus}/>
-                </div>
-                <div hidden={adminTab === "logGames"}>
-                  <div className="page-heading"><h1>Manage</h1></div>
-                  <div className="management-layout">
-                    <ManagementNav task={adminTab} navigate={navTo} profile={adminProfile} playerCount={state.players.length}/>
-                    <div className="management-content">
-                      <div hidden={adminTab !== "onboard"}><OnboardView {...commonProps} onEdit={setEditPlayer}/></div>
-                      <div hidden={!["announcements","exports","recovery","diagnostics","advanced"].includes(adminTab)}>
-                        <AdvancedPanel {...commonProps} section={adminTab === "advanced" ? "recovery" : adminTab} onStartNewSeason={startNewSeason}/>
-                      </div>
-                      {adminTab === "diagnostics" && <SyncTestPanel {...commonProps}/>}
-                      {adminTab === "accounts" && adminProfile.role === "sysadmin" && <ManageLoginsPanel showToast={showToast} currentUserId={adminProfile.user_id}/>}
+          ) : (
+            <>
+              {(tab === "ranks" || tab === "stats") && (
+                <RanksHeading
+                  view={tab}
+                  navigate={navTo}
+                  seasonLabel={
+                    tab === "ranks"
+                      ? getCurrentSeason(state)?.label
+                      : seasonLabel
+                  }
+                />
+              )}
+              <section
+                hidden={tab !== "ranks"}
+                className="ranks-view"
+                aria-label="Standings"
+              >
+                {visited.has("ranks") && (
+                  <LeaderboardView
+                    {...commonProps}
+                    rtConnected={rtConnected}
+                    syncStatus={syncStatus}
+                    onNavToPlay={() => navTo("play")}
+                    onNavToHistory={() => navTo("history")}
+                    onSelectPlayer={(p) => {
+                      setSelPlayer(p);
+                      setEditPlayer(null);
+                      setProfileSeasonMode("season");
+                      setProfileSeasonId(getCurrentSeason(state)?.id || "");
+                    }}
+                  />
+                )}
+              </section>
+              <section
+                hidden={tab !== "history"}
+                className="history-view"
+                aria-label="History"
+              >
+                {visited.has("history") && (
+                  <>
+                    <div className="history-toolbar">
+                      <h1>History</h1>
+                      <button
+                        className="btn btn-g"
+                        onClick={() => setShowBalancer(true)}
+                      >
+                        <UiIcon name="balance" />
+                        Balance teams
+                      </button>
                     </div>
-                  </div>
-                </div>
-              </>}
-            </section>}
-          </>}
+                    <HistoryView
+                      {...commonProps}
+                      active={tab === "history"}
+                      seasonFilter={seasonFilter}
+                      setSeasonFilter={setSeasonFilter}
+                    />
+                  </>
+                )}
+              </section>
+              <section
+                hidden={tab !== "stats"}
+                className="stats-view"
+                aria-label="Player statistics"
+              >
+                {visited.has("stats") && (
+                  <StatsView
+                    state={state}
+                    seasonFilter={seasonFilter}
+                    setSeasonFilter={setSeasonFilter}
+                    onSelectPlayer={selectProfile}
+                  />
+                )}
+              </section>
+              <section
+                hidden={tab !== "seasons"}
+                className="season-view"
+                aria-label="Seasons"
+              >
+                {visited.has("seasons") && (
+                  <>
+                    <div className="page-heading">
+                      <h1>Seasons</h1>
+                    </div>
+                    <SeasonsArchiveView
+                      {...commonProps}
+                      onNavToHistory={(season) =>
+                        navTo("history", undefined, season.id)
+                      }
+                      onNavToStats={(season) =>
+                        navTo("stats", undefined, season.id)
+                      }
+                      onStartNewSeason={startNewSeason}
+                    />
+                  </>
+                )}
+              </section>
+              <section
+                hidden={tab !== "play"}
+                className="champions-view"
+                aria-label="Champions"
+              >
+                {visited.has("play") && <FinalsView {...commonProps} />}
+              </section>
+              <section
+                hidden={tab !== "rules"}
+                className="rules-view"
+                aria-label="Rules"
+              >
+                {visited.has("rules") && <RulesView {...commonProps} />}
+              </section>
+              {visited.has("admin") && (
+                <section hidden={tab !== "admin"} aria-label="Administration">
+                  {!isAdmin ? (
+                    <AdminLogin onLogin={setAdminProfile} />
+                  ) : (
+                    <>
+                      <div
+                        hidden={adminTab !== "logGames"}
+                        className="log-view"
+                      >
+                        <div className="page-heading">
+                          <h1>Log game</h1>
+                          <button
+                            className="btn btn-g"
+                            onClick={() => setShowBalancer(true)}
+                          >
+                            <UiIcon name="balance" />
+                            Balance teams
+                          </button>
+                        </div>
+                        <LogView
+                          {...commonProps}
+                          active={tab === "admin" && adminTab === "logGames"}
+                          syncStatus={syncStatus}
+                        />
+                      </div>
+                      <div hidden={adminTab === "logGames"}>
+                        <div className="page-heading">
+                          <h1>Manage</h1>
+                        </div>
+                        <div className="management-layout">
+                          <ManagementNav
+                            task={adminTab}
+                            navigate={navTo}
+                            profile={adminProfile}
+                            playerCount={state.players.length}
+                          />
+                          <div className="management-content">
+                            <div hidden={adminTab !== "onboard"}>
+                              <OnboardView
+                                {...commonProps}
+                                onEdit={setEditPlayer}
+                              />
+                            </div>
+                            <div
+                              hidden={
+                                ![
+                                  "announcements",
+                                  "exports",
+                                  "recovery",
+                                  "diagnostics",
+                                  "advanced",
+                                ].includes(adminTab)
+                              }
+                            >
+                              <AdvancedPanel
+                                {...commonProps}
+                                section={
+                                  adminTab === "advanced"
+                                    ? "recovery"
+                                    : adminTab
+                                }
+                                onStartNewSeason={startNewSeason}
+                              />
+                            </div>
+                            {adminTab === "diagnostics" && (
+                              <SyncTestPanel {...commonProps} />
+                            )}
+                            {adminTab === "accounts" &&
+                              adminProfile.role === "sysadmin" && (
+                                <ManageLoginsPanel
+                                  showToast={showToast}
+                                  currentUserId={adminProfile.user_id}
+                                />
+                              )}
+                          </div>
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </section>
+              )}
+            </>
+          )}
         </main>
-        {isAdmin && syncStatus !== "idle" && <div className="sync-message" role="status">{syncStatus === "saving" ? "Saving changes..." : syncStatus === "saved" ? "Changes saved" : syncStatus === "conflict" ? "Remote changes applied. Review your entry." : "Changes not saved. Check your connection."}</div>}
-        {showBalancer && <Modal onClose={() => setShowBalancer(false)} large><h2 className="modal-title">Balance teams</h2><TeamBalancer players={state.players}/></Modal>}
+        {isAdmin && syncStatus !== "idle" && (
+          <div className="sync-message" role="status">
+            {syncStatus === "saving"
+              ? "Saving changes..."
+              : syncStatus === "saved"
+                ? "Changes saved"
+                : syncStatus === "conflict"
+                  ? "Remote changes applied. Review your entry."
+                  : "Changes not saved. Check your connection."}
+          </div>
+        )}
+        {showBalancer && (
+          <Modal onClose={() => setShowBalancer(false)} large>
+            <h2 className="modal-title">Balance teams</h2>
+            <TeamBalancer players={state.players} />
+          </Modal>
+        )}
 
         {/* MODALS */}
         {showLogin && !isAdmin && (
           <Modal onClose={() => setShowLogin(false)}>
-              <AdminLogin
-                onLogin={(profile) => {
-                  setAdminProfile(profile);
-                  setShowLogin(false);
-                  navTo("admin", "onboard");
-                }}
-              />
+            <AdminLogin
+              onLogin={(profile) => {
+                setAdminProfile(profile);
+                setShowLogin(false);
+                navTo("admin", "onboard");
+              }}
+            />
           </Modal>
         )}
         {currentSelPlayer && !editPlayer && (
