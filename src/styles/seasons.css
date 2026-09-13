@@ -1,0 +1,34 @@
+.seasons-workspace{gap:28px}
+.season-active{background:var(--surface-content);padding:4px 0 28px;border-bottom:1px solid var(--b1)}
+.season-active-heading{padding-bottom:20px;border-bottom:1px solid var(--b1);margin-bottom:24px!important}
+.season-active-heading>div>div>span:first-child{font-size:25px!important;font-weight:600!important}
+.season-metrics{margin:24px 0 30px!important;gap:32px!important}
+.season-metrics .stat-lbl{color:var(--dim);font-size:13px;margin-bottom:8px}
+.season-metrics>div>div:nth-child(2){font-size:22px!important;font-weight:600!important}
+.season-metrics .xs{margin-top:7px;font-size:13px}
+.season-progress-track{height:7px!important;border-radius:8px!important;background:var(--s2)!important}
+.season-date-editor{background:var(--surface-frame)!important;border-radius:12px!important;padding:16px!important}
+.season-date-editor .inp{background:var(--surface-content);min-width:0}
+.season-active>div>div:last-child{gap:20px!important}
+.season-active .xs[style*="text-align"]{overflow-wrap:anywhere}
+.season-archive-heading{padding-top:12px;gap:16px}.season-archive-heading h2{font:600 24px var(--disp);color:var(--text)}
+.season-archive-record{padding:24px 0;border-top:1px solid var(--b1);background:transparent}
+.season-archive-header{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap;margin-bottom:20px}
+.season-archive-header>div:first-child>div:first-child{font-size:20px!important;font-weight:600!important;display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+.season-archive-header .xs{font-size:13px;margin-left:0!important;line-height:1.6}
+.season-archive-links{flex-wrap:wrap;align-self:center}.season-archive-links button{padding:8px 0;font-size:13px;min-height:40px;text-align:left;white-space:normal}
+.season-podium{padding:0!important;gap:16px!important}
+.season-podium-place{background:var(--surface-frame)!important;border:1px solid var(--b1)!important;border-radius:12px!important;padding:18px!important;gap:14px!important;min-width:0}
+.season-podium-place.place-1{border-color:#e8b84a40!important}.season-podium-place.place-1>.ui-icon,.season-podium-place.place-1>span{color:var(--gold)!important}
+.season-podium-place.place-2>span{color:var(--silver)!important}.season-podium-place.place-3>span{color:var(--copper)!important}
+.season-podium-place>div:last-child>div:first-child{font-size:24px!important;font-weight:700!important;line-height:1.2}
+.season-podium-place>div:nth-child(2)>div:first-child{font-size:16px!important}.season-podium-place .fac{flex-wrap:wrap;margin-top:4px}
+.season-archive-empty{padding:28px 0;color:var(--dim);border-top:1px solid var(--b1)}.season-archive-empty h3{font:600 18px var(--disp);color:var(--text);margin:12px 0 8px}.season-archive-empty p,.season-no-results{font-size:14px;line-height:1.6;color:var(--dim)}
+@media(max-width:800px){
+ .seasons-workspace{gap:24px}.season-metrics{gap:20px!important;grid-template-columns:repeat(2,minmax(0,1fr))!important}.season-metrics>div:last-child:nth-child(3){grid-column:1/-1}.season-metrics>div>div:nth-child(2){font-size:20px!important}
+ .season-podium{grid-template-columns:1fr!important}.season-active-heading{gap:12px!important}.season-active-heading .btn{font-size:12px}
+ .season-archive-header{gap:12px;margin-bottom:16px}.season-archive-links{gap:16px!important}.season-podium-place{padding:16px!important}
+ .season-date-editor{padding:12px!important}.season-date-editor>div{min-width:0}.season-date-editor .fac{flex-wrap:wrap}
+ .season-active>div>div:last-child>span{text-align:left!important;font-size:11px}.season-archive-heading h2{font-size:22px}
+}
+@media(max-width:360px){.season-metrics{grid-template-columns:1fr!important}.season-metrics>div:last-child:nth-child(3){grid-column:auto}.season-active-heading>div>div>span:first-child{font-size:22px!important}}

@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { UiIcon, LeagueHeader, RanksHeading, ManagementNav, LeagueSkeleton, EventCountdown, RecentResults, useLeagueNavigation } from "./components/LeagueUI";
 import leagueCSS from "./styles/league.css?raw";
 import sectionCSS from "./styles/sections.css?raw";
+import seasonsCSS from "./styles/seasons.css?raw";
 import { supabase } from "./supabaseClient";
 import {
   signInWithUsername,
@@ -10794,13 +10795,18 @@ function SeasonsArchiveView({
   onStartNewSeason,
 }) {
   const allSeasons = state.seasons || [];
+  const closedSeasons = allSeasons.filter(s => s.endAt);
   const currentSeason = getCurrentSeason(state);
+  const localDateInput = value => {
+    if (!value) return "";
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) return "";
+    return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0,16);
+  };
   const [tick, setTick] = useState(0);
   const [editingNextDate, setEditingNextDate] = useState(false);
   const [nextDateInput, setNextDateInput] = useState(
-    state.nextSeasonDate
-      ? new Date(state.nextSeasonDate).toISOString().slice(0, 16)
-      : "",
+    localDateInput(state.nextSeasonDate),
   );
   const [confirm, setConfirm] = useState(null);
   const prevNextSeasonDate = useRef(state.nextSeasonDate);
@@ -10809,9 +10815,7 @@ function SeasonsArchiveView({
     prevNextSeasonDate.current = state.nextSeasonDate;
     if (!editingNextDate)
       setNextDateInput(
-        state.nextSeasonDate
-          ? new Date(state.nextSeasonDate).toISOString().slice(0, 16)
-          : "",
+        localDateInput(state.nextSeasonDate),
       );
   }, [state.nextSeasonDate, editingNextDate]);
   useEffect(() => {
@@ -10824,12 +10828,12 @@ function SeasonsArchiveView({
     if (!Number.isFinite(start)) return null;
     const now = Date.now();
     const elapsed = now - start;
-    const elapsedDays = Math.floor(elapsed / 86400000);
+    const elapsedDays = Math.max(0,Math.floor(elapsed / 86400000));
     if (state.nextSeasonDate) {
       const end = Date.parse(state.nextSeasonDate);
       if (Number.isFinite(end) && end > start) {
         const total = end - start;
-        const pct = Math.min(100, Math.round((elapsed / total) * 100));
+        const pct = Math.max(0,Math.min(100, Math.round((elapsed / total) * 100)));
         const remaining = Math.max(0, end - now);
         const remDays = Math.floor(remaining / 86400000);
         const remHours = Math.floor((remaining % 86400000) / 3600000);
@@ -10844,41 +10848,32 @@ function SeasonsArchiveView({
           remSecs,
           hasEnd: true,
           endDate: new Date(end),
+          totalDays: Math.ceil(total / 86400000),
+          reached: end <= now,
         };
       }
     }
     return { elapsedDays, pct: null, hasEnd: false };
   })();
   function saveNextDate() {
-    const iso = nextDateInput ? new Date(nextDateInput).toISOString() : null;
+    const date = nextDateInput ? new Date(nextDateInput) : null;
+    if (date && (!Number.isFinite(date.getTime()) || date.getTime() <= Date.parse(currentSeason.startAt))) {
+      showToast("Choose an end date after the season start", "error");
+      return;
+    }
+    const iso = date ? date.toISOString() : null;
     setState((s) => ({ ...s, nextSeasonDate: iso }));
     showToast(iso ? "Next season date set" : "Next season date cleared");
     setEditingNextDate(false);
   }
 
   return (
-    <div className="stack page-fade">
+    <div className="stack page-fade seasons-workspace">
       {currentSeason && seasonProgress ? (
-        <div className="card" style={{ overflow: "hidden" }}>
-          <div
-            style={{ height: 3, background: "var(--b1)", position: "relative" }}
-          >
+        <section className="season-active" aria-label="Current season">
+          <div>
             <div
-              style={{
-                position: "absolute",
-                inset: 0,
-                width:
-                  seasonProgress.pct !== null
-                    ? `${seasonProgress.pct}%`
-                    : "100%",
-                background: "linear-gradient(90deg,var(--amber),var(--green))",
-                transition: "width 1s linear",
-                boxShadow: "0 0 8px rgba(88,200,130,.4)",
-              }}
-            />
-          </div>
-          <div style={{ padding: "20px 24px" }}>
-            <div
+              className="season-active-heading"
               style={{
                 display: "flex",
                 alignItems: "flex-start",
@@ -10918,7 +10913,8 @@ function SeasonsArchiveView({
               {isAdmin && (
                 <button
                   className="btn btn-g btn-sm"
-                  onClick={() => setEditingNextDate((v) => !v)}
+                  onClick={() => {setNextDateInput(localDateInput(state.nextSeasonDate));setEditingNextDate(v => !v);}}
+                  aria-expanded={editingNextDate}
                 >
                   <UiIcon name="calendar"/> {state.nextSeasonDate ? "Edit end date" : "Set end date"}
                 </button>
@@ -10926,6 +10922,7 @@ function SeasonsArchiveView({
             </div>
             {editingNextDate && isAdmin && (
               <div
+                className="season-date-editor"
                 style={{
                   display: "flex",
                   gap: 8,
@@ -10939,8 +10936,9 @@ function SeasonsArchiveView({
                 }}
               >
                 <div style={{ flex: "1 1 200px" }}>
-                  <label className="lbl">Next season starts</label>
+                  <label className="lbl" htmlFor="season-end-date">Scheduled season end</label>
                   <input
+                    id="season-end-date"
                     className="inp"
                     type="datetime-local"
                     value={nextDateInput}
@@ -10974,6 +10972,7 @@ function SeasonsArchiveView({
               </div>
             )}
             <div
+              className="season-metrics"
               style={{
                 display: "grid",
                 gridTemplateColumns: seasonProgress.hasEnd ? "1fr 1fr 1fr" : "1fr",
@@ -11000,7 +10999,7 @@ function SeasonsArchiveView({
                       {seasonProgress.endDate.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
                     </div>
                     <div className="xs text-dd">
-                      {seasonProgress.remDays} day{seasonProgress.remDays !== 1 ? "s" : ""} left
+                      {seasonProgress.reached ? "Scheduled end reached" : `${seasonProgress.remDays} day${seasonProgress.remDays !== 1 ? "s" : ""} left`}
                     </div>
                   </div>
                   <div>
@@ -11009,7 +11008,7 @@ function SeasonsArchiveView({
                       {seasonProgress.pct}% through
                     </div>
                     <div className="xs text-dd">
-                      Day {seasonProgress.elapsedDays} of {seasonProgress.elapsedDays + seasonProgress.remDays} total
+                      Day {seasonProgress.elapsedDays} of {seasonProgress.totalDays} total
                     </div>
                   </div>
                 </>
@@ -11018,6 +11017,8 @@ function SeasonsArchiveView({
             {seasonProgress.hasEnd ? (
               <div>
                 <div
+                  className="season-progress-track"
+                  role="progressbar" aria-label="Season progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={seasonProgress.pct}
                   style={{
                     height: 6,
                     background: "var(--b1)",
@@ -11030,7 +11031,7 @@ function SeasonsArchiveView({
                       height: "100%",
                       width: `${seasonProgress.pct}%`,
                       borderRadius: 3,
-                      background: `linear-gradient(90deg,var(--amber),${seasonProgress.pct > 85 ? "var(--red)" : "var(--green)"})`,
+                      background: seasonProgress.reached ? "var(--gold)" : "var(--green)",
                       transition: "width 1s linear",
                     }}
                   />
@@ -11054,6 +11055,7 @@ function SeasonsArchiveView({
               </div>
             ) : (
               <div
+                className="season-admin-actions"
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -11121,7 +11123,7 @@ function SeasonsArchiveView({
               </div>
             )}
           </div>
-        </div>
+        </section>
       ) : (
         <div
           className="card"
@@ -11165,16 +11167,16 @@ function SeasonsArchiveView({
         </div>
       )}
 
-      <div className="fac" style={{ justifyContent: "space-between", margin: "4px 0 0" }}>
-        <div className="sec">Archive</div>
+      <div className="fac season-archive-heading" style={{ justifyContent: "space-between", margin: "4px 0 0" }}>
+        <h2>Archive</h2>
         <span className="xs text-dd">
-          {allSeasons.filter((s) => s.endAt).length} closed cycle{allSeasons.filter((s) => s.endAt).length === 1 ? "" : "s"}
+          {closedSeasons.length} completed season{closedSeasons.length === 1 ? "" : "s"}
         </span>
       </div>
-      {allSeasons.length === 0 ? (
-        <div className="msg msg-i">No seasons recorded yet</div>
+      {closedSeasons.length === 0 ? (
+        <div className="season-archive-empty"><UiIcon name="calendar"/><h3>No completed seasons</h3><p>Finished seasons and their results will appear here.</p></div>
       ) : (
-        [...allSeasons].reverse().map((season, idx) => {
+        [...closedSeasons].reverse().map((season, idx) => {
           const isCurrent = !season.endAt;
           if (isCurrent) return null;
           const seasonGames = (state.games || []).filter((g) =>
@@ -11218,8 +11220,8 @@ function SeasonsArchiveView({
                 )
               : null;
           return (
-            <div key={season.id} className="card">
-              <div className="card-header" style={{ alignItems: "flex-start" }}>
+            <article key={season.id} className="season-archive-record">
+              <div className="season-archive-header" style={{ alignItems: "flex-start" }}>
                 <div>
                   <div
                     style={{
@@ -11239,7 +11241,7 @@ function SeasonsArchiveView({
                     {seasonGames.length} games played
                   </div>
                 </div>
-                <div className="fac" style={{ gap: 12 }}>
+                <div className="fac season-archive-links" style={{ gap: 12 }}>
                   <button className="btn-link xs" onClick={() => onNavToHistory?.(season)}>
                     View {season.label} History →
                   </button>
@@ -11250,6 +11252,7 @@ function SeasonsArchiveView({
               </div>
               {topThree.length > 0 && (
                 <div
+                  className="season-podium"
                   style={{
                     padding: "4px 16px 16px",
                     display: "grid",
@@ -11263,7 +11266,7 @@ function SeasonsArchiveView({
                     return (
                       <div
                         key={p.id}
-                        className="fac"
+                        className={`fac season-podium-place place-${i + 1}`}
                         style={{
                           gap: 10,
                           padding: "10px 14px",
@@ -11306,7 +11309,8 @@ function SeasonsArchiveView({
                   })}
                 </div>
               )}
-            </div>
+              {!topThree.length && <p className="season-no-results">No matches were recorded in this season.</p>}
+            </article>
           );
         })
       )}
@@ -12763,7 +12767,7 @@ export default function App() {
 
   return (
     <>
-      <style>{CSS + leagueCSS + sectionCSS}</style>
+      <style>{CSS + leagueCSS + sectionCSS + seasonsCSS}</style>
       <div className="app">
         <LeagueHeader view={tab} task={adminTab} navigate={navTo} profile={adminProfile} connected={rtConnected} loading={loading}
           onLogin={() => setShowLogin(true)}
