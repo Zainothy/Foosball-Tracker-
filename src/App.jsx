@@ -6,6 +6,7 @@ import sectionCSS from "./styles/sections.css?raw";
 import seasonsCSS from "./styles/seasons.css?raw";
 import championshipCSS from "./styles/championship.css?raw";
 import historyCSS from "./styles/history.css?raw";
+import announcementCSS from "./styles/announcement.css?raw";
 import { HistoryRecords } from "./components/HistoryRecords";
 import { supabase } from "./supabaseClient";
 import {
@@ -2542,122 +2543,31 @@ function renderMd(md) {
   return out.join("\n");
 }
 
+function AnnouncementContent({ announcement, preview = false }) {
+  const season = announcement.type === "seasonLaunch";
+  const featured = season || announcement.type === "flashy";
+  const hype = announcement.type === "hype";
+  const title = announcement.title || (season ? "New season" : "Announcement");
+  const subtitle = announcement.subtitle || (season ? "Fresh leaderboard" : "");
+  return <article className={`announcement-content ${hype ? "is-hype" : featured ? "is-featured" : ""}`}>
+    <header className="announcement-heading">
+      <div className="announcement-category"><UiIcon name={season ? "flag" : hype ? "trophy" : "announcement"} size={18}/><span>{season ? "Season update" : hype ? "Matchday announcement" : "League announcement"}</span></div>
+      <h2>{title}</h2>
+      {subtitle && <p>{subtitle}</p>}
+    </header>
+    <div className="announcement-body md" dangerouslySetInnerHTML={{__html:renderMd(announcement.body || (preview ? "*No content yet.*" : ""))}}/>
+  </article>;
+}
+
 function AnnouncementModal({ announcement, onClose }) {
   if (!announcement) return null;
-  const isFlashy =
-    announcement.type === "seasonLaunch" || announcement.type === "flashy";
-  const isHype = announcement.type === "hype";
-  const isSpecial = isFlashy || isHype;
-  const title =
-    announcement.title || (isSpecial ? "New Season" : "Announcement");
-  const subtitle =
-    announcement.subtitle ||
-    (announcement.type === "seasonLaunch" ? "Fresh leaderboard" : null);
-  const headerClass = isHype
-    ? "season-launch hype"
-    : isFlashy
-      ? "season-launch"
-      : "";
-  const titleClass = isHype
-    ? "season-title hype"
-    : isFlashy
-      ? "season-title"
-      : "";
-  const pillClass = isHype ? "season-pill hype" : "season-pill";
-  return (
-    <Modal onClose={onClose} large>
-      <div
-        className={headerClass}
-        style={{
-          margin: "-28px -28px 0",
-          padding: isHype ? "24px 28px 20px" : "20px 28px 16px",
-          borderBottom: "1px solid var(--b1)",
-          marginBottom: isHype ? 20 : 16,
-          borderRadius: "14px 14px 0 0",
-        }}
-      >
-        {isHype && (
-          <div
-            className="xs"
-            style={{
-              letterSpacing: 2,
-              textTransform: "uppercase",
-              color: "var(--gold)",
-              opacity: 0.7,
-              marginBottom: 8,
-              fontWeight: 600,
-              animation: "fadeInUp .4s ease both",
-            }}
-          >
-            <UiIcon name="announcement"/> &nbsp;Announcement&nbsp; <UiIcon name="announcement"/>
-          </div>
-        )}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 10,
-            flexWrap: "wrap",
-          }}
-        >
-          {isSpecial ? (
-            <span
-              className={titleClass}
-              style={{
-                animation: isHype ? "fadeInUp .5s ease both .1s" : "none",
-              }}
-            >
-              {title}
-            </span>
-          ) : (
-            <span className="modal-title" style={{ marginBottom: 0 }}>
-              {title}
-            </span>
-          )}
-          {subtitle && (
-            <span className={isSpecial ? pillClass : "tag tag-a"}>
-              {subtitle}
-            </span>
-          )}
-        </div>
-      </div>
-      <div
-        className="md"
-        style={{ animation: isHype ? "fadeInUp .5s ease both .2s" : "none" }}
-        dangerouslySetInnerHTML={{ __html: renderMd(announcement.body || "") }}
-      />
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          marginTop: isHype ? 20 : 14,
-          flexWrap: "wrap",
-          gap: 8,
-        }}
-      >
-        {announcement.endsAt ? (
-          <span className="xs text-dd">
-            Visible until{" "}
-            {new Date(announcement.endsAt).toLocaleString("en-GB", {
-              day: "numeric",
-              month: "short",
-              hour: "2-digit",
-              minute: "2-digit",
-            })}
-          </span>
-        ) : (
-          <span />
-        )}
-        <button
-          className={isHype ? "btn btn-p" : "btn btn-g"}
-          onClick={onClose}
-        >
-          {isHype ? "Let's go" : "Close"}
-        </button>
-      </div>
-    </Modal>
-  );
+  return <Modal onClose={onClose} variant="announcement-modal" label={announcement.title || "League announcement"}>
+    <AnnouncementContent announcement={announcement}/>
+    <footer className="announcement-footer">
+      {announcement.endsAt && <span className="announcement-expiry"><UiIcon name="calendar" size={15}/><span>Until <time dateTime={announcement.endsAt}>{new Date(announcement.endsAt).toLocaleString("en-GB",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"})}</time></span></span>}
+      <button className="btn btn-p" onClick={onClose}>Got it</button>
+    </footer>
+  </Modal>;
 }
 
 // ── PLAYER PROFILE ─────────────────────────────────────────────────────────
@@ -11313,94 +11223,7 @@ function AdvancedPanel({ state, setState, showToast, onStartNewSeason, section =
                 >
                   Preview
                 </div>
-                {(() => {
-                  const isSpec = annFlashy || annHype;
-                  const cls = annHype
-                    ? "season-launch hype"
-                    : annFlashy
-                      ? "season-launch"
-                      : "";
-                  return (
-                    <div
-                      className={cls}
-                      style={{
-                        padding: isSpec
-                          ? annHype
-                            ? "18px 14px 14px"
-                            : "14px"
-                          : 0,
-                        borderRadius: isSpec ? 8 : 0,
-                        marginBottom: 8,
-                      }}
-                    >
-                      {annHype && (
-                        <div
-                          className="xs"
-                          style={{
-                            letterSpacing: 2,
-                            textTransform: "uppercase",
-                            color: "var(--gold)",
-                            opacity: 0.7,
-                            marginBottom: 6,
-                            fontWeight: 600,
-                          }}
-                        >
-                          <UiIcon name="announcement"/> &nbsp;Announcement&nbsp; <UiIcon name="announcement"/>
-                        </div>
-                      )}
-                      <div
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 8,
-                          flexWrap: "wrap",
-                          marginBottom: 8,
-                        }}
-                      >
-                        <span
-                          className={
-                            annHype
-                              ? "season-title hype"
-                              : annFlashy
-                                ? "season-title"
-                                : ""
-                          }
-                          style={
-                            isSpec
-                              ? {}
-                              : {
-                                  fontFamily: "var(--disp)",
-                                  fontSize: 18,
-                                  fontWeight: 700,
-                                  color: "var(--amber)",
-                                }
-                          }
-                        >
-                          {annTitle || (isSpec ? "New Season" : "Announcement")}
-                        </span>
-                        {annSubtitle && (
-                          <span
-                            className={
-                              annHype
-                                ? "season-pill hype"
-                                : isSpec
-                                  ? "season-pill"
-                                  : "tag tag-a"
-                            }
-                          >
-                            {annSubtitle}
-                          </span>
-                        )}
-                      </div>
-                      <div
-                        className="md"
-                        dangerouslySetInnerHTML={{
-                          __html: renderMd(annBody || "*No content yet…*"),
-                        }}
-                      />
-                    </div>
-                  );
-                })()}
+                <AnnouncementContent preview announcement={{title:annTitle,subtitle:annSubtitle,body:annBody,type:annHype ? "hype" : annFlashy ? "flashy" : "standard"}}/>
               </div>
             ) : (
               <div style={{ display: "grid", gap: 10 }}>
@@ -12407,7 +12230,7 @@ export default function App() {
 
   return (
     <>
-      <style>{CSS + leagueCSS + sectionCSS + seasonsCSS + championshipCSS + historyCSS}</style>
+      <style>{CSS + leagueCSS + sectionCSS + seasonsCSS + championshipCSS + historyCSS + announcementCSS}</style>
       <div className="app">
         <LeagueHeader view={tab} task={adminTab} navigate={navTo} profile={adminProfile} connected={rtConnected} loading={loading}
           onLogin={() => setShowLogin(true)}
