@@ -1,0 +1,45 @@
+.championship-event-clock .cd-num{display:grid;place-items:center;text-align:center;line-height:1.15!important}
+.championship-event-clock .cd-num>span{width:100%;text-align:center}
+.championship-event-clock .cd-unit,.championship-event-clock .cd-lbl{text-align:center}
+.championship-event-clock .countdown-status{font-size:11px;text-align:center;min-height:16px;margin:8px 0 0;color:var(--dim)}
+.countdown-tempo{height:3px;background:var(--b1);margin-top:10px;overflow:hidden;position:relative}
+.countdown-tempo::after{content:"";position:absolute;inset:0 auto 0 0;width:28%;background:linear-gradient(90deg,transparent,var(--green) 30%,#b6f2cf 50%,var(--green) 70%,transparent);animation:countdown-drift 6.8s cubic-bezier(.45,0,.2,1) infinite}
+.final-hour .countdown-tempo::after{background:linear-gradient(90deg,transparent,var(--gold) 30%,#fff0ba 50%,var(--gold) 70%,transparent);animation-duration:4.8s}
+.countdown-tempo>span{display:block;height:100%;background:var(--green);opacity:.25;animation:countdown-settle 1.6s cubic-bezier(.16,1,.3,1) both}
+.event-countdown .cd-num>span{animation:countdown-digit .5s cubic-bezier(.16,1,.3,1)}
+.event-countdown .cd-unit:last-child .cd-num>span{animation:none}
+.event-countdown.final-hour .cd-unit:last-child .cd-num{border-color:var(--gold)!important;color:var(--gold)!important}
+.event-countdown.final-minute .countdown-status{color:var(--gold)}
+.event-countdown.final-hour .countdown-tempo>span{background:var(--gold)}
+.event-countdown .countdown-keyline{display:none}
+.rankings-expanded .rankings-entries{max-height:65dvh;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
+.rankings-expanded .tbl-wrap{overflow:visible}
+.rankings-expanded thead{position:sticky;top:0;z-index:2;background:var(--surface-frame)}
+.rankings-disclosure{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0;border-top:1px solid var(--b1);font-size:12px;color:var(--dim)}
+.rankings-disclosure .btn{min-height:44px}
+.ranks-view .lb-row.rank-up,.ranks-view .lb-row.rank-down,.ranks-view .lb-row.pts-changed{animation:none}
+.ranks-view:not([hidden]){animation:ranks-arrive .3s ease-out}
+.history-view:not([hidden]){animation:history-arrive .3s ease-out}
+.stats-view:not([hidden]){animation:stats-arrive .32s ease-out}
+.season-view:not([hidden]){animation:season-arrive .4s ease-out}
+.champions-view:not([hidden]) .competition-board{animation:bracket-arrive .4s ease-out}
+section[aria-label="Administration"]:not([hidden]) .management-content{animation:manage-arrive .25s ease-out}
+.rules-view:not([hidden]){animation:rules-arrive .3s ease-out}
+.main section:not([hidden]) .page-fade{animation:none}
+@keyframes countdown-settle{from{opacity:.85}to{opacity:.25}}
+@keyframes countdown-digit{from{opacity:.65}to{opacity:1}}
+@keyframes countdown-drift{0%{transform:translateX(-100%);opacity:0}12%{opacity:.85}48%{transform:translateX(260%);opacity:.7}62%{transform:translateX(360%);opacity:0}100%{transform:translateX(360%);opacity:0}}
+@keyframes ranks-arrive{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+@keyframes history-arrive{from{opacity:0;transform:translateX(-10px)}to{opacity:1;transform:none}}
+@keyframes stats-arrive{from{opacity:0;transform:translateX(10px)}to{opacity:1;transform:none}}
+@keyframes season-arrive{from{opacity:0;clip-path:inset(0 0 8% 0)}to{opacity:1;clip-path:inset(0)}}
+@keyframes bracket-arrive{from{opacity:0;transform:scale(.985);transform-origin:50% 0}to{opacity:1;transform:none}}
+@keyframes manage-arrive{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
+@keyframes rules-arrive{from{opacity:0}to{opacity:1}}
+@media(prefers-reduced-motion:reduce){
+ .main section,.main .page-fade,.main .competition-board,.main .management-content,.event-countdown *{animation:none!important;transition:none!important}
+ .countdown-tempo>span{transform:none}
+ .countdown-tempo::after{animation:none;display:none}
+ .ranks-view .rank-up,.ranks-view .pts-changed{box-shadow:inset 3px 0 var(--green)}
+ .ranks-view .rank-down{box-shadow:inset 3px 0 var(--red)}
+}
