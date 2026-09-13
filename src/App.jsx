@@ -5,6 +5,8 @@ import leagueCSS from "./styles/league.css?raw";
 import sectionCSS from "./styles/sections.css?raw";
 import seasonsCSS from "./styles/seasons.css?raw";
 import championshipCSS from "./styles/championship.css?raw";
+import historyCSS from "./styles/history.css?raw";
+import { HistoryRecords } from "./components/HistoryRecords";
 import { supabase } from "./supabaseClient";
 import {
   signInWithUsername,
@@ -5485,365 +5487,66 @@ function HistoryView({ state, setState, isAdmin, showToast, seasonFilter, setSea
   const [dateTo, setDateTo] = useState("");
   const [showFilters, setShowFilters] = useState(false);
   const [selectedGameId, setSelectedGameId] = useState(null);
-  useEffect(() => { if (!active) setSelectedGameId(null); }, [active]);
   const [visibleDays, setVisibleDays] = useState(5);
+  useEffect(() => { if (!active) setSelectedGameId(null); }, [active]);
+  useEffect(() => { setVisibleDays(5); }, [playerFilter, dateFrom, dateTo, seasonFilter]);
+
   const currentSeason = getCurrentSeason(state);
-  const scopedGames = (state.games ?? []).filter((g) => {
-    if (seasonFilter === "all") return true;
-    const season =
-      seasonFilter === "current"
-        ? currentSeason
-        : (state.seasons || []).find((s) => s.id === seasonFilter) || null;
-    return gameInSeason(g, season);
+  const scopedSeason = seasonFilter === "current" ? currentSeason : (state.seasons || []).find(s => s.id === seasonFilter);
+  const allGames = (state.games || []).filter(g => seasonFilter === "all" || gameInSeason(g, scopedSeason))
+    .sort((a,b) => new Date(b.date) - new Date(a.date));
+  const invalidRange = Boolean(dateFrom && dateTo && dateFrom > dateTo);
+  const query = playerFilter.trim().toLowerCase();
+  // Date inputs describe local calendar days, with an exclusive next-midnight boundary.
+  const from = dateFrom ? new Date(dateFrom + "T00:00:00") : null;
+  const until = dateTo ? new Date(dateTo + "T00:00:00") : null;
+  if (until) until.setDate(until.getDate() + 1);
+  const filtered = invalidRange ? [] : allGames.filter(g => {
+    if (query && ![...g.sideA,...g.sideB].some(id => pName(id,state.players).toLowerCase().includes(query))) return false;
+    const date = new Date(g.date);
+    return (!from || date >= from) && (!until || date < until);
   });
-  const allGames = [...scopedGames].sort(
-    (a, b) => new Date(b.date) - new Date(a.date),
-  );
-  const filtered = allGames.filter((g) => {
-    if (playerFilter) {
-      const names = [...g.sideA, ...g.sideB]
-        .map((id) => pName(id, state.players))
-        .join(" ")
-        .toLowerCase();
-      if (!names.includes(playerFilter.toLowerCase())) return false;
-    }
-    if (dateFrom && new Date(g.date) < new Date(dateFrom)) return false;
-    if (dateTo && new Date(g.date) > new Date(dateTo + "T23:59:59"))
-      return false;
-    return true;
-  });
-
   const groups = [];
-  let lastDay = null;
-  for (const g of filtered) {
-    const day = new Date(g.date).toLocaleDateString("en-GB", {
-      weekday: "short",
-      day: "numeric",
-      month: "short",
-      year: "numeric",
-    });
-    if (day !== lastDay) {
-      groups.push({ day, games: [] });
-      lastDay = day;
-    }
-    groups[groups.length - 1].games.push(g);
+  for (const game of filtered) {
+    const day = new Date(game.date).toLocaleDateString("en-GB",{weekday:"long",day:"numeric",month:"short",year:"numeric"});
+    if (groups.at(-1)?.day !== day) groups.push({day,games:[]});
+    groups.at(-1).games.push(game);
   }
-
-  const hasFilters = playerFilter || dateFrom || dateTo;
-
-  function GameRow({ g }) {
-    const winnerSide = g.winner;
-    return (
-      <div className="game-row" role="button" tabIndex={0} onKeyDown={e => {if(e.key === "Enter" || e.key === " "){e.preventDefault();setSelectedGameId(g.id);}}} onClick={() => setSelectedGameId(g.id)}>
-        <div className="g-side">
-          {g.sideA.map((id) => {
-            const n = pName(id, state.players);
-            const role = g.roles?.[id];
-            return (
-              <div
-                key={id}
-                style={{ display: "flex", alignItems: "center", gap: 3 }}
-              >
-                <span className={winnerSide === "A" ? "g-name-w" : "g-name-l"}>
-                  {winnerSide === "A" && (
-                    <span
-                      style={{
-                        color: "var(--green)",
-                        marginRight: 2,
-                        fontSize: 9,
-                      }}
-                    >
-                      ▲
-                    </span>
-                  )}
-                  {n}
-                </span>
-                {role && (
-                  <span
-                    className={`role-tag ${role === "ATK" ? "role-atk" : role === "FLEX" ? "role-flex" : "role-def"}`}
-                    style={{ fontSize: 9 }}
-                  >
-                    {role === "ATK" ? <UiIcon name="swords"/> : role === "FLEX" ? "" : <UiIcon name="shield"/>}
-                  </span>
-                )}
-              </div>
-            );
-          })}
-          <div
-            className="g-delta"
-            style={{ display: "flex", flexDirection: "column", gap: 1 }}
-          >
-            {g.sideA.map((id) => {
-              const delta =
-                winnerSide === "A"
-                  ? (g.perPlayerGains?.[id] ??
-                    g.playerDeltas?.[id]?.gain ??
-                    g.ptsGain)
-                  : (g.perPlayerLosses?.[id] ??
-                    g.playerDeltas?.[id]?.loss ??
-                    g.ptsLoss);
-              return (
-                <span
-                  key={id}
-                  className={winnerSide === "A" ? "text-g" : "text-r"}
-                >
-                  {winnerSide === "A" ? "+" : "−"}
-                  {delta} {pName(id, state.players).split(" ")[0]}
-                </span>
-              );
-            })}
-          </div>
-        </div>
-        <div style={{ textAlign: "center" }}>
-          <div className="g-score">
-            {g.scoreA}–{g.scoreB}
-          </div>
-          <div className="g-date">
-            {new Date(g.date).toLocaleTimeString("en-GB", {
-              hour: "2-digit",
-              minute: "2-digit",
-            })}
-          </div>
-          {g.penalties &&
-            Object.values(g.penalties).some(
-              (v) => (v.yellow || 0) + (v.red || 0) > 0,
-            ) && (
-              <div style={{ fontSize: 10, marginTop: 2 }}>
-                {Object.values(g.penalties).some((v) => v.red > 0) && (
-                  <span><UiIcon name="red-card" label="Red card"/></span>
-                )}
-                {Object.values(g.penalties).some((v) => v.yellow > 0) && (
-                  <span><UiIcon name="yellow-card" label="Yellow card"/></span>
-                )}
-              </div>
-            )}
-        </div>
-        <div className="g-side right">
-          {g.sideB.map((id) => {
-            const n = pName(id, state.players);
-            const role = g.roles?.[id];
-            return (
-              <div
-                key={id}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 3,
-                  justifyContent: "flex-end",
-                }}
-              >
-                {role && (
-                  <span
-                    className={`role-tag ${role === "ATK" ? "role-atk" : role === "FLEX" ? "role-flex" : "role-def"}`}
-                    style={{ fontSize: 9 }}
-                  >
-                    {role === "ATK" ? <UiIcon name="swords"/> : role === "FLEX" ? "" : <UiIcon name="shield"/>}
-                  </span>
-                )}
-                <span className={winnerSide === "B" ? "g-name-w" : "g-name-l"}>
-                  {n}
-                  {winnerSide === "B" && (
-                    <span
-                      style={{
-                        color: "var(--green)",
-                        marginLeft: 2,
-                        fontSize: 9,
-                      }}
-                    >
-                      ▲
-                    </span>
-                  )}
-                </span>
-              </div>
-            );
-          })}
-          <div
-            className="g-delta"
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: 1,
-              alignItems: "flex-end",
-            }}
-          >
-            {g.sideB.map((id) => {
-              const delta =
-                winnerSide === "B"
-                  ? (g.perPlayerGains?.[id] ??
-                    g.playerDeltas?.[id]?.gain ??
-                    g.ptsGain)
-                  : (g.perPlayerLosses?.[id] ??
-                    g.playerDeltas?.[id]?.loss ??
-                    g.ptsLoss);
-              return (
-                <span
-                  key={id}
-                  className={winnerSide === "B" ? "text-g" : "text-r"}
-                >
-                  {winnerSide === "B" ? "+" : "−"}
-                  {delta} {pName(id, state.players).split(" ")[0]}
-                </span>
-              );
-            })}
-          </div>
-        </div>
-      </div>
-    );
-  }
+  const hasFilters = Boolean(playerFilter || dateFrom || dateTo);
+  const selectedGame = (state.games || []).find(g => g.id === selectedGameId);
+  function clearFilters() { setPlayerFilter(""); setDateFrom(""); setDateTo(""); }
 
   return (
-    <div className="stack page-fade">
-      {selectedGameId &&
-        (() => {
-          const selectedGame = state.games.find((g) => g.id === selectedGameId);
-          return selectedGame ? (
-            <GameDetail
-              game={selectedGame}
-              state={state}
-              setState={setState}
-              isAdmin={isAdmin}
-              showToast={showToast}
-              onClose={() => setSelectedGameId(null)}
-            />
-          ) : null;
-        })()}
-      <div className="card">
-        <div className="card-header">
-          <span className="card-title">Match History ({allGames.length})</span>
-          <div className="fac" style={{ gap: 6 }}>
-            {hasFilters && (
-              <span className="xs tag tag-a">{filtered.length} shown</span>
-            )}
-            <select
-              className="inp"
-              value={seasonFilter}
-              onChange={(e) => setSeasonFilter(e.target.value)}
-              style={{ fontSize: 11, padding: "4px 8px", maxWidth: 170 }}
-            >
-              <option value="current">Current season</option>
-              <option value="all">All seasons</option>
-              {(state.seasons || []).map((se) => (
-                <option key={se.id} value={se.id}>
-                  {se.label}
-                </option>
-              ))}
-            </select>
-            <button
-              className={`btn btn-sm ${showFilters ? "btn-p" : "btn-g"}`}
-              onClick={() => setShowFilters((f) => !f)}
-            >
-              <UiIcon name="zap"/> Filter
-            </button>
-          </div>
+    <div className="stack page-fade history-workspace">
+      {selectedGame && <GameDetail game={selectedGame} state={state} setState={setState} isAdmin={isAdmin} showToast={showToast} onClose={() => setSelectedGameId(null)}/>}
+      <section className="history-controls" aria-label="Match filters">
+        <div className="history-filter-bar">
+          <label className="history-search"><span>Player</span><span className="history-input-wrap"><UiIcon name="search"/><input className="inp" type="search" placeholder="Search players" value={playerFilter} onChange={e => setPlayerFilter(e.target.value)}/></span></label>
+          <label className="history-season"><span>Season</span><select className="inp" value={seasonFilter} onChange={e => setSeasonFilter(e.target.value)}>
+            <option value="current">Current season</option>
+            <option value="all">All seasons</option>
+            {(state.seasons || []).map(se => <option key={se.id} value={se.id}>{se.label}</option>)}
+          </select></label>
+          <button className={`btn ${showFilters ? "btn-p" : "btn-g"}`} aria-expanded={showFilters} aria-controls="history-dates" onClick={() => setShowFilters(value => !value)}><UiIcon name="calendar"/>Dates{dateFrom || dateTo ? " (set)" : ""}</button>
+          {hasFilters && <button className="btn btn-g history-clear" onClick={clearFilters}><UiIcon name="x"/>Clear filters</button>}
         </div>
-        {showFilters && (
-          <div
-            style={{
-              padding: "10px 16px",
-              background: "var(--s2)",
-              borderBottom: "1px solid var(--b1)",
-              display: "flex",
-              gap: 8,
-              flexWrap: "wrap",
-              alignItems: "flex-end",
-            }}
-          >
-            <div style={{ flex: "1 1 140px" }}>
-              <div className="lbl">Player</div>
-              <input
-                className="inp"
-                placeholder="Search player…"
-                value={playerFilter}
-                onChange={(e) => setPlayerFilter(e.target.value)}
-                style={{ fontSize: 11, padding: "5px 8px" }}
-              />
-            </div>
-            <div style={{ flex: "1 1 120px" }}>
-              <div className="lbl">From</div>
-              <input
-                className="inp"
-                type="date"
-                value={dateFrom}
-                onChange={(e) => setDateFrom(e.target.value)}
-                style={{ fontSize: 11, padding: "5px 8px" }}
-              />
-            </div>
-            <div style={{ flex: "1 1 120px" }}>
-              <div className="lbl">To</div>
-              <input
-                className="inp"
-                type="date"
-                value={dateTo}
-                onChange={(e) => setDateTo(e.target.value)}
-                style={{ fontSize: 11, padding: "5px 8px" }}
-              />
-            </div>
-            {hasFilters && (
-              <button
-                className="btn btn-d btn-sm"
-                style={{ alignSelf: "flex-end" }}
-                onClick={() => {
-                  setPlayerFilter("");
-                  setDateFrom("");
-                  setDateTo("");
-                }}
-              >
-                Clear
-              </button>
-            )}
-          </div>
-        )}
-        {groups.length === 0 && (
-          <div
-            style={{
-              padding: 32,
-              textAlign: "center",
-              color: "var(--dimmer)",
-              fontSize: 12,
-            }}
-          >
-            No games found
-          </div>
-        )}
-        {groups.slice(0, visibleDays).map(({ day, games }) => (
-          <div key={day}>
-            <div
-              style={{
-                padding: "7px 18px",
-                background: "var(--s2)",
-                borderBottom: "1px solid var(--b1)",
-                fontSize: 10,
-                letterSpacing: 1.5,
-                textTransform: "uppercase",
-                color: "var(--dimmer)",
-                fontWeight: 600,
-              }}
-            >
-              {day} · {games.length} game{games.length !== 1 ? "s" : ""}
-            </div>
-            {games.map((g) => (
-              <GameRow key={g.id} g={g} />
-            ))}
-          </div>
-        ))}
-        {groups.length > visibleDays && (
-          <div
-            style={{
-              padding: "12px 18px",
-              textAlign: "center",
-              borderTop: "1px solid var(--b1)",
-            }}
-          >
-            <button
-              className="btn btn-g btn-sm"
-              onClick={() => setVisibleDays((v) => v + 5)}
-            >
-              Load more — {groups.length - visibleDays} day
-              {groups.length - visibleDays !== 1 ? "s" : ""} remaining
-            </button>
-          </div>
-        )}
-      </div>
+        {showFilters && <div className="history-date-filters" id="history-dates">
+          <label><span>From</span><input className="inp" type="date" value={dateFrom} aria-invalid={invalidRange || undefined} aria-describedby={invalidRange ? "history-date-error" : undefined} onChange={e => setDateFrom(e.target.value)}/></label>
+          <label><span>To</span><input className="inp" type="date" value={dateTo} min={dateFrom || undefined} aria-invalid={invalidRange || undefined} aria-describedby={invalidRange ? "history-date-error" : undefined} onChange={e => setDateTo(e.target.value)}/></label>
+        </div>}
+        {invalidRange && <p className="history-date-error" id="history-date-error" role="alert">The end date must be on or after the start date.</p>}
+        <div className="history-results-summary" role="status">
+          <span><strong>{filtered.length}</strong> {filtered.length === 1 ? "match" : "matches"}{hasFilters ? ` of ${allGames.length}` : ""}</span>
+          <span>{seasonFilter === "all" ? "All seasons" : scopedSeason?.label || "Current season"} · {groups.length} {groups.length === 1 ? "matchday" : "matchdays"}</span>
+        </div>
+      </section>
+      {!filtered.length && !invalidRange && <div className="history-empty">
+        <UiIcon name="history" size={28}/>
+        <h2>{hasFilters ? "No matching games" : "No games in this season"}</h2>
+        {hasFilters && <button className="btn btn-g" onClick={clearFilters}>Clear filters</button>}
+      </div>}
+      <HistoryRecords groups={groups.slice(0,visibleDays)} players={state.players} onSelect={setSelectedGameId}/>
+      {groups.length > visibleDays && <div className="history-load-more"><button className="btn btn-g" onClick={() => setVisibleDays(value => value + 5)}><UiIcon name="plus"/>Load more · {groups.length - visibleDays} {groups.length - visibleDays === 1 ? "matchday" : "matchdays"} remaining</button></div>}
     </div>
   );
 }
@@ -12704,7 +12407,7 @@ export default function App() {
 
   return (
     <>
-      <style>{CSS + leagueCSS + sectionCSS + seasonsCSS + championshipCSS}</style>
+      <style>{CSS + leagueCSS + sectionCSS + seasonsCSS + championshipCSS + historyCSS}</style>
       <div className="app">
         <LeagueHeader view={tab} task={adminTab} navigate={navTo} profile={adminProfile} connected={rtConnected} loading={loading}
           onLogin={() => setShowLogin(true)}
