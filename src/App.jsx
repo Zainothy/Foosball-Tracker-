@@ -1,5 +1,8 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
+import { UiIcon, LeagueHeader, RanksHeading, ManagementNav, LeagueSkeleton, EventCountdown, RecentResults, useLeagueNavigation } from "./components/LeagueUI";
+import leagueCSS from "./styles/league.css?raw";
+import sectionCSS from "./styles/sections.css?raw";
 import { supabase } from "./supabaseClient";
 import {
   signInWithUsername,
@@ -358,8 +361,8 @@ This is the official ranked table football leaderboard. Games are logged by admi
 ## Positions (ATK / DEF)
 Each player is assigned a position for every game: **Attacker** or **Defender**.
 
-- **Attacker (🗡 ATK)** — controls the 3-bar (strikers) and 5-bar (midfield). Primary role: score goals.
-- **Defender (🛡 DEF)** — controls the 2-bar (defence) and 1-bar (goalkeeper). Primary role: prevent goals.
+- **Attacker (ATK)** — controls the 3-bar (strikers) and 5-bar (midfield). Primary role: score goals.
+- **Defender (DEF)** — controls the 2-bar (defence) and 1-bar (goalkeeper). Primary role: prevent goals.
 
 Positions are logged by an admin when the game is recorded. Each side must have exactly one ATK and one DEF.
 
@@ -393,8 +396,8 @@ At the end of each month, the top 4 players enter a bracket:
 ## Disciplinary Cards
 Admins can issue cards to individual players against any logged match. Penalties are permanent and survive any recalculation.
 
-- 🟡 **Yellow Card** — −${CONFIG.YELLOW_CARD_PTS} points.
-- 🔴 **Red Card** — −${CONFIG.RED_CARD_PTS} points.
+- **Yellow Card** — −${CONFIG.YELLOW_CARD_PTS} points.
+- **Red Card** — −${CONFIG.RED_CARD_PTS} points.
 `;
 
 const CSS = `
@@ -1609,18 +1612,17 @@ async function loadState() {
       .eq("id", 1)
       .single();
     if (error) {
-      console.warn("Failed to load from Supabase, using seed:", error);
-      return SEED;
+      throw error;
     }
     const s = data?.state || {};
     const hasState = s && Object.keys(s).length > 0;
-    if (!hasState) return SEED;
+    if (!hasState) throw new Error("League state is unavailable");
     const ns = normaliseState(s);
     if (typeof s._v !== "number") ns._v = 0;
     return ns;
   } catch (err) {
     console.error("Supabase load error:", err);
-    return SEED;
+    throw err;
   }
 }
 
@@ -1804,7 +1806,7 @@ async function _flushSave() {
   };
   const slimmed = slimState(enriched);
   async function succeed() {
-    console.log("[sync] ✓ saved _v" + nextV);
+    console.log("[sync]  saved _v" + nextV);
     _sq.confirmedV = nextV;
     _sq.inflightV = null;
     setTimeout(() => _sq.echoSet.delete(nextV), 10000);
@@ -1996,19 +1998,19 @@ function PosBadge({ pos }) {
       if (p === "attack")
         return (
           <span key="atk" className="pos-badge pos-atk">
-            🗡 ATK
+            <UiIcon name="swords"/> ATK
           </span>
         );
       if (p === "defense")
         return (
           <span key="def" className="pos-badge pos-def">
-            🛡 DEF
+            <UiIcon name="shield"/> DEF
           </span>
         );
       if (p === "both" || p === "flex")
         return (
           <span key="flex" className="pos-badge pos-both">
-            ⚡ FLEX
+            <UiIcon name="zap"/> FLEX
           </span>
         );
       return null;
@@ -2026,14 +2028,26 @@ function Toast({ t }) {
   return <div className={`toast ${t.type || "info"}`}>{t.msg}</div>;
 }
 
-function Modal({ onClose, children, large = false }) {
+function Modal({ onClose, children, large = false, variant = "", label = "League details" }) {
+  const dialogRef = useRef(null);
+  useEffect(() => {
+    const previous = document.activeElement;
+    const dialog = dialogRef.current;
+    const overflow = document.body.style.overflow;
+    dialog.showModal();
+    document.body.style.overflow = "hidden";
+    return () => { dialog.close(); document.body.style.overflow = overflow; if (previous?.isConnected) previous.focus(); };
+  }, []);
   return createPortal(
-    <div
-      className="overlay"
+    <dialog
+      ref={dialogRef}
+      className={`overlay ${variant ? `overlay-${variant}` : ""}`}
+      aria-label={label}
+      onCancel={(e) => {e.preventDefault(); onClose();}}
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
-      <div className={`modal ${large ? "modal-lg" : ""}`}>{children}</div>
-    </div>,
+      <div className={`modal ${large ? "modal-lg" : ""} ${variant}`}><button className="icon-button modal-close" title="Close" aria-label="Close dialog" onClick={onClose}><UiIcon name="x"/></button>{children}</div>
+    </dialog>,
     document.body,
   );
 }
@@ -2356,19 +2370,19 @@ function renderMd(md) {
     example: "var(--purple)",
   };
   const calloutIcons = {
-    note: "ℹ",
-    info: "ℹ",
-    tip: "💡",
-    hint: "💡",
-    success: "✓",
-    check: "✓",
-    done: "✓",
-    warning: "⚠",
-    caution: "⚠",
-    attention: "⚠",
-    danger: "✕",
-    error: "✕",
-    bug: "🐛",
+    note: "",
+    info: "",
+    tip: "",
+    hint: "",
+    success: "",
+    check: "",
+    done: "",
+    warning: "",
+    caution: "",
+    attention: "",
+    danger: "",
+    error: "",
+    bug: "",
     important: "!",
     quote: '"',
     example: "≡",
@@ -2399,7 +2413,7 @@ function renderMd(md) {
       const type = (match[1] || "note").toLowerCase();
       const title = match[2] || type.charAt(0).toUpperCase() + type.slice(1);
       const color = calloutColors[type] || "var(--blue)";
-      const icon = calloutIcons[type] || "ℹ";
+      const icon = calloutIcons[type] || "";
       const bodyLines = [];
       i++;
       while (i < lines.length && /^> /.test(lines[i])) {
@@ -2570,7 +2584,7 @@ function AnnouncementModal({ announcement, onClose }) {
               animation: "fadeInUp .4s ease both",
             }}
           >
-            ✦ &nbsp;Announcement&nbsp; ✦
+            <UiIcon name="announcement"/> &nbsp;Announcement&nbsp; <UiIcon name="announcement"/>
           </div>
         )}
         <div
@@ -2634,7 +2648,7 @@ function AnnouncementModal({ announcement, onClose }) {
           className={isHype ? "btn btn-p" : "btn btn-g"}
           onClick={onClose}
         >
-          {isHype ? "Let's go 🔥" : "Close"}
+          {isHype ? "Let's go" : "Close"}
         </button>
       </div>
     </Modal>
@@ -2646,6 +2660,8 @@ function AnnouncementModal({ announcement, onClose }) {
 function PlayerProfile({
   player,
   state,
+  setState,
+  showToast,
   onClose,
   isAdmin,
   onEdit,
@@ -2654,6 +2670,8 @@ function PlayerProfile({
   selectedSeasonId,
   onSelectedSeasonIdChange,
 }) {
+  const [detailGameId,setDetailGameId] = useState(null);
+  const detailGame = state.games.find(g => g.id === detailGameId);
   const placementKey = getCurrentPlacementKey(state);
   const placements =
     (state.monthlyPlacements[placementKey] || {})[player.id] || 0;
@@ -2699,7 +2717,8 @@ function PlayerProfile({
   const isDiamond = champs.length >= 3;
 
   return (
-    <Modal onClose={onClose} large>
+    <>
+    <Modal onClose={onClose} large variant="player-profile" label={`${player.name} player profile`}>
       {/* Diamond banner — 3+ champs */}
       {isDiamond && (
         <div
@@ -2908,7 +2927,7 @@ function PlayerProfile({
         <div style={{ flex: 1 }}>
           <div className="prof-name">{player.name}</div>
           <div className="prof-sub">
-            Rank #{rank} · {displayPts || 0} pts
+            Current rank #{rank} · {seasonMode === "all" ? "All-time" : selectedSeason?.label || "Current season"}
           </div>
           <div
             className="fac"
@@ -2931,6 +2950,7 @@ function PlayerProfile({
                 className="inp"
                 style={{ padding: "4px 8px", fontSize: 11, minWidth: 130 }}
                 value={selectedSeasonId || ""}
+                aria-label="Player profile season"
                 onChange={(e) => onSelectedSeasonIdChange(e.target.value)}
               >
                 {(state.seasons || []).map((se) => (
@@ -2943,22 +2963,15 @@ function PlayerProfile({
           </div>
         </div>
         <div className="fac" style={{ gap: 6 }}>
-          {isAdmin && champs.length === 0 && (
+          {isAdmin && (
             <button className="btn btn-g btn-sm" onClick={onEdit}>
-              Edit
+              <UiIcon name="edit"/>Edit player
             </button>
           )}
-          <button
-            className="btn btn-g btn-sm"
-            onClick={onClose}
-            style={{ fontSize: 14, padding: "3px 9px" }}
-          >
-            ×
-          </button>
         </div>
       </div>
 
-      <div className="grid-3 mb16">
+      <div className="grid-3 mb16 profile-primary-metrics">
         <div className="stat-box">
           <div className="stat-lbl">Points</div>
           <div className="stat-val am">
@@ -2996,7 +3009,7 @@ function PlayerProfile({
         </div>
       </div>
 
-      <div className="grid-3 mb16">
+      <div className="grid-3 mb16 profile-secondary-metrics">
         <div className="stat-box">
           <div className="stat-lbl">Win Rate</div>
           <div className="stat-val" style={{ fontSize: 20 }}>
@@ -3038,7 +3051,7 @@ function PlayerProfile({
               return (
                 <>
                   <div className="stat-lbl" style={{ marginBottom: 8 }}>
-                    Positional
+                    Current role ratings
                   </div>
                   <div
                     style={{ display: "flex", flexDirection: "column", gap: 7 }}
@@ -3050,7 +3063,7 @@ function PlayerProfile({
                         className="role-tag role-atk"
                         style={{ pointerEvents: "none", flexShrink: 0 }}
                       >
-                        🗡 ATK
+                        <UiIcon name="swords"/> ATK
                       </span>
                       <div style={{ lineHeight: 1.25 }}>
                         <div
@@ -3100,7 +3113,7 @@ function PlayerProfile({
                         className="role-tag role-def"
                         style={{ pointerEvents: "none", flexShrink: 0 }}
                       >
-                        🛡 DEF
+                        <UiIcon name="shield"/> DEF
                       </span>
                       <div style={{ lineHeight: 1.25 }}>
                         <div
@@ -3157,10 +3170,10 @@ function PlayerProfile({
           )}
         </div>
         <div className="stat-box">
-          <div className="stat-lbl">Season placements</div>
+          <div className="stat-lbl">Current season placements</div>
           <div style={{ marginTop: 10 }}>
             {placements >= CONFIG.MAX_PLACEMENTS_PER_MONTH ? (
-              <span className="placement-badge placement-done">✓ Placed</span>
+              <span className="placement-badge placement-done"><UiIcon name="check"/> Placed</span>
             ) : (
               <PlacementProgress
                 used={placements}
@@ -3172,7 +3185,7 @@ function PlayerProfile({
       </div>
 
       {seasonMode === "season" && myGames.length > 0 && (
-        <div
+        <details className="profile-insights"
           style={{
             marginBottom: 16,
             padding: 12,
@@ -3181,9 +3194,7 @@ function PlayerProfile({
             border: "1px solid var(--b1)",
           }}
         >
-          <div className="sec" style={{ marginBottom: 8 }}>
-            Season Insights
-          </div>
+          <summary>Season insights</summary>
           <div className="grid-2" style={{ gap: 12 }}>
             {(() => {
               const best = getBestTeammate(player.id, myGames);
@@ -3263,10 +3274,10 @@ function PlayerProfile({
               })()}
             </div>
           </div>
-        </div>
+        </details>
       )}
 
-      <div className="sec">Match History</div>
+      <div className="sec profile-history-heading">Match history <span>{myGames.length} games</span></div>
       {myGames.length === 0 && <div className="text-d sm">No games yet</div>}
       {myGames.map((g) => {
         const onA = g.sideA.includes(player.id);
@@ -3280,8 +3291,11 @@ function PlayerProfile({
         const myScore = onA ? g.scoreA : g.scoreB;
         const oppScore = onA ? g.scoreB : g.scoreA;
         return (
-          <div
+          <button
             key={g.id}
+            className="profile-history-row"
+            onClick={() => setDetailGameId(g.id)}
+            aria-label={`View match ${myScore} to ${oppScore}, ${fmtDate(g.date)}`}
             style={{
               display: "flex",
               justifyContent: "space-between",
@@ -3296,20 +3310,22 @@ function PlayerProfile({
             <span className={`tag ${won ? "tag-w" : "tag-l"}`}>
               {won ? "WIN" : "LOSS"}
             </span>
+            <span className="profile-match-teams">
             {mates.length > 0 && (
               <span className="text-d sm">w/ {mates.join(" & ")}</span>
             )}
             <span className="text-d sm">vs {opps.join(" & ")}</span>
+            </span>
             {g.roles?.[player.id] && (
               <span
                 className={`role-tag ${g.roles[player.id] === "ATK" ? "role-atk" : g.roles[player.id] === "FLEX" ? "role-flex" : "role-def"}`}
                 style={{ marginRight: 3 }}
               >
                 {g.roles[player.id] === "ATK"
-                  ? "🗡 ATK"
+                  ? "ATK"
                   : g.roles[player.id] === "FLEX"
-                    ? "⚡ FLEX"
-                    : "🛡 DEF"}
+                    ? "FLEX"
+                    : "DEF"}
               </span>
             )}
             <span className="disp text-am" style={{ fontSize: 15 }}>
@@ -3328,13 +3344,15 @@ function PlayerProfile({
               })()}
             </span>
             <span className="text-dd xs">{fmtDate(g.date)}</span>
-          </div>
+          </button>
         );
       })}
       <button className="btn btn-g w-full mt16" onClick={onClose}>
         Close
       </button>
     </Modal>
+    {detailGame && <GameDetail game={detailGame} state={state} setState={setState} isAdmin={isAdmin} showToast={showToast} onClose={() => setDetailGameId(null)} backLabel={`Back to ${player.name}`}/>}
+    </>
   );
 }
 
@@ -3342,6 +3360,7 @@ function PlayerProfile({
 
 function EditPlayerModal({ player, state, setState, showToast, onClose }) {
   const [name, setName] = useState(player.name);
+  const [preferredRole,setPreferredRole] = useState(player.preferredRole || "FLEX");
   const [pts, setPts] = useState(String(player.pts || 0));
   const [streak, setStreak] = useState(String(player.streak || 0));
   const [positions, setPositions] = useState(() => {
@@ -3376,6 +3395,7 @@ function EditPlayerModal({ player, state, setState, showToast, onClose }) {
               pts: newPts,
               streak: newStreak,
               position: positions.length === 0 ? "none" : positions,
+              preferredRole,
             }
           : p,
       ),
@@ -3398,7 +3418,7 @@ function EditPlayerModal({ player, state, setState, showToast, onClose }) {
           : p,
       ),
     }));
-    showToast("Championship added 🏆");
+    showToast("Championship added");
     setChampMonth("");
     setChampPartner("");
   }
@@ -3484,17 +3504,11 @@ function EditPlayerModal({ player, state, setState, showToast, onClose }) {
             {["ATK", "DEF", "FLEX"].map((v) => (
               <button
                 key={v}
-                className={`btn btn-sm ${(player.preferredRole || "FLEX") === v ? "btn-p" : "btn-g"}`}
-                onClick={() =>
-                  setState((s) => ({
-                    ...s,
-                    players: s.players.map((p) =>
-                      p.id === player.id ? { ...p, preferredRole: v } : p,
-                    ),
-                  }))
-                }
+                className={`btn btn-sm ${preferredRole === v ? "btn-p" : "btn-g"}`}
+                aria-pressed={preferredRole === v}
+                onClick={() => setPreferredRole(v)}
               >
-                {v === "ATK" ? "🗡 ATK" : v === "DEF" ? "🛡 DEF" : "⚡ FLEX"}
+                {v === "ATK" ? "ATK" : v === "DEF" ? "DEF" : "FLEX"}
               </button>
             ))}
           </div>
@@ -3504,9 +3518,9 @@ function EditPlayerModal({ player, state, setState, showToast, onClose }) {
             style={{ gap: 6, flexWrap: "wrap", marginBottom: 4 }}
           >
             {[
-              ["attack", "🗡 Attack"],
-              ["defense", "🛡 Defense"],
-              ["flex", "⚡ Flex"],
+              ["attack", "Attack"],
+              ["defense", "Defense"],
+              ["flex", "Flex"],
             ].map(([v, l]) => {
               const on = positions.includes(v);
               return (
@@ -3544,7 +3558,7 @@ function EditPlayerModal({ player, state, setState, showToast, onClose }) {
             }}
           >
             <span className="text-am">
-              🏆 {fmtMonth(c.month)}
+              <UiIcon name="trophy"/> {fmtMonth(c.month)}
               {c.partner ? ` (w/ ${c.partner})` : ""}
             </span>
             <button className="btn btn-d btn-sm" onClick={() => removeChamp(i)}>
@@ -3608,7 +3622,7 @@ function EditPlayerModal({ player, state, setState, showToast, onClose }) {
 
 // ── GAME DETAIL ────────────────────────────────────────────────────────────
 
-function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
+function GameDetail({ game, state, setState, isAdmin, showToast, onClose, backLabel }) {
   const [editing, setEditing] = useState(false);
   const [scoreA, setScoreA] = useState(String(game.scoreA));
   const [scoreB, setScoreB] = useState(String(game.scoreB));
@@ -3624,6 +3638,15 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
     .map((id) => state.players.find((p) => p.id === id))
     .filter(Boolean);
   const allPlayers = [...sA, ...sB];
+
+  function cancelEdit() {
+    setScoreA(String(game.scoreA));
+    setScoreB(String(game.scoreB));
+    setWinner(game.winner);
+    setEditRoles({...game.roles});
+    setPenalties(game.penalties || {});
+    setEditing(false);
+  }
 
   function setPenalty(pid, type, val) {
     setPenalties((prev) => ({
@@ -3810,8 +3833,9 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
 
   return (
     <>
-      <Modal onClose={onClose}>
-        <div className="fbc mb12">
+      <Modal onClose={onClose} variant="match-detail" label="Match detail">
+        {backLabel && <button className="btn btn-g match-back" onClick={onClose}><UiIcon name="previous"/>{backLabel}</button>}
+        <div className="fbc mb12 match-detail-header">
           <div>
             <div className="modal-title" style={{ marginBottom: 2 }}>
               Match Detail
@@ -3824,16 +3848,16 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
                 className="btn btn-warn btn-sm"
                 onClick={() => setEditing(true)}
               >
-                Edit
+                <UiIcon name="edit"/>Edit
               </button>
               <button className="btn btn-d btn-sm" onClick={deleteGame}>
-                Delete
+                <UiIcon name="trash"/>Delete
               </button>
             </div>
           )}
         </div>
 
-        <div
+        <div className="match-scoreboard"
           style={{
             display: "grid",
             gridTemplateColumns: "1fr auto 1fr",
@@ -3842,7 +3866,7 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
             margin: "14px 0",
           }}
         >
-          <div>
+          <div className="match-team-a">
             <div
               className="xs"
               style={{
@@ -3851,7 +3875,7 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
                 color: game.winner === "A" ? "var(--green)" : "var(--dimmer)",
               }}
             >
-              {game.winner === "A" ? "🏆 " : ""}Side A
+              {game.winner === "A" ? <UiIcon name="trophy"/> : ""}Side A
             </div>
             {sA.map((p) => {
               const gain = game.perPlayerGains?.[p.id] ?? game.ptsGain;
@@ -3874,6 +3898,7 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
                           <button
                             key={r}
                             className={`role-tag ${r === "ATK" ? "role-atk" : r === "FLEX" ? "role-flex" : "role-def"}`}
+                            aria-pressed={editRoles[p.id] === r}
                             style={{
                               cursor: "pointer",
                               opacity: editRoles[p.id] === r ? 1 : 0.3,
@@ -3887,10 +3912,10 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
                             }
                           >
                             {r === "ATK"
-                              ? "🗡 ATK"
+                              ? "ATK"
                               : r === "FLEX"
-                                ? "⚡ FLEX"
-                                : "🛡 DEF"}
+                                ? "FLEX"
+                                : "DEF"}
                           </button>
                         ))}
                       </div>
@@ -3900,10 +3925,10 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
                           className={`role-tag ${game.roles[p.id] === "ATK" ? "role-atk" : game.roles[p.id] === "FLEX" ? "role-flex" : "role-def"}`}
                         >
                           {game.roles[p.id] === "ATK"
-                            ? "🗡 ATK"
+                            ? "ATK"
                             : game.roles[p.id] === "FLEX"
-                              ? "⚡ FLEX"
-                              : "🛡 DEF"}
+                              ? "FLEX"
+                              : "DEF"}
                         </span>
                       )
                     )}
@@ -3916,7 +3941,7 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
                     )}
                     {pen > 0 && (
                       <span style={{ color: "var(--orange)", marginLeft: 4 }}>
-                        −{pen} 🟡
+                        −{pen} <UiIcon name="flag"/>
                       </span>
                     )}
                   </div>
@@ -3924,7 +3949,7 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
               );
             })}
           </div>
-          <div style={{ textAlign: "center" }}>
+          <div className="match-score" style={{ textAlign: "center" }}>
             {editing ? (
               <div
                 style={{
@@ -3940,6 +3965,7 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
                     type="number"
                     min="0"
                     value={scoreA}
+                    aria-label="Team A score"
                     onChange={(e) => setScoreA(e.target.value)}
                     style={{
                       width: 52,
@@ -3957,6 +3983,7 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
                     type="number"
                     min="0"
                     value={scoreB}
+                    aria-label="Team B score"
                     onChange={(e) => setScoreB(e.target.value)}
                     style={{
                       width: 52,
@@ -3970,6 +3997,7 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
                 <select
                   className="inp"
                   value={winner}
+                  aria-label="Match winner"
                   onChange={(e) => setWinner(e.target.value)}
                   style={{ fontSize: 11, padding: "4px 8px" }}
                 >
@@ -3986,7 +4014,7 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
               </div>
             )}
           </div>
-          <div style={{ textAlign: "right" }}>
+          <div className="match-team-b" style={{ textAlign: "right" }}>
             <div
               className="xs"
               style={{
@@ -3995,7 +4023,7 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
                 color: game.winner === "B" ? "var(--green)" : "var(--dimmer)",
               }}
             >
-              Side B{game.winner === "B" ? " 🏆" : ""}
+              Side B{game.winner === "B" ? <UiIcon name="trophy"/> : ""}
             </div>
             {sB.map((p) => {
               const gain = game.perPlayerGains?.[p.id] ?? game.ptsGain;
@@ -4023,6 +4051,7 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
                           <button
                             key={r}
                             className={`role-tag ${r === "ATK" ? "role-atk" : r === "FLEX" ? "role-flex" : "role-def"}`}
+                            aria-pressed={editRoles[p.id] === r}
                             style={{
                               cursor: "pointer",
                               opacity: editRoles[p.id] === r ? 1 : 0.3,
@@ -4036,10 +4065,10 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
                             }
                           >
                             {r === "ATK"
-                              ? "🗡 ATK"
+                              ? "ATK"
                               : r === "FLEX"
-                                ? "⚡ FLEX"
-                                : "🛡 DEF"}
+                                ? "FLEX"
+                                : "DEF"}
                           </button>
                         ))}
                       </div>
@@ -4049,10 +4078,10 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
                           className={`role-tag ${game.roles[p.id] === "ATK" ? "role-atk" : game.roles[p.id] === "FLEX" ? "role-flex" : "role-def"}`}
                         >
                           {game.roles[p.id] === "ATK"
-                            ? "🗡 ATK"
+                            ? "ATK"
                             : game.roles[p.id] === "FLEX"
-                              ? "⚡ FLEX"
-                              : "🛡 DEF"}
+                              ? "FLEX"
+                              : "DEF"}
                         </span>
                       )
                     )}
@@ -4065,7 +4094,7 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
                     )}
                     {pen > 0 && (
                       <span style={{ color: "var(--orange)", marginLeft: 4 }}>
-                        −{pen} 🟡
+                        −{pen} <UiIcon name="flag"/>
                       </span>
                     )}
                   </div>
@@ -4075,14 +4104,14 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
           </div>
         </div>
 
-        {/* Match quality breakdown — unchanged from original */}
+        {!editing && <h2 className="match-breakdown-heading">Points breakdown</h2>}
+        {/* Recorded factors retain their original calculation and labels. */}
         {!editing &&
           (() => {
             const hasFactors = allPlayers.some(
               (p) => game.perPlayerFactors?.[p.id],
             );
-            const hasRoles = game.roles && Object.keys(game.roles).length > 0;
-            if (!hasFactors && !hasRoles) return null;
+            if (!hasFactors) return <p className="text-d sm">Detailed factors were not recorded for this match.</p>;
             const ranked = [...state.players].sort(
               (a, b) => (b.pts || 0) - (a.pts || 0),
             );
@@ -4133,12 +4162,13 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
             const bannerLabel = !canShowRankBanner
               ? "Placement games — no rank data yet"
               : isVeryLopsided && winnerOutrankedLosers
-                ? "⚠ Heavily mismatched — low pts value"
+                ? "Heavily mismatched — low pts value"
                 : isLopsided && winnerOutrankedLosers
                   ? "↓ Rank mismatch — reduced gains for winners"
-                  : "✓ Balanced match";
+                  : "Balanced match";
             return (
               <div
+                className="point-breakdown"
                 style={{
                   margin: "4px 0 12px",
                   border: `1px solid ${bannerColor}`,
@@ -4218,8 +4248,9 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
                             ? "var(--orange)"
                             : "var(--dimmer)";
                     return (
-                      <div
+                      <details
                         key={p.id}
+                        className="factor-record"
                         style={{
                           padding: "8px 10px",
                           borderRadius: 6,
@@ -4227,6 +4258,7 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
                           border: "1px solid var(--b1)",
                         }}
                       >
+                        <summary aria-label={`${p.name} points breakdown`}>
                         <div
                           style={{
                             display: "flex",
@@ -4250,6 +4282,8 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
                             {pts} pts
                           </span>
                         </div>
+                        <UiIcon name="chevron"/>
+                        </summary>
                         <div
                           style={{
                             display: "flex",
@@ -4473,7 +4507,7 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
                                 <span
                                   style={{ fontSize: 10, color: col, flex: 1 }}
                                 >
-                                  {oop ? "⚠ " : played === "FLEX" ? "↕ " : "✓ "}
+                                  {oop ? <UiIcon name="warning"/> : played === "FLEX" ? "" : <UiIcon name="check"/>}
                                   {label}
                                 </span>
                                 <span
@@ -4495,7 +4529,7 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
                             );
                           })()}
                         </div>
-                      </div>
+                      </details>
                     );
                   })}
                   <div
@@ -4511,10 +4545,8 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
           })()}
 
         {isAdmin && (
-          <div style={{ marginTop: 4 }}>
-            <div className="sec" style={{ marginBottom: 8 }}>
-              Disciplinary Cards
-            </div>
+          <details className="discipline-panel">
+            <summary>Disciplinary cards{hasPenalties ? " · Applied" : ""}</summary>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               {allPlayers.map((p) => {
                 const pen = penalties[p.id] || { yellow: 0, red: 0 };
@@ -4535,7 +4567,7 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
                       {p.name}
                     </span>
                     <div className="fac" style={{ gap: 4 }}>
-                      <span style={{ fontSize: 16 }}>🟡</span>
+                      <span style={{ fontSize: 16 }}><UiIcon name="yellow-card" label="Yellow card"/></span>
                       <button
                         className="btn btn-g btn-sm"
                         style={{ padding: "2px 7px", minWidth: 22 }}
@@ -4573,7 +4605,7 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
                       </span>
                     </div>
                     <div className="fac" style={{ gap: 4 }}>
-                      <span style={{ fontSize: 16 }}>🔴</span>
+                      <span style={{ fontSize: 16 }}><UiIcon name="red-card" label="Red card"/></span>
                       <button
                         className="btn btn-g btn-sm"
                         style={{ padding: "2px 7px", minWidth: 22 }}
@@ -4635,12 +4667,12 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
                 Apply Penalties
               </button>
             )}
-          </div>
+          </details>
         )}
 
         {!isAdmin && hasPenalties && (
           <div className="msg msg-e" style={{ marginTop: 8, fontSize: 11 }}>
-            ⚠ Disciplinary penalties have been applied to this match
+            <UiIcon name="warning"/> Disciplinary penalties have been applied to this match
           </div>
         )}
 
@@ -4650,7 +4682,7 @@ function GameDetail({ game, state, setState, isAdmin, showToast, onClose }) {
         >
           {editing ? (
             <>
-              <button className="btn btn-g" onClick={() => setEditing(false)}>
+              <button className="btn btn-g" onClick={cancelEdit}>
                 Cancel
               </button>
               <button className="btn btn-p" onClick={saveEdit}>
@@ -4717,7 +4749,7 @@ function LiveTicker({ games, players, finals, monthKey, onNavToPlay }) {
             flexShrink: 0,
           }}
         >
-          🏆 LIVE
+          <UiIcon name="trophy"/> LIVE
         </span>
         <span style={{ flex: 1 }}>
           <span
@@ -4891,17 +4923,7 @@ function LeaderboardView({
           monthKey={monthKey}
           onNavToPlay={onNavToPlay}
         />
-        {isAdmin && (
-          <div style={{ display: "flex", justifyContent: "flex-end" }}>
-            <button
-              className="btn btn-g btn-sm"
-              onClick={() => setShowRecalcConfirm(true)}
-            >
-              ↺ Recalc
-            </button>
-          </div>
-        )}
-        <div className="grid-3">
+        <div className="grid-3 league-summary">
           <div className="stat-box">
             <div className="stat-lbl">Players</div>
             <div className="stat-val am">{(state.players ?? []).length}</div>
@@ -4909,6 +4931,7 @@ function LeaderboardView({
           <div
             className="stat-box"
             style={{ cursor: "pointer" }}
+            role="button" tabIndex={0} onKeyDown={e => {if(e.key === "Enter" || e.key === " "){e.preventDefault();onNavToHistory();}}}
             onClick={onNavToHistory}
           >
             <div className="stat-lbl">Games This Month</div>
@@ -4921,6 +4944,7 @@ function LeaderboardView({
             <div className="stat-lbl">Top Points</div>
             <div className="stat-val am">{ranked[0]?.pts ?? 0}</div>
           </div>
+          {isAdmin && <button className="btn btn-g btn-sm" style={{marginLeft:"auto"}} onClick={() => setShowRecalcConfirm(true)}><UiIcon name="reset"/>Recalculate</button>}
         </div>
 
         {(() => {
@@ -4934,7 +4958,8 @@ function LeaderboardView({
           return (
             placedRanked.length >= 2 && (
               <div
-                className="card"
+                className="card championship-race"
+                role="button" tabIndex={0} aria-label="Championship race. View finals" onKeyDown={e => {if(e.key === "Enter" || e.key === " "){e.preventDefault();onNavToPlay();}}}
                 style={{ cursor: "pointer", transition: "border-color .15s" }}
                 onClick={() => onNavToPlay()}
                 onMouseEnter={(e) =>
@@ -4943,12 +4968,13 @@ function LeaderboardView({
                 onMouseLeave={(e) => (e.currentTarget.style.borderColor = "")}
               >
                 <div className="card-header">
-                  <span className="card-title">Championship Race</span>
+                  <span className="card-title"><UiIcon name="trophy"/> Championship Race</span>
                   <span className="tag tag-a" style={{ cursor: "pointer" }}>
                     View Finals →
                   </span>
                 </div>
                 <div
+                  className="race-players"
                   style={{
                     padding: "10px 16px",
                     display: "flex",
@@ -4959,6 +4985,7 @@ function LeaderboardView({
                   {placedRanked.map((p, i) => (
                     <div
                       key={p.id}
+                      className="race-player"
                       style={{
                         flex: "1 1 120px",
                         padding: "8px 12px",
@@ -4989,11 +5016,11 @@ function LeaderboardView({
                         }}
                       >
                         {i === 0
-                          ? "🥇"
+                          ? "1"
                           : i === 1
-                            ? "🥈"
+                            ? "2"
                             : i === 2
-                              ? "🥉"
+                              ? "3"
                               : `#${i + 1}`}
                       </div>
                       <div style={{ fontWeight: 600, fontSize: 13 }}>
@@ -5008,15 +5035,20 @@ function LeaderboardView({
                       >
                         {p.pts || 0} pts
                       </div>
+                      <div className="race-gap">{i === 0 ? "Pace leader" : `${Math.max(0,(placedRanked[0].pts || 0) - (p.pts || 0))} pts behind leader`}</div>
                     </div>
                   ))}
+                </div>
+                <div className="race-spread">
+                  <div><span>Point spread relative to leader</span><span>0 to {placedRanked[0].pts || 0} pts</span></div>
+                  <div className="race-track" aria-hidden="true">{placedRanked.map((p,i)=><i key={p.id} style={{left:`${Math.max(0,Math.min(100,(p.pts || 0) / Math.max(1,placedRanked[0].pts || 0) * 100))}%`,background:["var(--gold)","var(--silver)","var(--copper)","var(--amber)"][i]}}/>)}</div>
                 </div>
               </div>
             )
           );
         })()}
 
-        <div className="card">
+        <div className="card standings-card">
           <div className="card-header">
             <span className="card-title">
               Rankings — {currentSeason?.label || fmtMonth(monthKey)}
@@ -5044,10 +5076,10 @@ function LeaderboardView({
                   {syncStatus === "saving"
                     ? "↑ saving"
                     : syncStatus === "saved"
-                      ? "✓ saved"
+                      ? "saved"
                       : syncStatus === "conflict"
-                        ? "⚡ synced"
-                        : "⚠ error"}
+                        ? "synced"
+                        : "error"}
                 </span>
               )}
             </div>
@@ -5097,6 +5129,8 @@ function LeaderboardView({
                           animationDelay: `${i * 28}ms`,
                           opacity: isPlaced ? 1 : 0.6,
                         }}
+                        tabIndex={0}
+                        onKeyDown={e => { if (e.key === "Enter" || e.key === " ") {e.preventDefault();onSelectPlayer(p);} }}
                         onClick={() => onSelectPlayer(p)}
                       >
                         <td>
@@ -5238,7 +5272,7 @@ function LeaderboardView({
                                   className="role-tag role-atk"
                                   style={{ pointerEvents: "none" }}
                                 >
-                                  🗡
+                                  <UiIcon name="swords"/>
                                 </span>
                                 <span
                                   style={{
@@ -5261,7 +5295,7 @@ function LeaderboardView({
                                   className="role-tag role-def"
                                   style={{ pointerEvents: "none" }}
                                 >
-                                  🛡
+                                  <UiIcon name="shield"/>
                                 </span>
                                 <span
                                   style={{
@@ -5286,7 +5320,7 @@ function LeaderboardView({
                         <td>
                           {isPlaced ? (
                             <span className="placement-badge placement-done">
-                              ✓ Placed
+                              <UiIcon name="check"/> Placed
                             </span>
                           ) : (
                             <PlacementProgress
@@ -5338,6 +5372,9 @@ function LeaderboardView({
                   <div
                     key={p.id}
                     className="lb-card"
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={e => {if(e.key === "Enter" || e.key === " "){e.preventDefault();onSelectPlayer(p);}}}
                     onClick={() => onSelectPlayer(p)}
                   >
                     <div className="lb-card-rank">
@@ -5424,6 +5461,7 @@ function LeaderboardView({
           </div>
         </div>
       </div>
+      <RecentResults games={seasonGames} players={state.players} onOpen={onNavToHistory}/>
       {showRecalcConfirm && (
         <ConfirmDialog
           title="Recalculate All Stats?"
@@ -5438,15 +5476,14 @@ function LeaderboardView({
 
 // ── HISTORY VIEW ───────────────────────────────────────────────────────────
 
-function HistoryView({ state, setState, isAdmin, showToast }) {
+function HistoryView({ state, setState, isAdmin, showToast, seasonFilter, setSeasonFilter, active }) {
   const [playerFilter, setPlayerFilter] = useState("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [showFilters, setShowFilters] = useState(false);
   const [selectedGameId, setSelectedGameId] = useState(null);
+  useEffect(() => { if (!active) setSelectedGameId(null); }, [active]);
   const [visibleDays, setVisibleDays] = useState(5);
-  const [seasonFilter, setSeasonFilter] = useState("current");
-
   const currentSeason = getCurrentSeason(state);
   const scopedGames = (state.games ?? []).filter((g) => {
     if (seasonFilter === "all") return true;
@@ -5494,7 +5531,7 @@ function HistoryView({ state, setState, isAdmin, showToast }) {
   function GameRow({ g }) {
     const winnerSide = g.winner;
     return (
-      <div className="game-row" onClick={() => setSelectedGameId(g.id)}>
+      <div className="game-row" role="button" tabIndex={0} onKeyDown={e => {if(e.key === "Enter" || e.key === " "){e.preventDefault();setSelectedGameId(g.id);}}} onClick={() => setSelectedGameId(g.id)}>
         <div className="g-side">
           {g.sideA.map((id) => {
             const n = pName(id, state.players);
@@ -5523,7 +5560,7 @@ function HistoryView({ state, setState, isAdmin, showToast }) {
                     className={`role-tag ${role === "ATK" ? "role-atk" : role === "FLEX" ? "role-flex" : "role-def"}`}
                     style={{ fontSize: 9 }}
                   >
-                    {role === "ATK" ? "🗡" : role === "FLEX" ? "↕" : "🛡"}
+                    {role === "ATK" ? <UiIcon name="swords"/> : role === "FLEX" ? "" : <UiIcon name="shield"/>}
                   </span>
                 )}
               </div>
@@ -5570,10 +5607,10 @@ function HistoryView({ state, setState, isAdmin, showToast }) {
             ) && (
               <div style={{ fontSize: 10, marginTop: 2 }}>
                 {Object.values(g.penalties).some((v) => v.red > 0) && (
-                  <span>🔴</span>
+                  <span><UiIcon name="red-card" label="Red card"/></span>
                 )}
                 {Object.values(g.penalties).some((v) => v.yellow > 0) && (
-                  <span>🟡</span>
+                  <span><UiIcon name="yellow-card" label="Yellow card"/></span>
                 )}
               </div>
             )}
@@ -5597,7 +5634,7 @@ function HistoryView({ state, setState, isAdmin, showToast }) {
                     className={`role-tag ${role === "ATK" ? "role-atk" : role === "FLEX" ? "role-flex" : "role-def"}`}
                     style={{ fontSize: 9 }}
                   >
-                    {role === "ATK" ? "🗡" : role === "FLEX" ? "↕" : "🛡"}
+                    {role === "ATK" ? <UiIcon name="swords"/> : role === "FLEX" ? "" : <UiIcon name="shield"/>}
                   </span>
                 )}
                 <span className={winnerSide === "B" ? "g-name-w" : "g-name-l"}>
@@ -5692,7 +5729,7 @@ function HistoryView({ state, setState, isAdmin, showToast }) {
               className={`btn btn-sm ${showFilters ? "btn-p" : "btn-g"}`}
               onClick={() => setShowFilters((f) => !f)}
             >
-              ⚡ Filter
+              <UiIcon name="zap"/> Filter
             </button>
           </div>
         </div>
@@ -5872,9 +5909,12 @@ function placementsLeft(pid, state) {
 
 // ── ONBOARD VIEW ───────────────────────────────────────────────────────────
 
-function OnboardView({ state, setState, showToast }) {
+function OnboardView({ state, setState, showToast, onEdit }) {
   const [single, setSingle] = useState("");
   const [bulk, setBulk] = useState("");
+  const [entryMode, setEntryMode] = useState(null);
+  const [rosterSearch, setRosterSearch] = useState("");
+  const [rosterPage, setRosterPage] = useState(0);
   const [preview, setPreview] = useState([]);
   const [confirm, setConfirm] = useState(null);
 
@@ -5976,138 +6016,56 @@ function OnboardView({ state, setState, showToast }) {
     });
   }
 
+  const roster = [...state.players].sort((a,b) => (b.pts || 0) - (a.pts || 0)).filter(p => `${p.name} ${p.preferredRole || "FLEX"}`.toLowerCase().includes(rosterSearch.trim().toLowerCase()));
+  const activity = useMemo(() => {
+    const result = {};
+    for (const game of state.games) for (const id of [...game.sideA,...game.sideB]) {
+      const previous = result[id] || {games:0,last:null};
+      result[id] = {games:previous.games + 1,last:!previous.last || new Date(game.date) > new Date(previous.last) ? game.date : previous.last};
+    }
+    return result;
+  },[state.games]);
+  const page = Math.min(rosterPage,Math.max(0,Math.ceil(roster.length / 8)-1));
+  const shownRoster = roster.slice(page * 8,page * 8 + 8);
+  const placements = state.monthlyPlacements?.[getCurrentPlacementKey(state)] || {};
   return (
-    <div className="stack page-fade">
-      <div className="card">
-        <div className="card-header">
-          <span className="card-title">Add Player</span>
-        </div>
-        <div style={{ padding: 18 }}>
-          <div className="field">
-            <label className="lbl">Player Name</label>
-            <div className="fac">
-              <input
-                className="inp"
-                placeholder="e.g. Jamie"
-                value={single}
-                onChange={(e) => setSingle(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && addSingle()}
-              />
-              <button
-                className="btn btn-p"
-                onClick={addSingle}
-                disabled={!single.trim()}
-              >
-                Add
-              </button>
-            </div>
-          </div>
-        </div>
+    <div className="stack page-fade roster-workspace">
+      <div className="roster-toolbar">
+        <div className="roster-title"><h2>Active roster</h2><span className="roster-count">{state.players.length} registered players</span></div>
+        <label className="roster-search"><UiIcon name="search"/><input className="inp" aria-label="Search roster by name or role" placeholder="Filter by name or role" value={rosterSearch} onChange={e => {setRosterSearch(e.target.value);setRosterPage(0);}} /></label>
+        <div className="roster-actions"><button className="btn btn-g" onClick={() => setEntryMode(entryMode === "bulk" ? null : "bulk")}><UiIcon name="upload"/>Import names</button><button className="btn btn-p" onClick={() => setEntryMode(entryMode === "single" ? null : "single")}><UiIcon name="plus"/>Add player</button></div>
       </div>
-      <div className="card">
-        <div className="card-header">
-          <span className="card-title">Bulk Add</span>
-        </div>
-        <div style={{ padding: 18 }}>
-          <div className="field">
-            <label className="lbl">
-              Names (one per line or comma-separated)
-            </label>
-            <textarea
-              className="inp"
-              rows={4}
-              placeholder={"Alex\nJordan\nSam"}
-              value={bulk}
-              onChange={(e) => {
-                setBulk(e.target.value);
-                setPreview(parseBulk(e.target.value));
-              }}
-            />
-          </div>
-          {preview.length > 0 && (
-            <div className="msg msg-w sm mb8">
-              Will add {preview.length} player{preview.length > 1 ? "s" : ""}:{" "}
-              {preview.join(", ")}
-            </div>
-          )}
-          <button
-            className="btn btn-p"
-            onClick={confirmBulk}
-            disabled={!preview.length}
-          >
-            Add {preview.length > 0 ? preview.length : ""} Players
-          </button>
-        </div>
+      {entryMode === "single" && <div className="card" style={{padding:16}}>
+        <label className="lbl" htmlFor="new-player-name">Player name</label>
+        <form className="fac" onSubmit={e => {e.preventDefault();addSingle();}}>
+          <input id="new-player-name" className="inp" autoFocus value={single} onChange={e => setSingle(e.target.value)} />
+          <button className="btn btn-p" disabled={!single.trim()}>Add</button>
+          <button type="button" className="btn btn-g" onClick={() => setEntryMode(null)}>Cancel</button>
+        </form>
+      </div>}
+      {entryMode === "bulk" && <div className="card" style={{padding:16}}>
+        <label className="lbl" htmlFor="bulk-player-names">Names, one per line or comma-separated</label>
+        <textarea id="bulk-player-names" className="inp" rows={4} value={bulk} onChange={e => {setBulk(e.target.value);setPreview(parseBulk(e.target.value));}} />
+        {preview.length > 0 && <div className="msg msg-w">{preview.length} players: {preview.join(", ")}</div>}
+        <div className="fac mt12"><button className="btn btn-p" disabled={!preview.length} onClick={confirmBulk}>Add {preview.length || ""} players</button><button className="btn btn-g" onClick={() => setEntryMode(null)}>Cancel</button></div>
+      </div>}
+      <div className="roster-record">
+        <table className="tbl roster-table">
+          <thead><tr><th scope="col">Name</th><th scope="col">Role / Position</th><th scope="col">Status</th><th scope="col">Games</th><th scope="col">Last played</th><th scope="col">Actions</th></tr></thead>
+          <tbody>{shownRoster.map(p => <tr key={p.id}>
+            <td><span className="roster-player-name">{p.name}</span><small className="roster-mobile-meta">{activity[p.id]?.games || 0} games{activity[p.id]?.last ? ` · ${fmtDate(activity[p.id].last)}` : " · Not yet played"}</small></td>
+            <td><span className={`role-tag role-${(p.preferredRole || "FLEX").toLowerCase()}`}>{p.preferredRole || "FLEX"}</span></td>
+            <td><span className={`roster-status ${placements[p.id] >= CONFIG.MAX_PLACEMENTS_PER_MONTH ? "placed" : "provisional"}`}><i/>{placements[p.id] >= CONFIG.MAX_PLACEMENTS_PER_MONTH ? "Placed" : `Provisional (${placements[p.id] || 0}/${CONFIG.MAX_PLACEMENTS_PER_MONTH})`}</span></td>
+            <td className="roster-games">{activity[p.id]?.games || 0}</td>
+            <td className="roster-last">{activity[p.id]?.last ? fmtDate(activity[p.id].last) : "Not yet played"}</td>
+            <td><div className="roster-row-actions"><button className="icon-button" title={`Edit ${p.name}`} aria-label={`Edit ${p.name}`} onClick={() => onEdit(p)}><UiIcon name="edit"/></button><button className="icon-button remove-player" title={`Remove ${p.name}`} aria-label={`Remove ${p.name}`} onClick={() => removePlayer(p.id)}><UiIcon name="trash"/></button></div></td>
+          </tr>)}</tbody>
+        </table>
+        {!roster.length && <p className="text-d" style={{padding:24}}>{rosterSearch ? "No matching players" : "No players yet"}</p>}
+        <div className="roster-pagination"><span role="status">{roster.length ? `Showing ${page * 8 + 1}-${Math.min(page * 8 + 8,roster.length)} of ${roster.length} players` : "0 players"}</span><div><button className="icon-button" title="Previous roster page" aria-label="Previous roster page" disabled={page === 0} onClick={() => setRosterPage(page - 1)}><UiIcon name="previous"/></button><button className="icon-button" title="Next roster page" aria-label="Next roster page" disabled={(page + 1) * 8 >= roster.length} onClick={() => setRosterPage(page + 1)}><UiIcon name="next"/></button></div></div>
       </div>
-      <div className="card">
-        <div className="card-header">
-          <span className="card-title">
-            Current Roster ({state.players.length})
-          </span>
-        </div>
-        <div style={{ padding: "8px 14px 14px" }}>
-          {state.players.length === 0 && (
-            <div
-              style={{
-                textAlign: "center",
-                padding: 24,
-                color: "var(--dimmer)",
-                fontSize: 12,
-              }}
-            >
-              No players yet
-            </div>
-          )}
-          {[...state.players]
-            .sort((a, b) => (b.pts || 0) - (a.pts || 0))
-            .map((p, i) => (
-              <div
-                key={p.id}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                  padding: "9px 4px",
-                  borderBottom: "1px solid var(--b1)",
-                }}
-              >
-                <span className="rk" style={{ minWidth: 28, flexShrink: 0 }}>
-                  #{i + 1}
-                </span>
-                <span className="bold" style={{ flex: 1, fontSize: 13 }}>
-                  {p.name}
-                </span>
-                <span
-                  className="text-am bold"
-                  style={{ fontSize: 13, minWidth: 36, textAlign: "right" }}
-                >
-                  {p.pts || 0}
-                </span>
-                <span
-                  style={{
-                    fontSize: 12,
-                    color: "var(--dimmer)",
-                    minWidth: 44,
-                    textAlign: "right",
-                  }}
-                >
-                  <span className="text-g">{p.wins}</span>/
-                  <span className="text-r">{p.losses}</span>
-                </span>
-                <button
-                  className="btn btn-d btn-sm"
-                  style={{ flexShrink: 0 }}
-                  onClick={() => removePlayer(p.id)}
-                >
-                  Remove
-                </button>
-              </div>
-            ))}
-        </div>
-      </div>
-      {confirm && (
-        <ConfirmDialog {...confirm} onCancel={() => setConfirm(null)} />
-      )}
+      <button className="btn btn-g" style={{alignSelf:"flex-start"}} onClick={() => exportPlayersCsv(state,"current")}><UiIcon name="download"/>Export roster as CSV</button>
+      {confirm && <ConfirmDialog {...confirm} onCancel={() => setConfirm(null)}/>}
     </div>
   );
 }
@@ -6132,12 +6090,14 @@ const EMPTY_ROW = () => ({
   roles: {},
 });
 
-function LogView({ state, setState, showToast }) {
+function LogView({ state, setState, showToast, active, syncStatus }) {
   const [rows, setRows] = useState([EMPTY_ROW()]);
   const [errors, setErrors] = useState({});
   const [undoStack, setUndoStack] = useState([]);
   const [confirm, setConfirm] = useState(null);
   const [lastLogged, setLastLogged] = useState(null);
+  const [pendingSubmission, setPendingSubmission] = useState(null);
+  const [submissionNotice, setSubmissionNotice] = useState("");
   const [templates, setTemplates] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem("foosball_tpl") || "[]");
@@ -6149,12 +6109,33 @@ function LogView({ state, setState, showToast }) {
   const undoTimeout = useRef(null);
 
   useEffect(() => {
+    if (!active) return;
     const handler = (e) => {
-      if (e.ctrlKey && e.key === "Enter") submitAll();
+      if (e.ctrlKey && e.key === "Enter") {e.preventDefault();submitAll();}
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [rows, state]);
+  }, [rows, state, active, pendingSubmission]);
+
+  useEffect(() => {
+    if (!pendingSubmission || syncStatus !== "saved") return;
+    let cancelled = false;
+    // Confirm the submitted IDs exist remotely before discarding the entry draft.
+    supabase.from("app_state").select("state").eq("id", 1).single().then(({data,error}) => {
+      if (cancelled) return;
+      const saved = !error && pendingSubmission.games.every(expected => data?.state?.games?.some(g => g.id === expected.id && g.scoreA === expected.scoreA && g.scoreB === expected.scoreB && JSON.stringify(g.sideA) === JSON.stringify(expected.sideA) && JSON.stringify(g.sideB) === JSON.stringify(expected.sideB)));
+      if (saved) {
+        setRows(current => {
+          const remaining = current.filter(row => !pendingSubmission.rows.some(sent => JSON.stringify(sent) === JSON.stringify(row)));
+          return remaining.length ? remaining : [EMPTY_ROW()];
+        });
+        setLastLogged(receipt => receipt ? {...receipt, confirmed:true} : receipt);
+        setPendingSubmission(null);
+        setSubmissionNotice("");
+      } else setSubmissionNotice("Submission could not be confirmed. Your draft is still here; check History before trying again.");
+    }).catch(() => {if(!cancelled)setSubmissionNotice("Could not confirm the save. Your draft is still here.");});
+    return () => {cancelled=true;};
+  }, [syncStatus,pendingSubmission]);
 
   function setRowPenalty(rowId, pid, type, delta) {
     setRows((r) =>
@@ -6236,6 +6217,7 @@ function LogView({ state, setState, showToast }) {
   }
 
   function submitAll(skipDuplicateCheck = false) {
+    if (pendingSubmission || !active) return;
     const newErrors = {};
     const monthKey = getMonthKey() ?? "default";
 
@@ -6444,21 +6426,23 @@ function LogView({ state, setState, showToast }) {
       games: newGames,
       monthlyPlacements: newPlacements,
     }));
-    setRows([EMPTY_ROW()]);
+    setPendingSubmission({games:pendingGames,rows:JSON.parse(JSON.stringify(rows))});
+    setSubmissionNotice("");
     setLastLogged({
       games: loggedWithDeltas,
       players: mergedPlayers,
       timestamp: new Date(),
     });
     showToast(
-      `${loggedWithDeltas.length} game${loggedWithDeltas.length > 1 ? "s" : ""} logged`,
-      "success",
+      `${loggedWithDeltas.length} game${loggedWithDeltas.length > 1 ? "s" : ""} queued for saving`,
+      "info",
     );
     clearTimeout(undoTimeout.current);
     undoTimeout.current = setTimeout(() => setUndoStack([]), 30000);
   }
 
   function undoLast() {
+    if (pendingSubmission) return;
     if (!undoStack.length) return;
     const [prev, ...rest] = undoStack;
     setState((s) => ({
@@ -6474,13 +6458,20 @@ function LogView({ state, setState, showToast }) {
   return (
     <>
       <div className="stack page-fade">
+        {pendingSubmission && <div className={submissionNotice || syncStatus === "error" || syncStatus === "conflict" ? "msg msg-w" : "msg msg-i"} role="status">
+          {submissionNotice || (syncStatus === "error" || syncStatus === "conflict" ? "Save not confirmed. Your draft has been retained." : "Saving submission. Your draft stays here until the save is confirmed.")}
+          {(syncStatus === "error" || submissionNotice) && <button className="btn btn-g btn-sm" style={{marginLeft:12}} onClick={() => {
+            if(pendingSubmission.games.every(g => state.games.some(saved => saved.id === g.id))) {setSubmissionNotice("");setState(s => ({...s}));}
+            else {setPendingSubmission(null);setSubmissionNotice("");setLastLogged(null);}
+          }}>{pendingSubmission.games.every(g => state.games.some(saved => saved.id === g.id)) ? "Retry save" : "Return to draft"}</button>}
+        </div>}
         {lastLogged && (
           <div className="card" style={{ borderColor: "var(--amber-d)" }}>
             <div
               className="card-header"
               style={{ background: "var(--amber-g)" }}
             >
-              <span className="card-title">✓ Just Logged</span>
+              <span className="card-title"><UiIcon name={lastLogged.confirmed ? "check" : "history"}/>{lastLogged.confirmed ? "Saved submission" : "Submission preview"}</span>
               <button
                 className="btn btn-g btn-sm"
                 onClick={() => setLastLogged(null)}
@@ -6648,6 +6639,7 @@ function LogView({ state, setState, showToast }) {
               return (
                 <div
                   key={row.id}
+                  className="log-game-entry"
                   style={{
                     marginBottom: 10,
                     padding: 12,
@@ -6694,7 +6686,7 @@ function LogView({ state, setState, showToast }) {
                               ● enter scores
                             </span>
                           );
-                        return <span className="xs text-g">✓ ready</span>;
+                        return <span className="xs text-g"><UiIcon name="check"/> ready</span>;
                       })()}
                     </div>
                     {rows.length > 1 && (
@@ -6710,6 +6702,7 @@ function LogView({ state, setState, showToast }) {
                   </div>
 
                   <div
+                    className="log-picker-grid"
                     style={{
                       display: "grid",
                       gridTemplateColumns: "1fr 96px 1fr",
@@ -6718,7 +6711,7 @@ function LogView({ state, setState, showToast }) {
                     }}
                   >
                     {/* Side A player picker */}
-                    <div>
+                    <div className="log-team-a">
                       <div className="lbl" style={{ color: "var(--green)" }}>
                         Side A {row.sideA.length}/2
                       </div>
@@ -6745,6 +6738,7 @@ function LogView({ state, setState, showToast }) {
                       )}
                       <input
                         className="inp"
+                        aria-label={`Game ${ri + 1} Team A player search`}
                         placeholder="Search…"
                         value={row.searchA}
                         onChange={(e) =>
@@ -6786,7 +6780,7 @@ function LogView({ state, setState, showToast }) {
                               full = !onA && row.sideA.length >= 2;
                             if (onA) return null;
                             return (
-                              <div
+                              <div role="button" tabIndex={0} onKeyDown={e => {if(e.key === "Enter" || e.key === " "){e.preventDefault();e.currentTarget.click();}}}
                                 key={p.id}
                                 className={`player-chip ${onB || full ? "disabled" : ""}`}
                                 onClick={() => {
@@ -6806,6 +6800,7 @@ function LogView({ state, setState, showToast }) {
 
                     {/* Score inputs + preview */}
                     <div
+                      className="log-score-entry"
                       style={{
                         display: "flex",
                         flexDirection: "column",
@@ -6831,7 +6826,8 @@ function LogView({ state, setState, showToast }) {
                           className="inp"
                           type="number"
                           min="0"
-                          placeholder="10"
+                          aria-label={`Game ${ri + 1} Team A score`}
+                          placeholder="Score"
                           value={row.scoreA}
                           onChange={(e) =>
                             setRows((r) =>
@@ -6868,7 +6864,8 @@ function LogView({ state, setState, showToast }) {
                           className="inp"
                           type="number"
                           min="0"
-                          placeholder="7"
+                          aria-label={`Game ${ri + 1} Team B score`}
+                          placeholder="Score"
                           value={row.scoreB}
                           onChange={(e) =>
                             setRows((r) =>
@@ -6946,7 +6943,7 @@ function LogView({ state, setState, showToast }) {
                                 letterSpacing: 0.3,
                               }}
                             >
-                              ⚠ Low-value game
+                              <UiIcon name="warning"/> Low-value game
                             </div>
                           )}
                         </div>
@@ -6954,7 +6951,7 @@ function LogView({ state, setState, showToast }) {
                     </div>
 
                     {/* Side B player picker */}
-                    <div>
+                    <div className="log-team-b">
                       <div className="lbl" style={{ color: "var(--blue)" }}>
                         Side B {row.sideB.length}/2
                       </div>
@@ -6981,6 +6978,7 @@ function LogView({ state, setState, showToast }) {
                       )}
                       <input
                         className="inp"
+                        aria-label={`Game ${ri + 1} Team B player search`}
                         placeholder="Search…"
                         value={row.searchB}
                         onChange={(e) =>
@@ -7022,7 +7020,7 @@ function LogView({ state, setState, showToast }) {
                               full = !onB && row.sideB.length >= 2;
                             if (onB) return null;
                             return (
-                              <div
+                              <div role="button" tabIndex={0} onKeyDown={e => {if(e.key === "Enter" || e.key === " "){e.preventDefault();e.currentTarget.click();}}}
                                 key={p.id}
                                 className={`player-chip ${onA || full ? "disabled" : ""}`}
                                 onClick={() => {
@@ -7077,7 +7075,7 @@ function LogView({ state, setState, showToast }) {
                         );
                         if (isFlex)
                           return (
-                            <div
+                            <div role="button" tabIndex={0} onKeyDown={e => {if(e.key === "Enter" || e.key === " "){e.preventDefault();e.currentTarget.click();}}}
                               className="role-slot role-slot-flex"
                               onClick={onClickSlot}
                               title="Click to re-assign"
@@ -7093,7 +7091,7 @@ function LogView({ state, setState, showToast }) {
                                   marginBottom: 2,
                                 }}
                               >
-                                ⚡ FLEX
+                                <UiIcon name="zap"/> FLEX
                               </div>
                               <div
                                 className="xs text-dd"
@@ -7104,7 +7102,7 @@ function LogView({ state, setState, showToast }) {
                             </div>
                           );
                         return (
-                          <div
+                          <div role="button" tabIndex={0} onKeyDown={e => {if(e.key === "Enter" || e.key === " "){e.preventDefault();e.currentTarget.click();}}}
                             className={`role-slot ${occupant ? "role-slot-" + roleToShow.toLowerCase() : "role-slot-empty"}`}
                             onClick={onClickSlot}
                             title={
@@ -7133,7 +7131,7 @@ function LogView({ state, setState, showToast }) {
                               <div style={{ fontWeight: 600, fontSize: 12 }}>
                                 {pName(occupant, state.players)}{" "}
                                 <span className="xs text-dd">
-                                  ↕ click to swap
+                                   click to swap
                                 </span>
                               </div>
                             ) : (
@@ -7185,7 +7183,7 @@ function LogView({ state, setState, showToast }) {
                                   className="xs"
                                   style={{ color: "var(--green)" }}
                                 >
-                                  ✓ Positional MMR active
+                                  <UiIcon name="check"/> Positional MMR active
                                 </span>
                               ) : bothSidesFull ? (
                                 <span
@@ -7252,7 +7250,7 @@ function LogView({ state, setState, showToast }) {
                                     sideIds={row.sideA}
                                     roleToShow="ATK"
                                     label="ATK"
-                                    icon="🗡"
+                                    icon={<UiIcon name="swords"/>}
                                     slotClass="role-slot-atk"
                                     onClickSlot={() =>
                                       setRows((r) =>
@@ -7264,7 +7262,7 @@ function LogView({ state, setState, showToast }) {
                                     sideIds={row.sideA}
                                     roleToShow="DEF"
                                     label="DEF"
-                                    icon="🛡"
+                                    icon={<UiIcon name="shield"/>}
                                     slotClass="role-slot-def"
                                     onClickSlot={() =>
                                       setRows((r) =>
@@ -7283,7 +7281,7 @@ function LogView({ state, setState, showToast }) {
                                   }
                                   title="Team swapped positions at the 5-goal mark (§3.7)"
                                 >
-                                  ↕ FLEX (swap at 5 goals)
+                                   FLEX (swap at 5 goals)
                                 </button>
                               </div>
                               {/* Side B */}
@@ -7310,7 +7308,7 @@ function LogView({ state, setState, showToast }) {
                                     sideIds={row.sideB}
                                     roleToShow="ATK"
                                     label="ATK"
-                                    icon="🗡"
+                                    icon={<UiIcon name="swords"/>}
                                     slotClass="role-slot-atk"
                                     onClickSlot={() =>
                                       setRows((r) =>
@@ -7322,7 +7320,7 @@ function LogView({ state, setState, showToast }) {
                                     sideIds={row.sideB}
                                     roleToShow="DEF"
                                     label="DEF"
-                                    icon="🛡"
+                                    icon={<UiIcon name="shield"/>}
                                     slotClass="role-slot-def"
                                     onClickSlot={() =>
                                       setRows((r) =>
@@ -7341,7 +7339,7 @@ function LogView({ state, setState, showToast }) {
                                   }
                                   title="Team swapped positions at the 5-goal mark (§3.7)"
                                 >
-                                  ↕ FLEX (swap at 5 goals)
+                                   FLEX (swap at 5 goals)
                                 </button>
                               </div>
                             </div>
@@ -7364,7 +7362,7 @@ function LogView({ state, setState, showToast }) {
                       className="msg msg-e mt8"
                       style={{ fontWeight: 600, fontSize: 12 }}
                     >
-                      ⚠ {errors[row.id]}
+                      <UiIcon name="warning"/> {errors[row.id]}
                     </div>
                   )}
 
@@ -7424,7 +7422,7 @@ function LogView({ state, setState, showToast }) {
                                     setRowPenalty(row.id, pid, "yellow", 1)
                                   }
                                 >
-                                  🟡+
+                                  <UiIcon name="yellow-card" label="Add yellow card"/>+
                                 </button>
                                 <button
                                   className="btn btn-g btn-sm"
@@ -7433,7 +7431,7 @@ function LogView({ state, setState, showToast }) {
                                     setRowPenalty(row.id, pid, "red", 1)
                                   }
                                 >
-                                  🔴+
+                                  <UiIcon name="red-card" label="Add red card"/>+
                                 </button>
                               </div>
                             );
@@ -7455,7 +7453,7 @@ function LogView({ state, setState, showToast }) {
                                 {pName(pid, state.players)}
                               </span>
                               <div className="fac" style={{ gap: 3 }}>
-                                <span>🟡</span>
+                                <span><UiIcon name="yellow-card" label="Yellow card"/></span>
                                 <button
                                   className="btn btn-g btn-sm"
                                   style={{ padding: "1px 6px" }}
@@ -7485,7 +7483,7 @@ function LogView({ state, setState, showToast }) {
                                 </button>
                               </div>
                               <div className="fac" style={{ gap: 3 }}>
-                                <span>🔴</span>
+                                <span><UiIcon name="red-card" label="Red card"/></span>
                                 <button
                                   className="btn btn-g btn-sm"
                                   style={{ padding: "1px 6px" }}
@@ -7567,8 +7565,8 @@ function LogView({ state, setState, showToast }) {
                 return (
                   <button
                     className="btn btn-p"
-                    onClick={submitAll}
-                    disabled={readyCount === 0}
+                    onClick={() => submitAll()}
+                    disabled={readyCount === 0 || !!pendingSubmission}
                     style={{ opacity: readyCount === 0 ? 0.4 : 1 }}
                   >
                     Submit {readyCount}/{rows.length} Game
@@ -7588,7 +7586,7 @@ function LogView({ state, setState, showToast }) {
               </button>
               {undoStack.length > 0 && (
                 <button className="btn btn-warn" onClick={undoLast}>
-                  ↩ Undo Last Submit
+                   Undo Last Submit
                 </button>
               )}
             </div>
@@ -7758,6 +7756,7 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
   const EMPTY_SLOTS = { upperA: [], upperB: [], lowerA: [], lowerB: [] };
   const [slots, setSlots] = useState(EMPTY_SLOTS);
   const [bracketSearch, setBracketSearch] = useState("");
+  const [confirmReset, setConfirmReset] = useState(false);
 
   useEffect(() => {
     const id = setInterval(() => setTick((t) => t + 1), 1000);
@@ -7799,29 +7798,7 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
         : "var(--green)";
 
   function Countdown({ compact }) {
-    if (compact)
-      return (
-        <div className="xs text-dd" style={{ marginTop: 4 }}>
-          {cdDays}d {cdHours}h {cdMins}m
-        </div>
-      );
-    return (
-      <div className="cd-wrap">
-        {[
-          ["Days", cdDays],
-          ["Hours", cdHours],
-          ["Mins", cdMins],
-          ["Secs", cdSecs],
-        ].map(([lbl, val]) => (
-          <div key={lbl} className="cd-unit">
-            <div className="cd-num" style={{ color: cdColour }}>
-              {val}
-            </div>
-            <div className="cd-lbl">{lbl}</div>
-          </div>
-        ))}
-      </div>
-    );
+    return <EventCountdown days={cdDays} hours={cdHours} mins={cdMins} secs={cdSecs} diff={cdDiff} complete={compact}/>;
   }
 
   // Sequential slot picking order
@@ -8017,9 +7994,9 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
         };
       }),
     }));
-    const ruStr = ruNames.length ? " · " + ruNames.join(" & ") + " 🥈" : "";
-    const tpStr = tpNames.length ? " · " + tpNames.join(" & ") + " 🥉" : "";
-    showToast("Awarded: " + champNames.join(" & ") + " 🏆" + ruStr + tpStr);
+    const ruStr = ruNames.length ? " · " + ruNames.join(" & ") + "2" : "";
+    const tpStr = tpNames.length ? " · " + tpNames.join(" & ") + "3" : "";
+    showToast("Awarded: " + champNames.join(" & ") + "" + ruStr + tpStr);
   }
 
   function getLive(matchKey) {
@@ -8160,9 +8137,11 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
             border: `1px solid ${isLive ? "rgba(240,112,112,.35)" : "var(--b2)"}`,
             borderRadius: 8,
             overflow: "hidden",
-            minWidth: 280,
+            minWidth: 0,
+            width: "100%",
             transition: "border-color .3s",
           }}
+          className="b-match"
         >
           <div
             style={{
@@ -8201,13 +8180,13 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
                 <div
                   style={{ display: "flex", flexDirection: "column", gap: 3 }}
                 >
-                  <div
+                  <div role="button" tabIndex={0} onKeyDown={e => {if(e.key === "Enter" || e.key === " "){e.preventDefault();e.currentTarget.click();}}}
                     className="score-btn"
                     onClick={() => setLiveScore(matchKey, "A", 1)}
                   >
                     +
                   </div>
-                  <div
+                  <div role="button" tabIndex={0} onKeyDown={e => {if(e.key === "Enter" || e.key === " "){e.preventDefault();e.currentTarget.click();}}}
                     className="score-btn"
                     style={{ fontSize: 14 }}
                     onClick={() => setLiveScore(matchKey, "A", -1)}
@@ -8302,13 +8281,13 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
                 <div
                   style={{ display: "flex", flexDirection: "column", gap: 3 }}
                 >
-                  <div
+                  <div role="button" tabIndex={0} onKeyDown={e => {if(e.key === "Enter" || e.key === " "){e.preventDefault();e.currentTarget.click();}}}
                     className="score-btn"
                     onClick={() => setLiveScore(matchKey, "B", 1)}
                   >
                     +
                   </div>
-                  <div
+                  <div role="button" tabIndex={0} onKeyDown={e => {if(e.key === "Enter" || e.key === " "){e.preventDefault();e.currentTarget.click();}}}
                     className="score-btn"
                     style={{ fontSize: 14 }}
                     onClick={() => setLiveScore(matchKey, "B", -1)}
@@ -8362,7 +8341,7 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
                 className="btn btn-g btn-sm w-full"
                 onClick={() => startLive(matchKey)}
               >
-                🔴 Start Live Scoring
+                <UiIcon name="play"/> Start live scoring
               </button>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
@@ -8385,14 +8364,14 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
                     }}
                     disabled={live.scoreA === live.scoreB}
                   >
-                    ✓ Confirm ({live.scoreA}–{live.scoreB})
+                    <UiIcon name="check"/> Confirm ({live.scoreA}–{live.scoreB})
                   </button>
                   <button
                     className="btn btn-d btn-sm"
                     onClick={() => clearLiveScore(matchKey)}
                     title="Reset"
                   >
-                    ↺
+                    <UiIcon name="reset"/>
                   </button>
                 </div>
                 <button
@@ -8513,12 +8492,12 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
             )}
           </div>
           <Countdown />
-          {cdDiff < 864e5 && (
+          {cdDiff > 0 && cdDiff < 864e5 && (
             <div
               className="tag tag-l"
               style={{ marginBottom: 16, fontSize: 11, letterSpacing: 2 }}
             >
-              🔥 Finals are today!
+              <UiIcon name="zap"/> Finals are today!
             </div>
           )}
           {cdDiff >= 864e5 && cdDiff < 7 * 864e5 && (
@@ -8526,7 +8505,7 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
               className="tag tag-a"
               style={{ marginBottom: 16, fontSize: 11, letterSpacing: 2 }}
             >
-              ⚡ Finals this week
+              <UiIcon name="zap"/> Finals this week
             </div>
           )}
           <FinalsDateEditor
@@ -8559,7 +8538,7 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
                     </span>
                   </div>
                   <button className="btn btn-p" onClick={initFinals}>
-                    ⚡ Generate Bracket
+                    <UiIcon name="zap"/> Generate Bracket
                   </button>
                 </div>
               )}
@@ -8575,7 +8554,7 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
                     setBracketSearch("");
                   }}
                 >
-                  {manualMode ? "✕ Cancel" : "✏ Custom Bracket"}
+                  {manualMode ? "Cancel" : "Custom Bracket"}
                 </button>
               </div>
               {!placedRanked.length && !manualMode && (
@@ -8875,7 +8854,7 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
                     }}
                   >
                     {filteredUnassigned.map((p) => (
-                      <div
+                      <div role="button" tabIndex={0} onKeyDown={e => {if(e.key === "Enter" || e.key === " "){e.preventDefault();e.currentTarget.click();}}}
                         key={p.id}
                         className={`player-chip ${!pickingTeam ? "disabled" : ""}`}
                         style={{
@@ -8911,7 +8890,7 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
                       setBracketSearch("");
                     }}
                   >
-                    ✓ Confirm Bracket
+                    <UiIcon name="check"/> Confirm Bracket
                   </button>
                 )}
                 <button
@@ -9053,9 +9032,10 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
   return (
     <div className="stack page-fade">
       <div
-        className="card"
+        className="card championship-countdown"
         style={{ textAlign: "center", padding: "16px 20px" }}
       >
+        <h1 className="finals-heading"><UiIcon name="trophy"/>Monthly Champions</h1>
         <div
           className="xs text-dd"
           style={{
@@ -9064,9 +9044,10 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
             textTransform: "uppercase",
           }}
         >
-          Finals Countdown
+          {fmtMonth(monthKey)}
         </div>
         <Countdown compact={status === "complete"} />
+        <p className="finals-date">{state.finalsDate ? new Date(state.finalsDate).toLocaleString("en-GB", {day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"}) : `Last day of ${fmtMonth(monthKey)}`}</p>
         {status === "complete" && (
           <div className="tag tag-w" style={{ marginTop: 4 }}>
             Complete
@@ -9101,16 +9082,16 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
             Monthly Champions
           </div>
           <div className="disp text-am" style={{ fontSize: 38 }}>
-            🏆 {champ.join(" & ")}
+            <UiIcon name="trophy"/> {champ.join(" & ")}
           </div>
           {runnerUpNames?.length > 0 && (
             <div className="xs" style={{ color: "#b0c8c0", marginTop: 8 }}>
-              🥈 Runner-Up: {runnerUpNames.join(" & ")}
+              2 Runner-Up: {runnerUpNames.join(" & ")}
             </div>
           )}
           {thirdPlaceNames?.length > 0 && (
             <div className="xs" style={{ color: "#c8864a", marginTop: 4 }}>
-              🥉 Third Place: {thirdPlaceNames.join(" & ")}
+              3 Third Place: {thirdPlaceNames.join(" & ")}
             </div>
           )}
           {isAdmin && (
@@ -9159,78 +9140,31 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
             </span>
           </div>
         </div>
-        <div
-          style={{
-            padding: 20,
-            display: "flex",
-            flexDirection: "column",
-            gap: 24,
-          }}
-        >
-          <div>
-            <div
-              className="xs text-dd"
-              style={{
-                letterSpacing: 2,
-                textTransform: "uppercase",
-                marginBottom: 10,
-              }}
-            >
-              Semi 1
-            </div>
-            <div
-              className="bracket"
-              style={{ justifyContent: "flex-start", padding: 0 }}
-            >
-              <BMatch matchKey="upper" label="Semi 1" />
-              {(status === "final" || status === "complete") && (
-                <>
-                  <div className="b-conn">→</div>
-                  <BMatch matchKey="final" label="Grand Final" />
-                </>
-              )}
-            </div>
+        <div className="bracket-layout">
+          <div className="bracket-semis">
+            <BMatch matchKey="upper" label="Semifinal 1" />
+            {bracket?.lower && <BMatch matchKey="lower" label="Semifinal 2" />}
           </div>
-          {bracket?.lower && (
-            <div>
-              <div
-                className="xs text-dd"
-                style={{
-                  letterSpacing: 2,
-                  textTransform: "uppercase",
-                  marginBottom: 10,
-                }}
-              >
-                Semi 2
-              </div>
-              <div
-                className="bracket"
-                style={{ justifyContent: "flex-start", padding: 0 }}
-              >
-                <BMatch matchKey="lower" label="Semi 2" />
-              </div>
-            </div>
-          )}
+          <div className="bracket-connector" aria-hidden="true" />
+          <div className="bracket-final">
+            {status === "final" || status === "complete" ? <BMatch matchKey="final" label="Grand Final" /> : <div className="pending-final"><h3><UiIcon name="trophy"/> Grand Final</h3><p>Winner of Semifinal 1</p><span className="xs text-dd">vs</span><p>{bracket?.lower ? "Winner of Semifinal 2" : "Awaiting opponent"}</p><small>Awaiting semifinal results</small></div>}
+          </div>
         </div>
         {isAdmin && (
-          <div
-            style={{ padding: "10px 18px", borderTop: "1px solid var(--b1)" }}
-          >
+          <div className="bracket-reset">
             <button
-              className="btn btn-d btn-sm"
-              onClick={() => {
-                setState((s) => {
-                  const f = { ...s.finals };
-                  delete f[monthKey];
-                  return { ...s, finals: f };
-                });
-                showToast("Finals reset");
-              }}
+              className="btn btn-g"
+              onClick={() => setConfirmReset(true)}
             >
-              Reset Bracket
+              <UiIcon name="reset"/> Reset bracket to preview
             </button>
           </div>
         )}
+        {confirmReset && <ConfirmDialog title="Reset bracket to preview?" msg="Clear this month's bracket and live scores, then return to the pairing preview. Previously awarded profile achievements are not removed." danger onCancel={() => setConfirmReset(false)} onConfirm={() => {
+          setState(s => { const f = { ...s.finals }; delete f[monthKey]; return { ...s, finals:f }; });
+          setConfirmReset(false);
+          showToast("Bracket returned to preview");
+        }}/>}
       </div>
     </div>
   );
@@ -9547,10 +9481,9 @@ function WinDonut({ wins, losses }) {
 
 // ── STATS VIEW ─────────────────────────────────────────────────────────────
 
-function StatsView({ state, onSelectPlayer }) {
-  const [selectedId, setSelectedId] = useState(null);
+function StatsView({ state, onSelectPlayer, seasonFilter, setSeasonFilter }) {
+  const [selectedId, setSelectedId] = useState(() => [...state.players].sort((a,b) => (b.pts || 0) - (a.pts || 0))[0]?.id || null);
   const [search, setSearch] = useState("");
-  const [seasonFilter, setSeasonFilter] = useState("current");
   const [posFilter, setPosFilter] = useState("ALL");
   const currentSeason = getCurrentSeason(state);
   const activeSeason =
@@ -9657,7 +9590,7 @@ function StatsView({ state, onSelectPlayer }) {
   return (
     <div className="stack page-fade">
       {activeSeason && (
-        <div className="card">
+        <div className="card stats-overview">
           <div className="card-header">
             <span className="card-title">
               Season Overview — {activeSeason.label}
@@ -9730,8 +9663,13 @@ function StatsView({ state, onSelectPlayer }) {
           </div>
         </div>
       )}
-      <div className="grid-2" style={{ alignItems: "start" }}>
-        <div className="card">
+      <div className="stats-mobile-controls">
+        <label className="lbl">Season<select className="inp" aria-label="Statistics season" value={seasonFilter} onChange={e => setSeasonFilter(e.target.value)}><option value="current">Current season</option><option value="all">All seasons</option>{(state.seasons || []).map(se => <option key={se.id} value={se.id}>{se.label}</option>)}</select></label>
+        <label className="lbl">Player<select className="inp" aria-label="Statistics player" value={selectedId || ""} onChange={e => setSelectedId(e.target.value)}><option value="" disabled>Select a player</option>{sorted.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
+        <div className="segmented" role="group" aria-label="Position filter">{["ALL","ATK","DEF"].map(role => <button key={role} aria-pressed={posFilter === role} onClick={() => setPosFilter(role)}>{role}</button>)}</div>
+      </div>
+      <div className="grid-2 stats-columns" style={{ alignItems: "start" }}>
+        <div className="card stats-picker">
           <div className="card-header">
             <span className="card-title">Player Stats</span>
             <select
@@ -9769,7 +9707,7 @@ function StatsView({ state, onSelectPlayer }) {
               onChange={(e) => setSearch(e.target.value)}
               style={{ marginBottom: 10, fontSize: 12 }}
             />
-            <div
+            <div className="stats-roster"
               style={{
                 display: "flex",
                 flexDirection: "column",
@@ -9788,6 +9726,10 @@ function StatsView({ state, onSelectPlayer }) {
                   <div
                     key={p.id}
                     className={`player-chip ${selectedId === p.id ? "sel-a" : ""}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={selectedId === p.id}
+                    onKeyDown={e => {if(e.key === "Enter" || e.key === " "){e.preventDefault();setSelectedId(p.id);}}}
                     onClick={() => setSelectedId(p.id)}
                   >
                     <span style={{ fontWeight: 600 }}>{p.name}</span>
@@ -9804,7 +9746,7 @@ function StatsView({ state, onSelectPlayer }) {
                                 fontWeight: 600,
                               }}
                             >
-                              🗡 {p.mmr_atk || p.mmr}
+                              <UiIcon name="swords"/> {p.mmr_atk || p.mmr}
                             </span>{" "}
                             ATK
                           </>
@@ -9813,7 +9755,7 @@ function StatsView({ state, onSelectPlayer }) {
                             <span
                               style={{ color: "var(--blue)", fontWeight: 600 }}
                             >
-                              🛡 {p.mmr_def || p.mmr}
+                              <UiIcon name="shield"/> {p.mmr_def || p.mmr}
                             </span>{" "}
                             DEF
                           </>
@@ -9896,9 +9838,9 @@ function StatsView({ state, onSelectPlayer }) {
                       }}
                     >
                       {posFilter === "ATK"
-                        ? "🗡 ATK points over time"
+                        ? "ATK points over time"
                         : posFilter === "DEF"
-                          ? "🛡 DEF points over time"
+                          ? "DEF points over time"
                           : "Points over time"}
                     </div>
                     <div
@@ -10166,11 +10108,11 @@ function StatsView({ state, onSelectPlayer }) {
                             const role = g.roles?.[selected.id];
                             const roleIcon =
                               role === "ATK"
-                                ? "🗡"
+                                ? <UiIcon name="swords"/>
                                 : role === "DEF"
-                                  ? "🛡"
+                                  ? <UiIcon name="shield"/>
                                   : role === "FLEX"
-                                    ? "↕"
+                                    ? ""
                                     : null;
                             const delta = won
                               ? (g.perPlayerGains?.[selected.id] ??
@@ -10333,7 +10275,7 @@ function StatsView({ state, onSelectPlayer }) {
             }}
           >
             <div style={{ textAlign: "center" }}>
-              <div style={{ fontSize: 28, marginBottom: 8 }}>📊</div>
+              <div style={{ fontSize: 28, marginBottom: 8 }}><UiIcon name="chart"/></div>
               <span className="text-dd" style={{ fontSize: 13 }}>
                 Select a player to view stats
               </span>
@@ -10341,7 +10283,6 @@ function StatsView({ state, onSelectPlayer }) {
           </div>
         )}
       </div>
-      <TeamBalancer players={state.players} />
     </div>
   );
 }
@@ -10409,7 +10350,7 @@ function TeamBalancer({ players }) {
   return (
     <div className="card">
       <div className="card-header">
-        <span className="card-title">⚖ Team Balancer</span>
+        <span className="card-title"><UiIcon name="balance"/> Team Balancer</span>
         {selected.length > 0 && (
           <button className="btn btn-g btn-sm" onClick={() => setSelected([])}>
             Clear
@@ -10474,7 +10415,7 @@ function TeamBalancer({ players }) {
             const sel = selected.includes(p.id);
             const full = !sel && selected.length >= 4;
             return (
-              <div
+              <div role="button" tabIndex={0} onKeyDown={e => {if(e.key === "Enter" || e.key === " "){e.preventDefault();e.currentTarget.click();}}}
                 key={p.id}
                 className={`player-chip ${sel ? "sel-a" : ""} ${full ? "disabled" : ""}`}
                 onClick={() => !full && toggle(p.id)}
@@ -10964,7 +10905,7 @@ function SeasonsArchiveView({
                     })
                   }
                 >
-                  ⚡ Start New Season
+                  <UiIcon name="zap"/> Start New Season
                 </button>
               </div>
             )}
@@ -10975,7 +10916,7 @@ function SeasonsArchiveView({
           className="card"
           style={{ padding: "28px 24px", textAlign: "center" }}
         >
-          <div style={{ fontSize: 32, marginBottom: 10 }}>🏁</div>
+          <div style={{ fontSize: 32, marginBottom: 10 }}><UiIcon name="flag"/></div>
           <div
             style={{
               fontFamily: "var(--disp)",
@@ -11007,7 +10948,7 @@ function SeasonsArchiveView({
                 })
               }
             >
-              ⚡ Start Season 1
+              <UiIcon name="zap"/> Start Season 1
             </button>
           )}
         </div>
@@ -11111,7 +11052,7 @@ function SeasonsArchiveView({
                       }}
                     >
                       <span style={{ fontSize: 14 }}>
-                        {i === 0 ? "🥇" : i === 1 ? "🥈" : "🥉"}
+                        {i === 0 ? "1" : i === 1 ? "2" : "3"}
                       </span>
                       <div>
                         <div style={{ fontWeight: 600, fontSize: 13 }}>
@@ -11130,7 +11071,7 @@ function SeasonsArchiveView({
               >
                 <button
                   className="btn btn-g btn-sm"
-                  onClick={() => onNavToHistory?.(season)}
+              onClick={() => onNavToHistory?.(season)}
                 >
                   History
                 </button>
@@ -11239,7 +11180,7 @@ function RulesView({ state, setState, isAdmin, showToast }) {
 
 // ── ADVANCED PANEL ─────────────────────────────────────────────────────────
 
-function AdvancedPanel({ state, setState, showToast, onStartNewSeason }) {
+function AdvancedPanel({ state, setState, showToast, onStartNewSeason, section = "recovery" }) {
   const [loading, setLoading] = useState(false);
   const [history, setHistory] = useState([]);
   const [selected, setSelected] = useState(null);
@@ -11375,12 +11316,13 @@ function AdvancedPanel({ state, setState, showToast, onStartNewSeason }) {
   }
 
   return (
-    <div className="card" style={{ marginBottom: 12 }}>
+    <div className="card advanced-workspace" style={{ marginBottom: 12 }}>
       <div className="card-header">
         <span className="card-title">Advanced Controls</span>
       </div>
       <div style={{ padding: 16 }}>
         <div
+          hidden={section !== "recovery"}
           className="fac"
           style={{ gap: 8, flexWrap: "wrap", marginBottom: 12 }}
         >
@@ -11406,7 +11348,7 @@ function AdvancedPanel({ state, setState, showToast, onStartNewSeason }) {
             />
             Auto season announcement{" "}
             <span className="xs text-dd" style={{ marginLeft: 2 }}>
-              (defaults to 🔥 Hype)
+              (defaults to <UiIcon name="zap"/> Hype)
             </span>
           </label>
           <button className="btn btn-d" onClick={hardReset}>
@@ -11417,7 +11359,7 @@ function AdvancedPanel({ state, setState, showToast, onStartNewSeason }) {
           </button>
         </div>
 
-        <div className="card">
+        <div className="card" hidden={section !== "recovery"}>
           <div className="card-header">
             <span className="card-title">Time Machine</span>
           </div>
@@ -11459,7 +11401,7 @@ function AdvancedPanel({ state, setState, showToast, onStartNewSeason }) {
           </div>
         </div>
 
-        <div className="card" style={{ marginTop: 12 }}>
+        <div className="card" hidden={section !== "announcements"} style={{ marginTop: 12 }}>
           <div className="card-header">
             <span className="card-title">Announcement</span>
             <div className="fac" style={{ gap: 6 }}>
@@ -11535,7 +11477,7 @@ function AdvancedPanel({ state, setState, showToast, onStartNewSeason }) {
                             fontWeight: 600,
                           }}
                         >
-                          ✦ &nbsp;Announcement&nbsp; ✦
+                          <UiIcon name="announcement"/> &nbsp;Announcement&nbsp; <UiIcon name="announcement"/>
                         </div>
                       )}
                       <div
@@ -11634,8 +11576,8 @@ function AdvancedPanel({ state, setState, showToast, onStartNewSeason }) {
                   <div style={{ display: "flex", gap: 6 }}>
                     {[
                       ["standard", "Standard", "Plain announcement"],
-                      ["flashy", "✦ Flashy", "Gold shimmer stripe"],
-                      ["hype", "🔥 Hype", "Full glow + sweep"],
+                      ["flashy", "Flashy", "Gold shimmer stripe"],
+                      ["hype", "Hype", "Full glow + sweep"],
                     ].map(([val, label, desc]) => {
                       const cur = annHype
                         ? "hype"
@@ -11758,7 +11700,7 @@ function AdvancedPanel({ state, setState, showToast, onStartNewSeason }) {
           </div>
         </div>
 
-        <div className="card" style={{ marginTop: 12 }}>
+        <div className="card" hidden={section !== "exports"} style={{ marginTop: 12 }}>
           <div className="card-header">
             <span className="card-title">Exports</span>
           </div>
@@ -11802,7 +11744,7 @@ function AdvancedPanel({ state, setState, showToast, onStartNewSeason }) {
           </div>
         </div>
 
-        <div className="card" style={{ marginTop: 12 }}>
+        <div className="card" hidden={section !== "diagnostics"} style={{ marginTop: 12 }}>
           <div className="card-header">
             <span className="card-title">Audit</span>
           </div>
@@ -11850,7 +11792,7 @@ function SyncTestPanel({ state, setState, showToast }) {
     return data?.state;
   }
   async function testRoundTrip() {
-    addLog("▶ Round-trip — save then read back", "title");
+    addLog("Round-trip — save then read back", "title");
     setRunning(true);
     const sentinel = "rt-" + Date.now();
     setState((s) => safeTestMutation({ ...s, _syncRoundTrip: sentinel }));
@@ -11865,8 +11807,8 @@ function SyncTestPanel({ state, setState, showToast }) {
     }
     addLog(
       found
-        ? "✓ PASS: Sentinel found in DB (" + sentinel + ")"
-        : "✗ FAIL: Sentinel never reached DB",
+        ? "PASS: Sentinel found in DB (" + sentinel + ")"
+        : "FAIL: Sentinel never reached DB",
       found ? "pass" : "fail",
     );
     setState((s) => {
@@ -11885,7 +11827,7 @@ function SyncTestPanel({ state, setState, showToast }) {
   return (
     <div className="card">
       <div className="card-header">
-        <span className="card-title">⚙ Sync Test Panel</span>
+        <span className="card-title"><UiIcon name="settings"/> Sync Test Panel</span>
         <button className="btn btn-d btn-sm" onClick={() => setLog([])}>
           Clear log
         </button>
@@ -12271,8 +12213,11 @@ export default function App() {
       if (p) setAdminProfile(p);
     });
   }, []);
-  const [tab, setTab] = useState("ranks");
-  const [adminTab, setAdminTab] = useState("onboard");
+  const { view: tab, task: adminTab, season: seasonFilter, navigate, visited } = useLeagueNavigation();
+  const setSeasonFilter = value => navigate(tab, adminTab, value);
+  const [showBalancer, setShowBalancer] = useState(false);
+  const [loadError, setLoadError] = useState(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [showLogin, setShowLogin] = useState(false);
   const [toast, setToast] = useState(null);
   const [showAnnouncement, setShowAnnouncement] = useState(false);
@@ -12316,6 +12261,7 @@ export default function App() {
         subscribeToStateChanges();
       } catch (err) {
         console.error("Failed to initialize:", err);
+        setLoadError("Unable to load league");
       } finally {
         setLoading(false);
       }
@@ -12326,7 +12272,7 @@ export default function App() {
       if (subscriptionRef.current)
         supabase.removeChannel(subscriptionRef.current);
     };
-  }, []);
+  }, [loadAttempt]);
 
   const showToastRef = useRef(null);
   const [syncStatus, setSyncStatus] = useState("idle");
@@ -12345,7 +12291,7 @@ export default function App() {
   }, [state]);
 
   useEffect(() => {
-    if (loading) return;
+    if (loading || loadError) return;
     if (isInitialLoad.current) {
       isInitialLoad.current = false;
       return;
@@ -12354,6 +12300,7 @@ export default function App() {
       isRemoteUpdate.current = false;
       return;
     }
+    if (!adminProfile) return;
     setSyncStatus("saving");
     const pendingSnapshot = stateRef.current;
     saveState(
@@ -12374,7 +12321,7 @@ export default function App() {
         setSyncFor("saved");
       },
     );
-  }, [state, loading]);
+  }, [state, loading, loadError]);
 
   const reconnectTimer = useRef(null);
   const wasDisconnected = useRef(false);
@@ -12470,7 +12417,7 @@ export default function App() {
   }, []);
   showToastRef.current = showToast;
   useEffect(() => {
-    syncToast = showToast;
+    syncToast = (msg, type) => { showToast(msg, type); if (type === "error" || type === "err") setSyncFor("error", 0); };
     return () => {
       syncToast = null;
     };
@@ -12510,16 +12457,8 @@ export default function App() {
     setShowAnnouncement(false);
   }
 
-  const ADMIN_TABS = [
-    { id: "onboard", label: "Onboard" },
-    { id: "logGames", label: "Log Games" },
-    { id: "advanced", label: "Advanced" },
-  ];
-  const [mobMenuOpen, setMobMenuOpen] = useState(false);
-  function navTo(t, aTab) {
-    setTab(t);
-    if (aTab) setAdminTab(aTab);
-    setMobMenuOpen(false);
+  function navTo(t, aTab, season) {
+    navigate(t, aTab || adminTab, season || seasonFilter);
   }
 
   const currentSelPlayer = selPlayer
@@ -12565,7 +12504,7 @@ export default function App() {
         ? {
             id: `ann_${Date.now()}`,
             type,
-            title: title || `🎉 ${nextSeason.label} is live`,
+            title: title || `${nextSeason.label} is live`,
             subtitle,
             body:
               body ||
@@ -12589,323 +12528,94 @@ export default function App() {
     showToast("New season started — points reset", "ok");
   }
 
-  if (loading)
-    return (
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          minHeight: "100vh",
-          color: "var(--dim)",
-          fontFamily: "var(--mono)",
-        }}
-      >
-        <div style={{ textAlign: "center" }}>
-          <div style={{ fontSize: 24, marginBottom: 12 }}>⚽</div>
-          <div>Loading leaderboard...</div>
-        </div>
-      </div>
-    );
+  function selectProfile(player) {
+    setSelPlayer(player);
+    setEditPlayer(null);
+    setProfileSeasonMode(seasonFilter === "all" ? "all" : "season");
+    setProfileSeasonId(seasonFilter === "current" ? getCurrentSeason(state)?.id || "" : seasonFilter);
+  }
+  const commonProps = { state, setState, isAdmin, showToast };
+  const seasonLabel = seasonFilter === "all" ? "All seasons" : seasonFilter === "current" ? getCurrentSeason(state)?.label : state.seasons?.find(s => s.id === seasonFilter)?.label;
 
   return (
     <>
-      <style>{CSS}</style>
+      <style>{CSS + leagueCSS + sectionCSS}</style>
       <div className="app">
-        {/* TOPBAR */}
-        <div
-          className="topbar"
-          style={{ position: "sticky", top: 0, zIndex: 100 }}
-        >
-          <div
-            className="brand"
-            onClick={() => navTo("ranks")}
-            style={{ cursor: "pointer", userSelect: "none" }}
-            title="Go to leaderboard"
-          >
-            St. Marylebone <span className="brand-sub">Table Tracker</span>
-          </div>
-          <nav className="nav">
-            {TABS.map((t) => (
-              <button
-                key={t}
-                className={`nav-btn ${tab === t ? "active" : ""}`}
-                onClick={() => navTo(t)}
-              >
-                {TAB_LABELS[t]}
-                {t === "play" &&
-                  Object.values(
-                    state.finals?.[getMonthKey()]?.liveScores || {},
-                  ).some((v) => v?.active) && (
-                    <span
-                      style={{
-                        display: "inline-block",
-                        width: 6,
-                        height: 6,
-                        borderRadius: "50%",
-                        background: "var(--red)",
-                        marginLeft: 5,
-                        verticalAlign: "middle",
-                        animation: "livePulse 1.4s infinite",
-                      }}
-                    />
-                  )}
-              </button>
-            ))}
-            {isAdmin &&
-              ADMIN_TABS.map((t) => (
-                <button
-                  key={t.id}
-                  className={`nav-btn ${tab === "admin" && adminTab === t.id ? "active" : ""}`}
-                  onClick={() => navTo("admin", t.id)}
-                >
-                  {t.label}
-                </button>
-              ))}
-          </nav>
-          <div className="fac" style={{ gap: 8 }}>
-            <div
-              className="fac"
-              style={{ gap: 5 }}
-              title={
-                rtConnected ? "Live — connected to database" : "Connecting…"
-              }
-            >
-              <span className={`rt-dot ${rtConnected ? "live" : ""}`}></span>
-              <span className="xs text-dd" style={{ whiteSpace: "nowrap" }}>
-                {rtConnected ? "Live" : "…"}
-              </span>
-            </div>
-            {isAdmin ? (
-              <>
-                <span className="admin-badge">
-                  {adminProfile.username || adminProfile.call_sign} ·{" "}
-                  {adminProfile.role}
-                </span>
-                <button
-                  className="btn btn-g btn-sm"
-                  onClick={() => {
-                    signOutAdmin();
-                    setAdminProfile(null);
-                    navTo("ranks");
-                  }}
-                >
-                  Logout
-                </button>
-              </>
-            ) : (
-              <button
-                className="btn btn-g btn-sm"
-                onClick={() => setShowLogin(true)}
-              >
-                Admin
-              </button>
-            )}
-            <button
-              className={`ham-btn ${mobMenuOpen ? "open" : ""}`}
-              onClick={() => setMobMenuOpen((o) => !o)}
-              aria-label="Menu"
-            >
-              <span />
-              <span />
-              <span />
-            </button>
-          </div>
-        </div>
-
-        {isAdmin && syncStatus !== "idle" && (
-          <div
-            style={{
-              position: "fixed",
-              top: 52,
-              left: 0,
-              right: 0,
-              zIndex: 98,
-              height: 3,
-              background:
-                syncStatus === "saving"
-                  ? "var(--amber-d)"
-                  : syncStatus === "saved"
-                    ? "var(--green)"
-                    : syncStatus === "conflict"
-                      ? "var(--orange)"
-                      : "var(--red)",
-              animation:
-                syncStatus === "saving"
-                  ? "savingBar 1.2s ease-in-out infinite alternate"
-                  : "none",
-              transition: "background .3s",
-            }}
-          />
-        )}
-
-        <div className={`mob-nav ${mobMenuOpen ? "open" : ""}`}>
-          {TABS.map((t) => (
-            <button
-              key={t}
-              className={`nav-btn ${tab === t ? "active" : ""}`}
-              onClick={() => navTo(t)}
-            >
-              {TAB_LABELS[t]}
-            </button>
-          ))}
-          {isAdmin &&
-            ADMIN_TABS.map((t) => (
-              <button
-                key={t.id}
-                className={`nav-btn ${tab === "admin" && adminTab === t.id ? "active" : ""}`}
-                onClick={() => navTo("admin", t.id)}
-              >
-                {t.label}
-              </button>
-            ))}
-        </div>
-
-        {/* MAIN */}
-        <div className="main">
-          {tab === "ranks" && (
-            <LeaderboardView
-              state={state}
-              setState={setState}
-              rtConnected={rtConnected}
-              isAdmin={isAdmin}
-              showToast={showToast}
-              syncStatus={syncStatus}
-              onNavToPlay={() => navTo("play")}
-              onNavToHistory={() => navTo("history")}
-              onSelectPlayer={(p) => {
-                setSelPlayer(p);
-                setEditPlayer(null);
-                const cur = getCurrentSeason(state);
-                setProfileSeasonId(cur?.id || "");
-              }}
-            />
-          )}
-          {tab === "history" && (
-            <HistoryView
-              state={state}
-              setState={setState}
-              isAdmin={isAdmin}
-              showToast={showToast}
-            />
-          )}
-          {tab === "stats" && (
-            <StatsView
-              state={state}
-              onSelectPlayer={(p) => {
-                setSelPlayer(p);
-                setEditPlayer(null);
-                const cur = getCurrentSeason(state);
-                setProfileSeasonId(cur?.id || "");
-              }}
-            />
-          )}
-          {tab === "seasons" && (
-            <SeasonsArchiveView
-              state={state}
-              setState={setState}
-              isAdmin={isAdmin}
-              showToast={showToast}
-              onNavToHistory={() => setTab("history")}
-              onNavToStats={() => setTab("stats")}
-              onStartNewSeason={startNewSeason}
-            />
-          )}
-          {tab === "play" && (
-            <FinalsView
-              state={state}
-              setState={setState}
-              isAdmin={isAdmin}
-              showToast={showToast}
-            />
-          )}
-          {tab === "rules" && (
-            <RulesView
-              state={state}
-              setState={setState}
-              isAdmin={isAdmin}
-              showToast={showToast}
-            />
-          )}
-          {tab === "admin" && !isAdmin && (
-            <AdminLogin onLogin={(profile) => setAdminProfile(profile)} />
-          )}
-          {tab === "admin" &&
-            isAdmin &&
-            (() => {
-              switch (adminTab) {
-                case "onboard":
-                  return (
-                    <div className="stack">
-                      <OnboardView
-                        state={state}
-                        setState={setState}
-                        showToast={showToast}
-                      />
+        <LeagueHeader view={tab} task={adminTab} navigate={navTo} profile={adminProfile} connected={rtConnected} loading={loading}
+          onLogin={() => setShowLogin(true)}
+          onLogout={() => { signOutAdmin(); setAdminProfile(null); navTo("ranks"); }} />
+        <main className="main" id="main-content" tabIndex={-1}>
+          {loading ? <LeagueSkeleton /> : loadError ? (
+            <section className="load-error" role="alert">
+              <h1>Unable to load the league</h1>
+              <p>Your connection may be unavailable. No sample results have been substituted.</p>
+              <button className="btn btn-p" onClick={() => {setLoading(true);setLoadError(null);setLoadAttempt(n => n + 1);}}><UiIcon name="reset"/>Try again</button>
+            </section>
+          ) : <>
+            {(tab === "ranks" || tab === "stats") && <RanksHeading view={tab} navigate={navTo} seasonLabel={tab === "ranks" ? getCurrentSeason(state)?.label : seasonLabel} />}
+            <section hidden={tab !== "ranks"} className="ranks-view" aria-label="Standings">
+              {visited.has("ranks") && <LeaderboardView {...commonProps} rtConnected={rtConnected} syncStatus={syncStatus} onNavToPlay={() => navTo("play")} onNavToHistory={() => navTo("history")} onSelectPlayer={p => {setSelPlayer(p);setEditPlayer(null);setProfileSeasonMode("season");setProfileSeasonId(getCurrentSeason(state)?.id || "");}} />}
+            </section>
+            <section hidden={tab !== "history"} className="history-view" aria-label="History">
+              {visited.has("history") && <><div className="history-toolbar"><h1>History</h1><button className="btn btn-g" onClick={() => setShowBalancer(true)}><UiIcon name="balance"/>Balance teams</button></div><HistoryView {...commonProps} active={tab === "history"} seasonFilter={seasonFilter} setSeasonFilter={setSeasonFilter}/></>}
+            </section>
+            <section hidden={tab !== "stats"} className="stats-view" aria-label="Player statistics">
+              {visited.has("stats") && <StatsView state={state} seasonFilter={seasonFilter} setSeasonFilter={setSeasonFilter} onSelectPlayer={selectProfile} />}
+            </section>
+            <section hidden={tab !== "seasons"} className="season-view" aria-label="Seasons">
+              {visited.has("seasons") && <><div className="page-heading"><h1>Seasons</h1></div><SeasonsArchiveView {...commonProps} onNavToHistory={season => navTo("history",undefined,season.id)} onNavToStats={season => navTo("stats",undefined,season.id)} onStartNewSeason={startNewSeason}/></>}
+            </section>
+            <section hidden={tab !== "play"} className="champions-view" aria-label="Champions">
+              {visited.has("play") && <FinalsView {...commonProps}/>}
+            </section>
+            <section hidden={tab !== "rules"} className="rules-view" aria-label="Rules">
+              {visited.has("rules") && <RulesView {...commonProps}/>}
+            </section>
+            {visited.has("admin") && <section hidden={tab !== "admin"} aria-label="Administration">
+              {!isAdmin ? <AdminLogin onLogin={setAdminProfile}/> : <>
+                <div hidden={adminTab !== "logGames"} className="log-view">
+                  <div className="page-heading"><h1>Log game</h1><button className="btn btn-g" onClick={() => setShowBalancer(true)}><UiIcon name="balance"/>Balance teams</button></div>
+                  <LogView {...commonProps} active={tab === "admin" && adminTab === "logGames"} syncStatus={syncStatus}/>
+                </div>
+                <div hidden={adminTab === "logGames"}>
+                  <div className="page-heading"><h1>Manage</h1></div>
+                  <div className="management-layout">
+                    <ManagementNav task={adminTab} navigate={navTo} profile={adminProfile} playerCount={state.players.length}/>
+                    <div className="management-content">
+                      <div hidden={adminTab !== "onboard"}><OnboardView {...commonProps} onEdit={setEditPlayer}/></div>
+                      <div hidden={!["announcements","exports","recovery","diagnostics","advanced"].includes(adminTab)}>
+                        <AdvancedPanel {...commonProps} section={adminTab === "advanced" ? "recovery" : adminTab} onStartNewSeason={startNewSeason}/>
+                      </div>
+                      {adminTab === "diagnostics" && <SyncTestPanel {...commonProps}/>}
+                      {adminTab === "accounts" && adminProfile.role === "sysadmin" && <ManageLoginsPanel showToast={showToast} currentUserId={adminProfile.user_id}/>}
                     </div>
-                  );
-                case "logGames":
-                  return (
-                    <LogView
-                      state={state}
-                      setState={setState}
-                      showToast={showToast}
-                    />
-                  );
-                case "advanced":
-                  return (
-                    <>
-                      <AdvancedPanel
-                        state={state}
-                        setState={setState}
-                        showToast={showToast}
-                        onStartNewSeason={startNewSeason}
-                      />
-                      <SyncTestPanel
-                        state={state}
-                        setState={setState}
-                        showToast={showToast}
-                      />
-                      {adminProfile?.role === "sysadmin" && (
-                        <ManageLoginsPanel
-                          showToast={showToast}
-                          currentUserId={adminProfile.user_id}
-                        />
-                      )}
-                    </>
-                  );
-                default:
-                  return (
-                    <div className="card" style={{ padding: 24 }}>
-                      <div className="text-d">Admin page not found</div>
-                    </div>
-                  );
-              }
-            })()}
-        </div>
+                  </div>
+                </div>
+              </>}
+            </section>}
+          </>}
+        </main>
+        {isAdmin && syncStatus !== "idle" && <div className="sync-message" role="status">{syncStatus === "saving" ? "Saving changes..." : syncStatus === "saved" ? "Changes saved" : syncStatus === "conflict" ? "Remote changes applied. Review your entry." : "Changes not saved. Check your connection."}</div>}
+        {showBalancer && <Modal onClose={() => setShowBalancer(false)} large><h2 className="modal-title">Balance teams</h2><TeamBalancer players={state.players}/></Modal>}
 
         {/* MODALS */}
         {showLogin && !isAdmin && (
-          <div
-            className="overlay"
-            onClick={(e) => e.target === e.currentTarget && setShowLogin(false)}
-          >
-            <div className="modal">
+          <Modal onClose={() => setShowLogin(false)}>
               <AdminLogin
                 onLogin={(profile) => {
                   setAdminProfile(profile);
                   setShowLogin(false);
-                  setTab("admin");
-                  setAdminTab("onboard");
+                  navTo("admin", "onboard");
                 }}
               />
-            </div>
-          </div>
+          </Modal>
         )}
         {currentSelPlayer && !editPlayer && (
           <PlayerProfile
             player={currentSelPlayer}
             state={state}
+            setState={setState}
+            showToast={showToast}
             onClose={() => setSelPlayer(null)}
             isAdmin={isAdmin}
             onEdit={() => {
