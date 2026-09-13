@@ -1,12 +1,12 @@
 /* Reading surfaces stay near-black; forest green marks framing and selection. */
 :root{--surface-content:#090e0b;--surface-frame:#111a14;--surface-selected:#182318}
-.main{max-width:1504px;padding:36px 32px 64px}
-.league-header-inner{max-width:1504px;padding-inline:32px}
+.main{max-width:1320px;padding:28px 32px 56px}
+.league-header-inner{max-width:1320px;padding-inline:32px}
 .card,.stat-box,.inp,.modal{background:var(--surface-content)}
 .card-header,.tbl thead{background:var(--surface-frame)}
 .card-title{font-size:17px}.tbl{font-size:14px}.tbl th{font-size:13px;font-weight:500}.tbl td{font-size:14px}
 .card .card,.stats-view .stat-box{background:transparent;border:0}
-.page-heading{margin-bottom:32px;padding-bottom:28px}.page-heading h1{font-size:34px}
+.page-heading{margin-bottom:22px;padding-bottom:18px}.page-heading h1{font-size:28px}
 .league-actions .manage-action{border-color:transparent;background:none;border-radius:0;position:relative}
 .manage-action[aria-current]::after{content:'';position:absolute;bottom:-17px;left:10px;right:10px;height:2px;background:var(--green)}
 .ranks-view .card-header,.stats-view .card-header,.recent-results .card-header{background:transparent}
@@ -16,21 +16,21 @@
 .lb-card{background:var(--surface-content)}
 
 /* Manage: broad content area, truthful roster metadata, bounded result pages. */
-.management-layout{grid-template-columns:270px minmax(0,1fr);gap:40px}
-.management-nav{gap:8px}.management-nav button{font-size:16px;min-height:48px}
+.management-layout{grid-template-columns:220px minmax(0,1fr);gap:28px}
+.management-nav{gap:4px}.management-nav button{font-size:14px;min-height:40px;padding:9px 12px;border-radius:4px}
 .workspace-label{font-size:12px;color:var(--dimmer);padding:0 14px 10px}
 .workspace-count{margin-left:auto;padding:2px 7px;background:var(--surface-content);font-size:12px;border-radius:4px}
 .management-rulebook{margin-top:20px;padding-top:20px!important}
-.roster-workspace{gap:20px}.roster-toolbar{display:flex;gap:12px;flex-wrap:wrap;margin:0}
+.roster-workspace{gap:14px}.roster-toolbar{display:flex;gap:10px;flex-wrap:wrap;margin:0}
 .roster-title{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-right:auto}
-.roster-title h2{font:600 22px var(--disp);color:var(--text)}
+.roster-title h2{font:600 18px var(--disp);color:var(--text)}
 .roster-count{font-size:12px;color:var(--dim);background:var(--surface-frame);border:1px solid var(--b1);border-radius:8px;padding:5px 10px}
 .roster-search{position:relative;flex:1 1 220px;max-width:320px}.roster-search .ui-icon{position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--dimmer)}
 .roster-search .inp{padding-left:38px;max-width:none;width:100%;background:var(--surface-frame)}
 .roster-actions{gap:8px}.roster-actions .btn{white-space:nowrap;font-size:14px}
-.roster-record{border:1px solid var(--b1);border-radius:12px;overflow:hidden;background:var(--surface-content)}
-.roster-table{width:100%;table-layout:auto}.roster-table th,.roster-table td{padding:17px 16px;white-space:normal;text-align:left}
-.roster-table td{height:68px}.roster-table th:last-child{text-align:right}.roster-player-name{font-size:15px;font-weight:500;color:var(--text)}
+.roster-record{border:1px solid var(--b1);border-radius:6px;overflow:hidden;background:var(--surface-content)}
+.roster-table{width:100%;table-layout:auto}.roster-table th,.roster-table td{padding:10px 12px;white-space:normal;text-align:left}
+.roster-table td{height:50px}.roster-table th:last-child{text-align:right}.roster-player-name{font-size:14px;font-weight:500;color:var(--text)}
 .roster-table th:first-child{width:25%}.roster-table .role-tag{font-size:12px;padding:5px 8px}.roster-table .roster-last{font-size:13px;color:var(--dim);white-space:nowrap}
 .roster-games{font-variant-numeric:tabular-nums}.roster-status{font-size:13px;display:inline-flex;align-items:center;gap:7px;line-height:1.5}
 .roster-status i{width:6px;height:6px;border-radius:50%;flex:none;background:var(--green)}.roster-status.provisional i{background:var(--gold)}
@@ -38,6 +38,34 @@
 .roster-row-actions .icon-button:hover{background:var(--surface-selected)}.roster-row-actions .remove-player:hover{color:var(--red)}
 .roster-mobile-meta{display:none}.roster-pagination{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;background:var(--surface-frame);color:var(--dim);font-size:13px}
 .roster-pagination>div{display:flex;gap:8px}.icon-button:disabled{opacity:.35;cursor:default}.roster-pagination .icon-button{background:var(--surface-content)}
+
+.stats-view .stats-columns{gap:24px;grid-template-columns:minmax(260px,.8fr) minmax(0,1.8fr)!important}
+.stats-view .stats-picker>.card-header{padding:0 0 12px;gap:8px}
+.stats-view .stats-picker>div:last-child{padding:12px 0!important}
+.stats-view .stats-roster .player-chip{min-height:44px;padding:8px 10px;border-radius:4px;gap:8px;align-items:flex-start;flex-direction:column}
+.stats-view .stats-roster .player-chip>div{gap:6px;width:100%;justify-content:space-between}
+.stats-view .stats-roster .player-chip>span{font-size:13px}
+.stats-view .stats-columns>.card:last-child>.card-header{padding:0 0 12px}
+.stats-view .stats-columns>.card:last-child>.card-header .card-title{font-size:23px}
+.stats-view .stats-columns>.card:last-child>div:last-child{padding:14px 0!important;gap:12px!important}
+.stats-view .stats-columns .stat-box{border-radius:4px}
+.stats-view .stats-overview .stat-box{padding:10px 12px}
+.stats-encounters>div{min-width:0}
+.stats-encounters>div>div:last-child>div{background:transparent!important;border:0!important;border-bottom:1px solid var(--b1)!important;border-radius:0!important;padding:10px 0!important}
+.stats-encounters .fac{flex-wrap:wrap;gap:6px}
+.stats-encounters span{overflow-wrap:anywhere}
+.stats-encounters>div>div:last-child>div>div{min-width:0;flex-wrap:wrap;gap:6px}
+@media(max-width:1100px){.stats-view .stats-encounters{grid-template-columns:minmax(0,1fr)!important}}
+@media(min-width:801px){
+ .roster-title{flex:0 1 auto;gap:8px}.roster-count{padding:3px 7px;border-radius:4px}
+ .roster-search{flex:1 1 180px}.roster-actions .btn{font-size:12px;padding:8px 10px}
+ .roster-table th,.roster-table td{padding:10px 12px}.roster-table .role-tag{font-size:11px;padding:3px 6px}
+ .roster-pagination{padding:10px 12px}
+}
+@media(max-width:800px){
+ .stats-view .stats-columns{grid-template-columns:minmax(0,1fr)!important}
+ .management-nav button{min-height:44px}
+}
 
 /* Detail dialogs: one reading surface, bounded scrolling, persistent close. */
 .modal{color:var(--text);background:var(--surface-content);box-shadow:0 24px 80px #0009;padding:24px;scrollbar-gutter:stable}

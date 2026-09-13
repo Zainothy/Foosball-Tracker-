@@ -7,6 +7,7 @@ import seasonsCSS from "./styles/seasons.css?raw";
 import championshipCSS from "./styles/championship.css?raw";
 import historyCSS from "./styles/history.css?raw";
 import announcementCSS from "./styles/announcement.css?raw";
+import motionCSS from "./styles/motion.css?raw";
 import { HistoryRecords } from "./components/HistoryRecords";
 import { supabase } from "./supabaseClient";
 import {
@@ -4782,6 +4783,16 @@ function LeaderboardView({
     (a, b) => (b.pts || 0) - (a.pts || 0),
   );
   const [showRecalcConfirm, setShowRecalcConfirm] = useState(false);
+  const [rankingsExpanded, setRankingsExpanded] = useState(false);
+  const [rankingLimit, setRankingLimit] = useState(() => window.matchMedia("(max-width:980px)").matches ? 5 : 10);
+  const standingsRef = useRef(null);
+  useEffect(() => {
+    const media = window.matchMedia("(max-width:980px)");
+    const update = () => setRankingLimit(media.matches ? 5 : 10);
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+  const visibleRanked = rankingsExpanded ? ranked : ranked.slice(0, rankingLimit);
 
   function doRecalc() {
     const { players, games } = replayGames(
@@ -4800,6 +4811,22 @@ function LeaderboardView({
   const prevSnapshot = useRef(null);
   const animClearTimer = useRef(null);
   const [animMap, setAnimMap] = useState({});
+  useEffect(() => () => clearTimeout(animClearTimer.current), []);
+  useEffect(() => {
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const animations = [];
+    standingsRef.current?.querySelectorAll("[data-player-id]").forEach(el => {
+      const change = animMap[el.dataset.playerId];
+      if (!change) return;
+      const color = change === "rank-down" ? "rgba(240,112,112,.3)" : change === "rank-up" ? "rgba(94,201,138,.4)" : "rgba(232,184,74,.3)";
+      animations.push(el.animate([
+        { backgroundColor:color, boxShadow:`inset 4px 0 ${change === "rank-down" ? "#f07070" : "#5ec98a"}`, transform:`translateY(${change === "rank-up" ? 7 : change === "rank-down" ? -7 : 0}px)` },
+        { backgroundColor:color, offset:.2, transform:"translateY(0)" },
+        { backgroundColor:"transparent", boxShadow:"inset 0 0 transparent", transform:"none" }
+      ], {duration:1100,easing:"cubic-bezier(.2,.8,.2,1)"}));
+    });
+    return () => animations.forEach(animation => animation.cancel());
+  }, [animMap]);
 
   useEffect(() => {
     const next = {};
@@ -4963,7 +4990,7 @@ function LeaderboardView({
           );
         })()}
 
-        <div className="card standings-card">
+        <div ref={standingsRef} className={`card standings-card ${rankingsExpanded ? "rankings-expanded" : ""}`}>
           <div className="card-header">
             <span className="card-title">
               Rankings — {currentSeason?.label || fmtMonth(monthKey)}
@@ -5001,6 +5028,7 @@ function LeaderboardView({
           </div>
 
           {/* Desktop table */}
+          <div className="rankings-entries" id="rankings-entries">
           <div className="tbl-wrap">
             <table className="tbl">
               <thead>
@@ -5019,7 +5047,7 @@ function LeaderboardView({
               <tbody>
                 {(() => {
                   let placedCount = 0;
-                  return ranked.map((p, i) => {
+                  return visibleRanked.map((p, i) => {
                     const placements =
                       (state.monthlyPlacements[placementKey] || {})[p.id] || 0;
                     const isPlaced =
@@ -5039,6 +5067,7 @@ function LeaderboardView({
                     return (
                       <tr
                         key={p.id}
+                        data-player-id={p.id}
                         className={`lb-row ${anim}`}
                         style={{
                           animationDelay: `${i * 28}ms`,
@@ -5270,7 +5299,7 @@ function LeaderboardView({
           <div className="lb-cards">
             {(() => {
               let placedCount = 0;
-              return ranked.map((p, i) => {
+              return visibleRanked.map((p, i) => {
                 const placements =
                   (state.monthlyPlacements[placementKey] || {})[p.id] || 0;
                 const isPlaced = placements >= CONFIG.MAX_PLACEMENTS_PER_MONTH;
@@ -5286,7 +5315,8 @@ function LeaderboardView({
                 return (
                   <div
                     key={p.id}
-                    className="lb-card"
+                    className={`lb-card ${animMap[p.id] || ""}`}
+                    data-player-id={p.id}
                     role="button"
                     tabIndex={0}
                     onKeyDown={e => {if(e.key === "Enter" || e.key === " "){e.preventDefault();onSelectPlayer(p);}}}
@@ -5374,6 +5404,8 @@ function LeaderboardView({
               });
             })()}
           </div>
+          </div>
+          {ranked.length > rankingLimit && <div className="rankings-disclosure"><span>{rankingsExpanded ? ranked.length : rankingLimit} of {ranked.length} players</span><button className="btn btn-g" aria-expanded={rankingsExpanded} aria-controls="rankings-entries" onClick={() => setRankingsExpanded(value => !value)}><UiIcon name={rankingsExpanded ? "x" : "ranks"}/>{rankingsExpanded ? "Show fewer" : "View all rankings"}</button></div>}
         </div>
       </div>
       <RecentResults games={seasonGames} players={state.players} onOpen={onNavToHistory}/>
@@ -7430,6 +7462,23 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
     </>;
   }
 
+  function renderBracketBoard(upper, lower, final, preview = false) {
+    return <div className={`competition-board ${lower ? "" : "single-fixture"}`}>
+      <header className="competition-round-heading"><span>Stage 1 · Semifinals</span><span>{lower ? 2 : 1} {lower ? "fixtures" : "fixture"}{preview ? " · Preview" : ""}</span></header>
+      <header className="competition-round-heading final-round-heading"><span>Championship match · Final</span><span><UiIcon name="medal" size={16}/>Title decider</span></header>
+      <div className="competition-semi first-semi">{upper}</div>
+      {lower && <div className="competition-semi second-semi">{lower}</div>}
+      <div className="competition-path" aria-hidden="true"><i/></div>
+      <div className="competition-final">{final || <section className="pending-final">
+        <h3><UiIcon name="trophy"/>Grand Final</h3>
+        <div className="final-qualifier"><span>1</span><p>Winner of Semifinal 1</p><small>TBD</small></div>
+        <div className="final-versus">vs</div>
+        <div className="final-qualifier"><span>2</span><p>{lower ? "Winner of Semifinal 2" : "Awaiting opponent"}</p><small>TBD</small></div>
+        <footer><span><UiIcon name="history" size={15}/>Awaiting semifinal results</span><span>Scoring locked</span></footer>
+      </section>}</div>
+    </div>;
+  }
+
   function renderPastChampions() {
     const previous = Object.entries(state.finals || {}).filter(([key,value]) => key !== monthKey && value.status === "complete" && value.bracket?.champion?.length).sort(([a],[b]) => b.localeCompare(a));
     if (!previous.length) return null;
@@ -8497,100 +8546,10 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
 
         {/* Preview */}
         {!previewUpper && !previewLower && !isAdmin && <p className="championship-empty">The bracket will appear when enough players have completed placements.</p>}
-        {(previewUpper || previewLower) && (
-          <div className="championship-bracket championship-preview">
-            <div className="card-header">
-              <span className="card-title">
-                Bracket preview
-              </span>
-              <span className="tag tag-a">LIVE RANKINGS</span>
-            </div>
-            <div className="championship-preview-body">
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 16,
-                  minWidth: "fit-content",
-                }}
-              >
-                <div
-                  style={{ display: "flex", flexDirection: "column", gap: 20 }}
-                >
-                  {previewUpper && (
-                    renderBracketMatch({matchKey:"upper", label:"Semifinal 1 - Top 4", overrideSideA:previewUpper.teamA, overrideSideB:previewUpper.teamB, preview:true})
-                  )}
-                  {previewLower && (
-                    renderBracketMatch({matchKey:"lower", label:"Semifinal 2 - Ranks 5-8", overrideSideA:previewLower.teamA, overrideSideB:previewLower.teamB, preview:true})
-                  )}
-                </div>
-                <div
-                  style={{
-                    color: "var(--dimmer)",
-                    fontSize: 22,
-                    fontWeight: 800,
-                  }}
-                >
-                  →
-                </div>
-                <div>
-                  <div
-                    className="xs text-dd"
-                    style={{
-                      letterSpacing: 2,
-                      textTransform: "uppercase",
-                      marginBottom: 8,
-                    }}
-                  >
-                    Grand Final
-                  </div>
-                  <div
-                    style={{
-                      background: "var(--s2)",
-                      border: "1px dashed var(--b2)",
-                      borderRadius: 8,
-                      minWidth: 220,
-                      padding: "14px 16px",
-                    }}
-                  >
-                    <div style={{ padding: "8px 0", textAlign: "center" }}>
-                      <div
-                        className="xs text-dd"
-                        style={{ letterSpacing: 2, marginBottom: 4 }}
-                      >
-                        Semi 1 Winner
-                      </div>
-                      <div className="disp text-am" style={{ fontSize: 16 }}>
-                        TBD
-                      </div>
-                    </div>
-                    <div
-                      style={{
-                        borderTop: "1px solid var(--b1)",
-                        padding: "6px 0",
-                        textAlign: "center",
-                      }}
-                    >
-                      <div className="xs text-dd" style={{ letterSpacing: 3 }}>
-                        vs
-                      </div>
-                    </div>
-                    <div style={{ padding: "8px 0", textAlign: "center" }}>
-                      <div
-                        className="xs text-dd"
-                        style={{ letterSpacing: 2, marginBottom: 4 }}
-                      >
-                        Semi 2 Winner
-                      </div>
-                      <div className="disp text-am" style={{ fontSize: 16 }}>
-                        TBD
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
+        {(previewUpper || previewLower) && renderBracketBoard(
+          previewUpper && renderBracketMatch({matchKey:"upper",label:"Semifinal 1",overrideSideA:previewUpper.teamA,overrideSideB:previewUpper.teamB,preview:true}),
+          previewLower && renderBracketMatch({matchKey:"lower",label:"Semifinal 2",overrideSideA:previewLower.teamA,overrideSideB:previewLower.teamB,preview:true}),
+          null, true
         )}
         {renderPastChampions()}
       </div>
@@ -8657,50 +8616,11 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
       )}
 
       <div className="championship-bracket">
-        <div className="card-header">
-          <span className="card-title">Bracket — {fmtMonth(monthKey)}</span>
-          <div className="fac" style={{ gap: 6 }}>
-            {Object.values(finals?.liveScores || {}).some((v) => v?.active) && (
-              <span
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 4,
-                  fontSize: 10,
-                  fontWeight: 700,
-                  color: "var(--red)",
-                }}
-              >
-                <span
-                  className="live-pulse"
-                  style={{
-                    display: "inline-block",
-                    width: 6,
-                    height: 6,
-                    borderRadius: "50%",
-                    background: "var(--red)",
-                  }}
-                />
-                LIVE
-              </span>
-            )}
-            <span
-              className={`tag ${status === "complete" ? "tag-w" : "tag-a"}`}
-            >
-              {status?.toUpperCase()}
-            </span>
-          </div>
-        </div>
-        <div className="bracket-layout">
-          <div className="bracket-semis">
-            {renderBracketMatch({matchKey:"upper", label:"Semifinal 1"})}
-            {bracket?.lower && renderBracketMatch({matchKey:"lower", label:"Semifinal 2"})}
-          </div>
-          <div className="bracket-connector" aria-hidden="true" />
-          <div className="bracket-final">
-            {status === "final" || status === "complete" ? renderBracketMatch({matchKey:"final", label:"Grand Final"}) : <div className="pending-final"><h3><UiIcon name="trophy"/> Grand Final</h3><p>Winner of Semifinal 1</p><span className="xs text-dd">vs</span><p>{bracket?.lower ? "Winner of Semifinal 2" : "Awaiting opponent"}</p><small>Awaiting semifinal results</small></div>}
-          </div>
-        </div>
+        {renderBracketBoard(
+          renderBracketMatch({matchKey:"upper",label:"Semifinal 1"}),
+          bracket?.lower && renderBracketMatch({matchKey:"lower",label:"Semifinal 2"}),
+          (status === "final" || status === "complete") && renderBracketMatch({matchKey:"final",label:"Grand Final"})
+        )}
         {isAdmin && (
           <div className="bracket-reset">
             <button
@@ -9840,7 +9760,7 @@ function StatsView({ state, onSelectPlayer, seasonFilter, setSeasonFilter }) {
                     );
                   })()}
                   <div
-                    className="grid-2"
+                    className="grid-2 stats-encounters"
                     style={{ gap: 14, alignItems: "start" }}
                   >
                   <div>
@@ -10581,7 +10501,7 @@ function SeasonsArchiveView({
                       height: "100%",
                       width: `${seasonProgress.pct}%`,
                       borderRadius: 3,
-                      background: seasonProgress.reached ? "var(--gold)" : "var(--green)",
+                      background: seasonProgress.reached ? "linear-gradient(90deg,#a47825,#e8b84a)" : "linear-gradient(90deg,#87dfac 0%,#4dbd81 48%,#23714b 100%)",
                       transition: "width 1s linear",
                     }}
                   />
@@ -12230,7 +12150,7 @@ export default function App() {
 
   return (
     <>
-      <style>{CSS + leagueCSS + sectionCSS + seasonsCSS + championshipCSS + historyCSS + announcementCSS}</style>
+      <style>{CSS + leagueCSS + sectionCSS + seasonsCSS + championshipCSS + historyCSS + announcementCSS + motionCSS}</style>
       <div className="app">
         <LeagueHeader view={tab} task={adminTab} navigate={navTo} profile={adminProfile} connected={rtConnected} loading={loading}
           onLogin={() => setShowLogin(true)}

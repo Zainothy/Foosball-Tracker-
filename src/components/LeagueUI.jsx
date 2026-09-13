@@ -117,11 +117,12 @@ export function RecentResults({ games, players, onOpen }) {
 }
 
 export function EventCountdown({ days,hours,mins,secs,diff,complete }) {
-  return <div className={`event-countdown ${diff>0&&diff<86400000?"final-day":""} ${complete?"event-complete":""}`}>
+  return <div className={`event-countdown ${diff>0&&diff<86400000?"final-day":""} ${diff>0&&diff<=3600000?"final-hour":""} ${diff>0&&diff<=60000?"final-minute":""} ${complete?"event-complete":""}`}>
     <span className="countdown-keyline" aria-hidden="true" />
     {complete ? <span className="event-finished"><UiIcon name="trophy"/>Competition complete</span> : <>
-      <div className="cd-wrap" role="timer" aria-label="Time until scheduled finals" aria-live="off">{[["Days",days],["Hours",hours],["Mins",mins],["Secs",secs]].map(([label,value])=><div className="cd-unit" key={label}><div className="cd-num"><span key={value}>{value}</span></div><div className="cd-lbl">{label}</div></div>)}</div>
-      {diff<=0 && <p className="countdown-status">Scheduled time reached</p>}
+      <div className="cd-wrap" role="timer" aria-label="Time until scheduled finals" aria-live="off">{[["Days",days],["Hours",hours],["Mins",mins],["Secs",secs]].map(([label,value])=><div className="cd-unit" key={label}><div className="cd-num"><span key={label === "Secs" ? "seconds" : value}>{value}</span></div><div className="cd-lbl">{label}</div></div>)}</div>
+      <div className="countdown-tempo" aria-hidden="true"><span key={`${days}:${hours}:${mins}:${diff>0&&diff<=10000 ? "closing" : "normal"}`}/></div>
+      <p className="countdown-status">{diff<=0 ? "Scheduled time reached" : diff<=60000 ? "Final minute" : diff<=3600000 ? "Less than an hour to go" : diff<86400000 ? "Under 24 hours to go" : "The countdown is on"}</p>
     </>}
   </div>;
 }
