@@ -9,6 +9,16 @@
 .announcement-heading>p { color:var(--dim); margin:12px 0 0; font-size:15px; line-height:1.5; overflow-wrap:anywhere; }
 .announcement-content.is-hype .announcement-heading { border-bottom-color:var(--gold); }
 .announcement-content.is-featured .announcement-heading { border-bottom-color:var(--green); }
+.announcement-content:is(.is-hype,.is-featured) .announcement-heading { position:relative; border-bottom-width:3px; }
+.announcement-content:is(.is-hype,.is-featured) .announcement-category { font-weight:700; text-transform:uppercase; }
+.announcement-content:is(.is-hype,.is-featured) .announcement-category>.ui-icon { width:26px; height:26px; }
+.announcement-content:is(.is-hype,.is-featured) .announcement-heading h2 { font-size:34px; font-weight:800; color:var(--announcement-accent); animation:announcement-arrive .45s ease-out both; }
+.announcement-content:is(.is-hype,.is-featured) .announcement-heading::after { content:""; position:absolute; bottom:-3px; left:0; width:64px; height:3px; background:var(--text); transform-origin:left; animation:announcement-line .65s ease-out both; }
+.announcement-modal:has(.is-hype) { border-top:3px solid var(--gold); }
+.announcement-modal:has(.is-featured) { border-top:3px solid var(--green); }
+@keyframes announcement-arrive { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+@keyframes announcement-line { from { transform:scaleX(0); } to { transform:scaleX(1); } }
+@media(prefers-reduced-motion:reduce) { .announcement-content .announcement-heading h2,.announcement-content .announcement-heading::after { animation:none!important; } }
 .announcement-body.md { padding:22px 0; font-size:15px; line-height:1.7; color:var(--text); overflow-wrap:anywhere; }
 .announcement-body.md>:first-child { margin-top:0; }
 .announcement-body.md>:last-child { margin-bottom:0; }
@@ -25,6 +35,7 @@
 @media(max-width:600px) {
  .modal.announcement-modal { padding:48px 20px 20px!important; max-height:calc(100dvh - 48px)!important; }
  .announcement-heading h2 { font-size:24px; }
+ .announcement-content:is(.is-hype,.is-featured) .announcement-heading h2 { font-size:28px; }
  .announcement-footer { flex-wrap:wrap; }
  .announcement-expiry { flex:1 1 130px; }
 }
