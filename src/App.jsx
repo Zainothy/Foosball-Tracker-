@@ -4,6 +4,7 @@ import { UiIcon, LeagueHeader, RanksHeading, ManagementNav, LeagueSkeleton, Even
 import leagueCSS from "./styles/league.css?raw";
 import sectionCSS from "./styles/sections.css?raw";
 import seasonsCSS from "./styles/seasons.css?raw";
+import championshipCSS from "./styles/championship.css?raw";
 import { supabase } from "./supabaseClient";
 import {
   signInWithUsername,
@@ -7799,8 +7800,27 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
         ? "var(--orange)"
         : "var(--green)";
 
-  function Countdown({ compact }) {
+  function renderCountdown(compact = false) {
     return <EventCountdown days={cdDays} hours={cdHours} mins={cdMins} secs={cdSecs} diff={cdDiff} complete={compact}/>;
+  }
+
+  function renderChampionshipHeader(stage) {
+    const steps = [["preview","Preview"],["semis","Semifinals"],["final","Final"],["complete","Complete"]];
+    const current = Math.max(0,steps.findIndex(([key]) => key === stage));
+    return <>
+      <header className="championship-event-header">
+        <div className="championship-event-title"><h1><UiIcon name="trophy"/>Monthly Champions</h1><p>{fmtMonth(monthKey)}</p><span className="championship-status">{stage === "preview" ? "Bracket preview" : stage === "semis" ? "Semifinals in progress" : stage === "final" ? "Final in progress" : "Competition complete"}</span><span className="championship-schedule"><UiIcon name="calendar"/>{state.finalsDate ? new Date(state.finalsDate).toLocaleString("en-GB",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"}) : `Last day of ${fmtMonth(monthKey)}`}</span></div>
+        <div className="championship-event-clock">{renderCountdown(stage === "complete")}</div>
+        <div className="championship-date-control"><FinalsDateEditor finalsDate={state.finalsDate} setState={setState} showToast={showToast} isAdmin={isAdmin}/></div>
+      </header>
+      <ol className="championship-stages" aria-label="Competition stages">{steps.map(([key,label],index)=><li key={key} aria-current={current === index ? "step" : undefined} className={index < current ? "finished" : ""}><span>{index < current ? <UiIcon name="check" size={14}/> : index + 1}</span>{label}</li>)}</ol>
+    </>;
+  }
+
+  function renderPastChampions() {
+    const previous = Object.entries(state.finals || {}).filter(([key,value]) => key !== monthKey && value.status === "complete" && value.bracket?.champion?.length).sort(([a],[b]) => b.localeCompare(a));
+    if (!previous.length) return null;
+    return <details className="championship-archive"><summary><UiIcon name="medal"/>Previous champions <span>{previous.length} completed</span></summary>{previous.map(([key,value])=><div key={key}><span>{fmtMonth(key)}</span><strong>{value.bracket.champion.map(id => pName(id,state.players)).join(" & ")}</strong></div>)}</details>;
   }
 
   // Sequential slot picking order
@@ -8044,7 +8064,7 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
     });
   }
 
-  function BMatch({ matchKey, label, overrideSideA, overrideSideB, preview }) {
+  function renderBracketMatch({ matchKey, label, overrideSideA, overrideSideB, preview }) {
     const m = preview
       ? { sideA: overrideSideA, sideB: overrideSideB }
       : finals?.bracket?.[matchKey];
@@ -8079,21 +8099,22 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
     const pA = m.sideA.map((id) => {
       const pl = state.players.find((p) => p.id === id);
       return pl
-        ? { name: pl.name, pos: pl.position }
+        ? { name: pl.name, pos: pl.position, role:pl.preferredRole }
         : { name: "?", pos: null };
     });
     const pB = (m.sideB || []).map((id) => {
       const pl = state.players.find((p) => p.id === id);
       return pl
-        ? { name: pl.name, pos: pl.position }
+        ? { name: pl.name, pos: pl.position, role:pl.preferredRole }
         : { name: "?", pos: null };
     });
     const done = !!m.winner;
     const live = !preview && !done ? getLive(matchKey) : null;
     const isLive = live?.active;
     return (
-      <div>
+      <article className={`championship-fixture ${isLive ? "is-live" : ""}`} aria-label={label}>
         <div
+          className="championship-fixture-heading"
           style={{
             display: "flex",
             alignItems: "center",
@@ -8173,7 +8194,7 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
                   >
                     {pl.name}
                   </span>
-                  <PosBadge pos={pl.pos} />
+                  {pl.role ? <span className={`role-tag role-${pl.role.toLowerCase()}`} title="Preferred role">{pl.role}</span> : <PosBadge pos={pl.pos} />}
                 </div>
               ))}
             </div>
@@ -8184,12 +8205,14 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
                 >
                   <div role="button" tabIndex={0} onKeyDown={e => {if(e.key === "Enter" || e.key === " "){e.preventDefault();e.currentTarget.click();}}}
                     className="score-btn"
+                    aria-label={`Add a goal to Team A in ${label}`}
                     onClick={() => setLiveScore(matchKey, "A", 1)}
                   >
                     +
                   </div>
                   <div role="button" tabIndex={0} onKeyDown={e => {if(e.key === "Enter" || e.key === " "){e.preventDefault();e.currentTarget.click();}}}
                     className="score-btn"
+                    aria-label={`Remove a goal from Team A in ${label}`}
                     style={{ fontSize: 14 }}
                     onClick={() => setLiveScore(matchKey, "A", -1)}
                   >
@@ -8269,7 +8292,7 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
                     >
                       {pl.name}
                     </span>
-                    <PosBadge pos={pl.pos} />
+                    {pl.role ? <span className={`role-tag role-${pl.role.toLowerCase()}`} title="Preferred role">{pl.role}</span> : <PosBadge pos={pl.pos} />}
                   </div>
                 ))}
               </div>
@@ -8285,12 +8308,14 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
                 >
                   <div role="button" tabIndex={0} onKeyDown={e => {if(e.key === "Enter" || e.key === " "){e.preventDefault();e.currentTarget.click();}}}
                     className="score-btn"
+                    aria-label={`Add a goal to Team B in ${label}`}
                     onClick={() => setLiveScore(matchKey, "B", 1)}
                   >
                     +
                   </div>
                   <div role="button" tabIndex={0} onKeyDown={e => {if(e.key === "Enter" || e.key === " "){e.preventDefault();e.currentTarget.click();}}}
                     className="score-btn"
+                    aria-label={`Remove a goal from Team B in ${label}`}
                     style={{ fontSize: 14 }}
                     onClick={() => setLiveScore(matchKey, "B", -1)}
                   >
@@ -8387,7 +8412,7 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
             )}
           </div>
         )}
-      </div>
+      </article>
     );
   }
 
@@ -8468,56 +8493,12 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
     const allDone = upperDone && lowerDone;
 
     return (
-      <div className="stack page-fade">
-        <div className="card" style={{ padding: 32, textAlign: "center" }}>
-          <div
-            className="disp text-am"
-            style={{ fontSize: 36, letterSpacing: 2, marginBottom: 4 }}
-          >
-            Monthly Finals
-          </div>
-          <div className="text-d sm" style={{ marginBottom: 12 }}>
-            {state.finalsDate ? (
-              <>
-                Scheduled:{" "}
-                <span className="text-am">
-                  {new Date(state.finalsDate).toLocaleString("en-GB", {
-                    day: "numeric",
-                    month: "short",
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })}
-                </span>
-              </>
-            ) : (
-              `Finals — last day of ${fmtMonth(monthKey)}`
-            )}
-          </div>
-          <Countdown />
-          {cdDiff > 0 && cdDiff < 864e5 && (
-            <div
-              className="tag tag-l"
-              style={{ marginBottom: 16, fontSize: 11, letterSpacing: 2 }}
-            >
-              <UiIcon name="zap"/> Finals are today!
-            </div>
-          )}
-          {cdDiff >= 864e5 && cdDiff < 7 * 864e5 && (
-            <div
-              className="tag tag-a"
-              style={{ marginBottom: 16, fontSize: 11, letterSpacing: 2 }}
-            >
-              <UiIcon name="zap"/> Finals this week
-            </div>
-          )}
-          <FinalsDateEditor
-            finalsDate={state.finalsDate}
-            setState={setState}
-            showToast={showToast}
-            isAdmin={isAdmin}
-          />
+      <div className="stack page-fade championship-workspace">
+        {renderChampionshipHeader("preview")}
+        <section className="championship-setup" aria-label="Bracket setup">
           {isAdmin && (
             <div
+              className="championship-setup-actions"
               style={{
                 marginTop: 12,
                 display: "flex",
@@ -8531,23 +8512,14 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
                     className="xs text-dd"
                     style={{ marginBottom: 6, lineHeight: 1.6 }}
                   >
-                    Mixed seeding (#1+#4 vs #2+#3) — both semis are equally
-                    balanced by average MMR.
-                    <br />
-                    <span style={{ color: "var(--dimmer)", fontSize: 10 }}>
-                      Role compatibility is used as a tie-break for
-                      complementary pairings.
-                    </span>
+                    {placedRanked.length} placed players available for balanced seeding.
                   </div>
                   <button className="btn btn-p" onClick={initFinals}>
-                    <UiIcon name="zap"/> Generate Bracket
+                    <UiIcon name="plus"/> Generate Bracket
                   </button>
                 </div>
               )}
               <div>
-                <div className="xs text-dd" style={{ marginBottom: 6 }}>
-                  Custom: hand-pick players for each semi-final.
-                </div>
                 <button
                   className="btn btn-g"
                   onClick={() => {
@@ -8556,12 +8528,12 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
                     setBracketSearch("");
                   }}
                 >
-                  {manualMode ? "Cancel" : "Custom Bracket"}
+                  <UiIcon name="edit"/>{manualMode ? "Cancel custom bracket" : "Custom Bracket"}
                 </button>
               </div>
-              {!placedRanked.length && !manualMode && (
-                <div className="msg msg-e" style={{ display: "inline-block" }}>
-                  No placed players yet
+              {placedRanked.length < 4 && !manualMode && (
+                <div className="championship-empty" role="status">
+                  {placedRanked.length}/4 placed players. Automatic seeding becomes available when four players finish placements.
                 </div>
               )}
             </div>
@@ -8576,6 +8548,7 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
           ── */}
           {manualMode && isAdmin && (
             <div
+              className="championship-manual"
               style={{
                 marginTop: 12,
                 padding: 14,
@@ -8907,18 +8880,19 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
               </div>
             </div>
           )}
-        </div>
+        </section>
 
         {/* Preview */}
+        {!previewUpper && !previewLower && !isAdmin && <p className="championship-empty">The bracket will appear when enough players have completed placements.</p>}
         {(previewUpper || previewLower) && (
-          <div className="card">
+          <div className="championship-bracket championship-preview">
             <div className="card-header">
               <span className="card-title">
-                Preview — If Finals Happened Today
+                Bracket preview
               </span>
               <span className="tag tag-a">LIVE RANKINGS</span>
             </div>
-            <div style={{ padding: 20, overflowX: "auto" }}>
+            <div className="championship-preview-body">
               <div
                 style={{
                   display: "flex",
@@ -8931,22 +8905,10 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
                   style={{ display: "flex", flexDirection: "column", gap: 20 }}
                 >
                   {previewUpper && (
-                    <BMatch
-                      matchKey="upper"
-                      label="Semi 1 — Top 4"
-                      overrideSideA={previewUpper.teamA}
-                      overrideSideB={previewUpper.teamB}
-                      preview
-                    />
+                    renderBracketMatch({matchKey:"upper", label:"Semifinal 1 - Top 4", overrideSideA:previewUpper.teamA, overrideSideB:previewUpper.teamB, preview:true})
                   )}
                   {previewLower && (
-                    <BMatch
-                      matchKey="lower"
-                      label="Semi 2 — Ranks 5–8"
-                      overrideSideA={previewLower.teamA}
-                      overrideSideB={previewLower.teamB}
-                      preview
-                    />
+                    renderBracketMatch({matchKey:"lower", label:"Semifinal 2 - Ranks 5-8", overrideSideA:previewLower.teamA, overrideSideB:previewLower.teamB, preview:true})
                   )}
                 </div>
                 <div
@@ -9017,6 +8979,7 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
             </div>
           </div>
         )}
+        {renderPastChampions()}
       </div>
     );
   }
@@ -9032,39 +8995,12 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
   );
 
   return (
-    <div className="stack page-fade">
-      <div
-        className="card championship-countdown"
-        style={{ textAlign: "center", padding: "16px 20px" }}
-      >
-        <h1 className="finals-heading"><UiIcon name="trophy"/>Monthly Champions</h1>
-        <div
-          className="xs text-dd"
-          style={{
-            marginBottom: 2,
-            letterSpacing: 2,
-            textTransform: "uppercase",
-          }}
-        >
-          {fmtMonth(monthKey)}
-        </div>
-        <Countdown compact={status === "complete"} />
-        <p className="finals-date">{state.finalsDate ? new Date(state.finalsDate).toLocaleString("en-GB", {day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"}) : `Last day of ${fmtMonth(monthKey)}`}</p>
-        {status === "complete" && (
-          <div className="tag tag-w" style={{ marginTop: 4 }}>
-            Complete
-          </div>
-        )}
-        <FinalsDateEditor
-          finalsDate={state.finalsDate}
-          setState={setState}
-          showToast={showToast}
-          isAdmin={isAdmin}
-        />
-      </div>
+    <div className="stack page-fade championship-workspace">
+      {renderChampionshipHeader(status)}
 
       {status === "complete" && champ && (
         <div
+          className="championship-winners"
           style={{
             textAlign: "center",
             padding: 28,
@@ -9107,7 +9043,7 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
         </div>
       )}
 
-      <div className="card">
+      <div className="championship-bracket">
         <div className="card-header">
           <span className="card-title">Bracket — {fmtMonth(monthKey)}</span>
           <div className="fac" style={{ gap: 6 }}>
@@ -9144,12 +9080,12 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
         </div>
         <div className="bracket-layout">
           <div className="bracket-semis">
-            <BMatch matchKey="upper" label="Semifinal 1" />
-            {bracket?.lower && <BMatch matchKey="lower" label="Semifinal 2" />}
+            {renderBracketMatch({matchKey:"upper", label:"Semifinal 1"})}
+            {bracket?.lower && renderBracketMatch({matchKey:"lower", label:"Semifinal 2"})}
           </div>
           <div className="bracket-connector" aria-hidden="true" />
           <div className="bracket-final">
-            {status === "final" || status === "complete" ? <BMatch matchKey="final" label="Grand Final" /> : <div className="pending-final"><h3><UiIcon name="trophy"/> Grand Final</h3><p>Winner of Semifinal 1</p><span className="xs text-dd">vs</span><p>{bracket?.lower ? "Winner of Semifinal 2" : "Awaiting opponent"}</p><small>Awaiting semifinal results</small></div>}
+            {status === "final" || status === "complete" ? renderBracketMatch({matchKey:"final", label:"Grand Final"}) : <div className="pending-final"><h3><UiIcon name="trophy"/> Grand Final</h3><p>Winner of Semifinal 1</p><span className="xs text-dd">vs</span><p>{bracket?.lower ? "Winner of Semifinal 2" : "Awaiting opponent"}</p><small>Awaiting semifinal results</small></div>}
           </div>
         </div>
         {isAdmin && (
@@ -9166,8 +9102,9 @@ function FinalsView({ state, setState, isAdmin, showToast }) {
           setState(s => { const f = { ...s.finals }; delete f[monthKey]; return { ...s, finals:f }; });
           setConfirmReset(false);
           showToast("Bracket returned to preview");
-        }}/>}
+        }}/>} 
       </div>
+      {renderPastChampions()}
     </div>
   );
 }
@@ -12767,7 +12704,7 @@ export default function App() {
 
   return (
     <>
-      <style>{CSS + leagueCSS + sectionCSS + seasonsCSS}</style>
+      <style>{CSS + leagueCSS + sectionCSS + seasonsCSS + championshipCSS}</style>
       <div className="app">
         <LeagueHeader view={tab} task={adminTab} navigate={navTo} profile={adminProfile} connected={rtConnected} loading={loading}
           onLogin={() => setShowLogin(true)}
