@@ -2397,12 +2397,31 @@ function ConfirmDialog({ title, msg, onConfirm, onCancel, danger = false }) {
 
 // ── MARKDOWN RENDERER ─────────────────────────────────────────────────────
 
+function escapeMdHtml(s) {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+// Only allow http(s)/mailto/relative/hash links -- blocks javascript: and
+// other script-bearing URI schemes in [text](url) links.
+function safeMdUrl(u) {
+  const url = u.trim();
+  return /^(https?:|mailto:|#|\/)/i.test(url) ? url : "#";
+}
+
 function renderMd(md) {
   if (!md) return "";
   const lines = md.split("\n");
   const out = [];
   let i = 0;
-  function inlineFormat(text) {
+  function inlineFormat(rawText) {
+    // Escape HTML first so any raw tags/attributes in the source render as
+    // literal text; every tag below this point is one we generate, not one
+    // the author's input can inject.
+    const text = escapeMdHtml(rawText);
     return text
       .replace(/\*\*\*(.+?)\*\*\*/g, "<strong><em>$1</em></strong>")
       .replace(/___(.+?)___/g, "<strong><em>$1</em></strong>")
@@ -2418,7 +2437,8 @@ function renderMd(md) {
       .replace(/`([^`]+)`/g, "<code>$1</code>")
       .replace(
         /\[([^\]]+)\]\(([^)]+)\)/g,
-        "<a href='$2' target='_blank' rel='noopener' style='color:var(--amber);text-decoration:underline'>$1</a>",
+        (_m, label, url) =>
+          `<a href='${safeMdUrl(url)}' target='_blank' rel='noopener' style='color:var(--amber);text-decoration:underline'>${label}</a>`,
       )
       .replace(
         /\[\[([^\]]+)\]\]/g,
