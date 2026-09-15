@@ -2055,6 +2055,30 @@ function Toast({ t }) {
   return <div className={`toast ${t.type || "info"}`}>{t.msg}</div>;
 }
 
+// Singleton, refcounted scroll lock. Any number of Modals can be mounted at
+// once; body.style.overflow is captured once (on the first lock) and
+// restored once (on the last release), regardless of mount/unmount order.
+// Token-keyed Set makes acquire/release idempotent (safe under StrictMode's
+// double-invoked effects and any accidental double-close).
+const scrollLockTokens = new Set();
+let scrollLockOriginalOverflow = null;
+function acquireScrollLock(token) {
+  if (scrollLockTokens.has(token)) return;
+  scrollLockTokens.add(token);
+  if (scrollLockTokens.size === 1) {
+    scrollLockOriginalOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+  }
+}
+function releaseScrollLock(token) {
+  if (!scrollLockTokens.has(token)) return;
+  scrollLockTokens.delete(token);
+  if (scrollLockTokens.size === 0) {
+    document.body.style.overflow = scrollLockOriginalOverflow ?? "";
+    scrollLockOriginalOverflow = null;
+  }
+}
+
 function Modal({
   onClose,
   children,
@@ -2064,14 +2088,14 @@ function Modal({
 }) {
   const dialogRef = useRef(null);
   useEffect(() => {
+    const token = {};
     const previous = document.activeElement;
     const dialog = dialogRef.current;
-    const overflow = document.body.style.overflow;
     dialog.showModal();
-    document.body.style.overflow = "hidden";
+    acquireScrollLock(token);
     return () => {
       dialog.close();
-      document.body.style.overflow = overflow;
+      releaseScrollLock(token);
       if (previous?.isConnected) previous.focus();
     };
   }, []);
