@@ -5,3 +5,5 @@ dist
 sync_data.env
 navigation-summary.md
 supabase/.temp/
+
+.planning/
