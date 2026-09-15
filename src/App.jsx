@@ -644,6 +644,14 @@ const CSS = `
   .lb-card-pts{font-family:var(--disp);font-size:18px;font-weight:700;color:var(--amber);min-width:40px;text-align:right}
   .lb-card-meta{font-size:11px;color:var(--dimmer);margin-top:1px}
 
+  /* ── ACCOUNT CARDS (mobile) ───────────────────────────────── */
+  .acct-cards{display:none;flex-direction:column;gap:8px}
+  .acct-card{display:flex;flex-direction:column;gap:8px;padding:12px;border:1px solid var(--b1);border-radius:8px;background:var(--s2)}
+  .acct-card-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+  .acct-card-name{font-weight:600;font-size:14px}
+  .acct-card-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .acct-card-meta{font-size:11px;color:var(--dimmer)}
+
   /* ── TROPHY TIERS ──────────────────────────────────────────── */
   .trophy-runner{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;flex-shrink:0}
   .trophy-third{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;flex-shrink:0}
@@ -672,8 +680,9 @@ const CSS = `
   .role-slot-flex{border:1px solid rgba(176,133,232,.38);background:rgba(176,133,232,.05)}
 
   @media(max-width:980px){
-    .tbl-wrap{display:none}
+    .lb-tbl-wrap{display:none}
     .lb-cards{display:flex}
+    .acct-cards{display:flex}
     .topbar{padding:0 14px;gap:8px;height:52px}
     .brand{font-size:14px;letter-spacing:1px}
     .brand span{display:none}
@@ -5256,7 +5265,7 @@ function LeaderboardView({
 
           {/* Desktop table */}
           <div className="rankings-entries" id="rankings-entries">
-            <div className="tbl-wrap">
+            <div className="tbl-wrap lb-tbl-wrap">
               <table className="tbl">
                 <thead>
                   <tr>
@@ -12711,6 +12720,10 @@ function SyncTestPanel({ state, setState, showToast }) {
 
 // ── ADMIN LOGIN ────────────────────────────────────────────────────────────
 
+function isPermissionError(msg) {
+  return /permission|policy|rls|denied/i.test(msg || "");
+}
+
 function ManageLoginsPanel({ showToast, currentUserId }) {
   const [username, setUsername] = useState("");
   const [role, setRole] = useState("referee");
@@ -12856,76 +12869,149 @@ function ManageLoginsPanel({ showToast, currentUserId }) {
               the replacement a different username).
             </div>
 
-            {profilesErr && <div className="msg msg-e">{profilesErr}</div>}
-            {profiles === null && <div className="xs text-dd">Loading…</div>}
+            {profiles === null && !profilesErr && (
+              <div className="xs text-dd">Loading…</div>
+            )}
+            {profilesErr && (
+              <div
+                className="msg msg-e"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 10,
+                }}
+              >
+                <span>
+                  {isPermissionError(profilesErr)
+                    ? "Access denied — sysadmin role required."
+                    : `Failed to load accounts: ${profilesErr}`}
+                </span>
+                <button className="btn btn-sm" onClick={loadProfiles}>
+                  Retry
+                </button>
+              </div>
+            )}
             {profiles && profiles.length === 0 && !profilesErr && (
               <div className="xs text-dd">No accounts yet.</div>
             )}
 
             {profiles && profiles.length > 0 && (
-              <div className="tbl-wrap">
-                <table className="tbl">
-                  <thead>
-                    <tr>
-                      <th>Username</th>
-                      <th>Role</th>
-                      <th>Status</th>
-                      <th>Created</th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {profiles.map((p) => (
-                      <tr
-                        key={p.user_id}
-                        style={{ opacity: p.active ? 1 : 0.5 }}
-                      >
-                        <td>
+              <>
+                <div className="tbl-wrap">
+                  <table className="tbl">
+                    <thead>
+                      <tr>
+                        <th>Username</th>
+                        <th>Role</th>
+                        <th>Status</th>
+                        <th>Created</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {profiles.map((p) => (
+                        <tr
+                          key={p.user_id}
+                          style={{ opacity: p.active ? 1 : 0.5 }}
+                        >
+                          <td>
+                            {p.username}
+                            {p.user_id === currentUserId ? " (you)" : ""}
+                          </td>
+                          <td>
+                            <select
+                              className="inp inp-sm"
+                              value={p.role}
+                              disabled={savingId === p.user_id}
+                              onChange={(e) =>
+                                handleRoleChange(p.user_id, e.target.value)
+                              }
+                            >
+                              <option value="referee">Referee</option>
+                              <option value="gameadmin">Gameadmin</option>
+                              <option value="sysadmin">Sysadmin</option>
+                            </select>
+                          </td>
+                          <td>
+                            <span
+                              className={`tag ${p.active ? "tag-w" : "tag-a"}`}
+                            >
+                              {p.active ? "Active" : "Deactivated"}
+                            </span>
+                          </td>
+                          <td>
+                            {p.created_at
+                              ? new Date(p.created_at).toLocaleDateString()
+                              : "—"}
+                          </td>
+                          <td>
+                            <button
+                              className={`btn btn-sm ${p.active ? "btn-d" : "btn-g"}`}
+                              disabled={savingId === p.user_id}
+                              onClick={() =>
+                                handleToggleActive(p.user_id, !p.active)
+                              }
+                            >
+                              {p.active ? "Deactivate" : "Reactivate"}
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="acct-cards">
+                  {profiles.map((p) => (
+                    <div
+                      key={p.user_id}
+                      className="acct-card"
+                      style={{ opacity: p.active ? 1 : 0.5 }}
+                    >
+                      <div className="acct-card-top">
+                        <span className="acct-card-name">
                           {p.username}
                           {p.user_id === currentUserId ? " (you)" : ""}
-                        </td>
-                        <td>
-                          <select
-                            className="inp inp-sm"
-                            value={p.role}
-                            disabled={savingId === p.user_id}
-                            onChange={(e) =>
-                              handleRoleChange(p.user_id, e.target.value)
-                            }
-                          >
-                            <option value="referee">Referee</option>
-                            <option value="gameadmin">Gameadmin</option>
-                            <option value="sysadmin">Sysadmin</option>
-                          </select>
-                        </td>
-                        <td>
-                          <span
-                            className={`tag ${p.active ? "tag-w" : "tag-a"}`}
-                          >
-                            {p.active ? "Active" : "Deactivated"}
-                          </span>
-                        </td>
-                        <td>
-                          {p.created_at
-                            ? new Date(p.created_at).toLocaleDateString()
-                            : "—"}
-                        </td>
-                        <td>
-                          <button
-                            className={`btn btn-sm ${p.active ? "btn-d" : "btn-g"}`}
-                            disabled={savingId === p.user_id}
-                            onClick={() =>
-                              handleToggleActive(p.user_id, !p.active)
-                            }
-                          >
-                            {p.active ? "Deactivate" : "Reactivate"}
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                        </span>
+                        <span
+                          className={`tag ${p.active ? "tag-w" : "tag-a"}`}
+                        >
+                          {p.active ? "Active" : "Deactivated"}
+                        </span>
+                      </div>
+                      <div className="acct-card-row">
+                        <select
+                          className="inp inp-sm"
+                          value={p.role}
+                          disabled={savingId === p.user_id}
+                          onChange={(e) =>
+                            handleRoleChange(p.user_id, e.target.value)
+                          }
+                        >
+                          <option value="referee">Referee</option>
+                          <option value="gameadmin">Gameadmin</option>
+                          <option value="sysadmin">Sysadmin</option>
+                        </select>
+                        <button
+                          className={`btn btn-sm ${p.active ? "btn-d" : "btn-g"}`}
+                          disabled={savingId === p.user_id}
+                          onClick={() =>
+                            handleToggleActive(p.user_id, !p.active)
+                          }
+                        >
+                          {p.active ? "Deactivate" : "Reactivate"}
+                        </button>
+                      </div>
+                      <div className="acct-card-meta">
+                        {p.created_at
+                          ? new Date(p.created_at).toLocaleDateString()
+                          : "—"}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
             )}
           </div>
         </div>
