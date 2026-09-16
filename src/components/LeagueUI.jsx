@@ -75,7 +75,6 @@ export function LeagueHeader({ view, task, navigate, profile, connected, onLogin
         {open && <nav id="league-menu" ref={menuRef} className="league-menu" aria-label="Utilities">
           <button onClick={()=>go("rules")}><UiIcon name="rules"/>Rules</button>
           {staff && <button onClick={()=>go("admin","onboard")}><UiIcon name="settings"/>Manage</button>}
-          {profile && <button onClick={()=>{setOpen(false);staff ? go("admin","logGames") : onLogGame?.();}}><UiIcon name="plus"/>Log game</button>}
           {profile && <span className="menu-identity">{profile.username || profile.call_sign}<small>{profile.role}</small></span>}
           {onAccount && <button onClick={()=>{setOpen(false);onAccount();}}><UiIcon name="users"/>{profile ? "My account" : "Player account"}</button>}
           <button onClick={()=>{setOpen(false);profile?onLogout():onLogin();}}><UiIcon name={profile?"logout":"login"}/>{profile?"Sign out":"Admin sign in"}</button>
