@@ -79,7 +79,13 @@ async function fetchActiveProfile() {
   if (error) throw new Error(error.message || "Unable to read profile");
   if (!data) {
     const { data: provisioned, error: provisionError } = await supabase.rpc("ensure_player_profile");
-    if (provisionError) throw new Error(provisionError.message || "Player profile is not provisioned");
+    if (provisionError) {
+      // Deactivated is an expected outcome here, not a lookup failure --
+      // surface it the same way the direct-select path does below.
+      if (/deactivated/i.test(provisionError.message || "")) return null;
+      throw new Error(provisionError.message || "Player profile is not provisioned");
+    }
+    if (provisioned && !provisioned.active) return null;
     return provisioned || null;
   }
   if (!data.active) return null;
@@ -143,14 +149,36 @@ export async function reviewProfileRequest(id, status, playerId = null) {
 // Authorization catalogue reads are kept in one place so the admin workspace
 // can explain the current policy without duplicating Supabase query details.
 export async function listAuthorizationModel() {
-  const [roles, capabilities, grants] = await Promise.all([
+  const [roles, capabilities, grants, members] = await Promise.all([
     supabase.from("authz_roles").select("id, name, rank, is_preset, active").eq("active", true).order("rank", { ascending: false }),
     supabase.from("authz_capabilities").select("id, description, category").order("category").order("id"),
     supabase.from("authz_role_capabilities").select("role_id, capability_id"),
+    supabase.from("authz_user_roles").select("user_id, role_id"),
   ]);
-  const error = roles.error || capabilities.error || grants.error;
+  const error = roles.error || capabilities.error || grants.error || members.error;
   if (error) return { error: error.message };
-  return { roles: roles.data || [], capabilities: capabilities.data || [], grants: grants.data || [] };
+  return {
+    roles: roles.data || [],
+    capabilities: capabilities.data || [],
+    grants: grants.data || [],
+    members: members.data || [],
+  };
+}
+
+// Hierarchy/self-target checks happen server-side in the RPC -- these are
+// thin wrappers, not the enforcement.
+export async function assignAuthzRole(userId, roleId) {
+  const { error } = await supabase.rpc("admin_assign_authz_role", { p_user_id: userId, p_role_id: roleId });
+  return error ? { error: error.message } : { ok: true };
+}
+export async function revokeAuthzRole(userId, roleId) {
+  const { error } = await supabase.rpc("admin_revoke_authz_role", { p_user_id: userId, p_role_id: roleId });
+  return error ? { error: error.message } : { ok: true };
+}
+// effect: "ALLOW" | "DENY" | null (null clears the exception)
+export async function setAuthzException(userId, capabilityId, effect) {
+  const { error } = await supabase.rpc("admin_set_authz_exception", { p_user_id: userId, p_capability_id: capabilityId, p_effect: effect });
+  return error ? { error: error.message } : { ok: true };
 }
 
 // These calls intentionally use audited SECURITY DEFINER commands. Direct

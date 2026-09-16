@@ -32,6 +32,8 @@ import {
   listProfiles,
   updateProfile,
   listAuthorizationModel,
+  assignAuthzRole,
+  revokeAuthzRole,
   saveAuthorizationRole,
   listProfileRequests,
   reviewProfileRequest,
@@ -12164,15 +12166,37 @@ function ManageRolesPanel({ showToast }) {
   const [draft, setDraft] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [profiles, setProfiles] = useState([]);
+  const [addUserId, setAddUserId] = useState("");
+  const [memberBusy, setMemberBusy] = useState(null);
 
   async function load() {
     setError("");
-    const result = await listAuthorizationModel();
+    const [result, profileResult] = await Promise.all([listAuthorizationModel(), listProfiles()]);
     if (result.error) { setError(result.error); return; }
     setModel(result);
     setSelectedId((current) => current || result.roles[0]?.id || null);
+    if (!profileResult.error) setProfiles(profileResult.profiles || []);
   }
   useEffect(() => { load(); }, []);
+
+  async function addMember() {
+    if (!addUserId || !selectedId) return;
+    setMemberBusy(addUserId);
+    const result = await assignAuthzRole(addUserId, selectedId);
+    setMemberBusy(null);
+    if (result.error) { showToast?.(result.error, "err"); return; }
+    setAddUserId("");
+    await load();
+  }
+  async function removeMember(userId) {
+    if (!selectedId) return;
+    setMemberBusy(userId);
+    const result = await revokeAuthzRole(userId, selectedId);
+    setMemberBusy(null);
+    if (result.error) { showToast?.(result.error, "err"); return; }
+    await load();
+  }
   useEffect(() => {
     if (!model || !selectedId) return;
     const role = model.roles.find((item) => item.id === selectedId);
@@ -12207,6 +12231,33 @@ function ManageRolesPanel({ showToast }) {
         <div className="role-editor-head"><div><h3>{draft.name}</h3><p className="xs text-dd">Higher ranks can manage lower ranks. Keep sensitive permissions limited.</p></div><button className="btn btn-p btn-sm" onClick={save} disabled={busy}>{busy ? "Saving…" : "Save changes"}</button></div>
         <div className="role-fields"><label className="field"><span className="lbl">Role name</span><input className="inp" value={draft.name} disabled={draft.is_preset} onChange={(e) => setDraft({ ...draft, name: e.target.value })}/></label><label className="field"><span className="lbl">Hierarchy rank</span><input className="inp" type="number" min="0" max="10000" value={draft.rank} onChange={(e) => setDraft({ ...draft, rank: e.target.value })}/></label></div>
         <div className="capability-groups">{Object.entries(grouped).map(([category, capabilities]) => <fieldset key={category} className="capability-group"><legend>{category}</legend>{capabilities.map((capability) => <label key={capability.id} className="capability-toggle"><input type="checkbox" checked={draft.capabilityIds.includes(capability.id)} onChange={(e) => setDraft({ ...draft, capabilityIds: e.target.checked ? [...draft.capabilityIds, capability.id] : draft.capabilityIds.filter((id) => id !== capability.id) })}/><span><strong>{AUTHZ_CAPABILITY_LABELS[capability.id] || capability.id}</strong><small>{capability.description}</small></span></label>)}</fieldset>)}</div>
+
+        <div className="role-members mt16">
+          <div className="card-header"><span className="card-title">Members</span><p className="xs text-dd">Accounts holding {draft.name}. Assigning requires outranking both this role and the account.</p></div>
+          <div className="fac" style={{ gap: 8, marginTop: 8 }}>
+            <select className="inp" value={addUserId} onChange={(e) => setAddUserId(e.target.value)}>
+              <option value="">Add account…</option>
+              {profiles.filter((p) => !(model.members || []).some((m) => m.role_id === selectedId && m.user_id === p.user_id)).map((p) => (
+                <option key={p.user_id} value={p.user_id}>{p.username}</option>
+              ))}
+            </select>
+            <button className="btn btn-sm btn-p" disabled={!addUserId || memberBusy === addUserId} onClick={addMember}>Add</button>
+          </div>
+          <div className="stack mt8">
+            {(model.members || []).filter((m) => m.role_id === selectedId).map((m) => {
+              const p = profiles.find((item) => item.user_id === m.user_id);
+              return (
+                <div key={m.user_id} className="fac" style={{ justifyContent: "space-between" }}>
+                  <span>{p?.username || m.user_id}</span>
+                  <button className="btn btn-sm btn-d" disabled={memberBusy === m.user_id} onClick={() => removeMember(m.user_id)}>Remove</button>
+                </div>
+              );
+            })}
+            {(model.members || []).filter((m) => m.role_id === selectedId).length === 0 && (
+              <div className="xs text-dd">No accounts hold this role yet.</div>
+            )}
+          </div>
+        </div>
       </div>}
     </div>}
   </div>;
