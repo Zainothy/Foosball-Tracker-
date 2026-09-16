@@ -11609,7 +11609,7 @@ function AdvancedPanel({
   return (
     <div className="card advanced-workspace" style={{ marginBottom: 12 }}>
       <div className="card-header">
-        <span className="card-title">Advanced Controls</span>
+        <span className="card-title">{section === "access" ? "Audit log" : "Advanced Controls"}</span>
       </div>
       <div style={{ padding: 16 }}>
         <div
@@ -11966,7 +11966,7 @@ function AdvancedPanel({
 
         <div
           className="card"
-          hidden={section !== "diagnostics"}
+          hidden={!(["diagnostics", "access"].includes(section))}
           style={{ marginTop: 12 }}
         >
           <div className="card-header">
@@ -12762,7 +12762,7 @@ export default function App() {
       isRemoteUpdate.current = false;
       return;
     }
-    if (!adminProfile) return;
+    if (!isAdmin) return;
     setSyncStatus("saving");
     const pendingSnapshot = stateRef.current;
     saveState(
