@@ -138,3 +138,34 @@
   .factor-record>div>div>span:nth-child(2):not(:last-child){grid-column:1/-1;grid-row:2}.match-scoreboard button.role-tag{min-height:44px;min-width:44px}.match-scoreboard .fac{flex-wrap:wrap}
   .player-profile>.btn:last-child{margin-bottom:env(safe-area-inset-bottom)}.match-detail{padding-bottom:calc(24px + env(safe-area-inset-bottom))!important}
 }
+
+/* ── AUDIT LOG PANEL ──────────────────────────────────────────────────── */
+.mt8{margin-top:8px}.mt16{margin-top:16px}
+.audit-panel{margin-top:0}
+.audit-filters{display:flex;flex-wrap:wrap;gap:8px;padding:0 20px 16px}
+.audit-filters .inp{min-width:0;flex:1 1 140px}
+.audit-rows{display:grid;gap:8px;padding:0 20px 20px}
+.audit-empty{padding:0 0 4px}
+.audit-entry{border:1px solid var(--b1);border-radius:9px;background:var(--surface-frame);overflow:hidden}
+.audit-entry-summary{display:grid;grid-template-columns:minmax(0,.9fr) minmax(0,1.1fr) minmax(0,1.1fr) auto;gap:10px;align-items:center;width:100%;padding:11px 14px;text-align:left;color:var(--text);background:transparent;border:0;cursor:pointer;font:inherit}
+.audit-entry-summary:hover{background:rgba(255,255,255,.035)}
+.audit-actor{font-weight:600;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.audit-action-badge{display:inline-flex;align-self:start;font-size:11px;padding:3px 8px;border-radius:6px;background:var(--amber-g);color:var(--amber);white-space:normal}
+.audit-target{font-size:12px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.audit-time{white-space:nowrap}
+.audit-entry-detail{padding:0 14px 14px;border-top:1px solid var(--b1)}
+.audit-details-json{font-size:11px;line-height:1.5;color:var(--dim);white-space:pre-wrap;word-break:break-word;margin:10px 0 0;max-height:260px;overflow:auto}
+@media(max-width:800px){
+  .audit-filters{padding:0 14px 14px}
+  .audit-rows{padding:0 14px 16px}
+  .audit-entry-summary{grid-template-columns:1fr;gap:4px;padding:12px}
+  .audit-action-badge{justify-self:start}
+}
+
+/* ── PROFILE CUSTOMIZATION ────────────────────────────────────────────── */
+.profile-preview{display:flex;align-items:center;gap:12px;padding:12px;border:1px solid var(--b1);border-radius:10px;background:var(--surface-frame)}
+.profile-preview-avatar{display:flex;align-items:center;justify-content:center;width:40px;height:40px;flex:none;border-radius:50%;font:700 16px var(--disp);color:#092313}
+.profile-preview-name{font-weight:600;font-size:14px}
+.accent-swatches{display:flex;gap:10px;margin-top:8px}
+.accent-swatch{width:30px;height:30px;border-radius:50%;border:2px solid transparent;cursor:pointer;padding:0}
+.accent-swatch[aria-pressed=true]{border-color:var(--text);box-shadow:0 0 0 2px var(--s1)}
