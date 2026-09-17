@@ -43,6 +43,27 @@ async function dinopassWord(): Promise<string> {
   if (!res.ok) throw new Error(`DinoPass request failed: ${res.status}`);
   return (await res.text()).trim();
 }
+void dinopassWord; // kept only for reference; no longer called -- see localPassphrase below
+
+// DinoPass is an external, unauthenticated third-party API with no
+// documented uptime guarantee -- a single point of failure sitting in the
+// middle of account creation, with no timeout or fallback. Generate a
+// comparable passphrase locally instead (word + word + 2-digit number,
+// same memorable shape DinoPass produces) so account creation never depends
+// on a third party being reachable.
+const PASSPHRASE_WORDS = [
+  "amber", "badger", "canyon", "cedar", "coral", "delta", "ember", "falcon",
+  "garnet", "harbor", "indigo", "jasper", "kelp", "lagoon", "maple", "nectar",
+  "onyx", "pebble", "quartz", "ridge", "saffron", "tundra", "umber", "violet",
+  "willow", "yonder", "zephyr", "cinder", "dune", "fern",
+];
+function localPassphrase(): string {
+  const pick = () => PASSPHRASE_WORDS[Math.floor(Math.random() * PASSPHRASE_WORDS.length)];
+  const a = pick();
+  const b = pick();
+  const num = Math.floor(Math.random() * 90) + 10;
+  return `${a}${b.charAt(0).toUpperCase()}${b.slice(1)}${num}`;
+}
 
 function corsHeaders(origin: string | null) {
   return {
@@ -122,7 +143,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    const passphrase = await dinopassWord();
+    const passphrase = localPassphrase();
     const syntheticEmail = usernameToEmail(username);
 
     const { data: newUser, error: createErr } = await admin.auth.admin.createUser({
