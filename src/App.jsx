@@ -1,3 +1,6 @@
+import { renderMarkdown } from "./lib/safeMarkdown";
+import { acquireScrollLock, releaseScrollLock } from "./lib/scrollLock";
+import { CONFIG, sortByDate, sortByPoints, streakMult, updateStreakPower, avg, avgWithMap, computePlacements, replayGames, calcPlayerDelta, calcDelta, getGamePlacementKey } from "../supabase/functions/_shared/leagueEngine.mjs";
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -18,6 +21,7 @@ import historyCSS from "./styles/history.css?raw";
 import announcementCSS from "./styles/announcement.css?raw";
 import motionCSS from "./styles/motion.css?raw";
 import { HistoryRecords } from "./components/HistoryRecords";
+import { AccountAuthModal, GuestAccountPrompt, AccountWorkspace, SubmissionReviewPanel } from "./components/AccountFeatures";
 import { supabase } from "./supabaseClient";
 import {
   signInWithUsername,
@@ -27,31 +31,17 @@ import {
   createAccount,
   listProfiles,
   updateProfile,
+  deleteAccount,
+  listAuthorizationModel,
+  assignAuthzRole,
+  revokeAuthzRole,
+  listAuditLog,
+  saveAuthorizationRole,
+  listProfileRequests,
+  reviewProfileRequest,
 } from "./authClient";
 
-const CONFIG = {
-  // ADMIN_PASSWORD removed (Phase 1) -- auth now goes through Supabase Auth via authClient.js.
-  STARTING_MMR: 1000,
-  STARTING_PTS: 0,
-  BASE_GAIN: 22,
-  BASE_LOSS: 12,
-  SCORE_WEIGHT: 1.4,
-  SCORE_EXP: 1.4,
-  ELO_DIVISOR: 250,
-  RANK_WEIGHT: 0.4,
-  RANK_DIVISOR: 5,
-  STREAK_POWER_SCALE: 3.0,
-  STREAK_WIN_MAX: 0.55,
-  STREAK_LOSS_MAX: 0.35,
-  STREAK_QUALITY_DECAY: 0.82,
-  STREAK_DECAY_THRESHOLD: 1.05,
-  STREAK_WINDOW: 8,
-  LOSS_HARSHNESS: 1.08,
-  ROLE_ALIGN_BONUS: 1.12,
-  MAX_PLACEMENTS_PER_MONTH: 3,
-  YELLOW_CARD_PTS: 5,
-  RED_CARD_PTS: 20,
-};
+
 
 const SYNC_DEBUG = true;
 const BACKUP_MIN_INTERVAL_MS = 10 * 60 * 1000;
@@ -102,18 +92,8 @@ function didPlayerWin(playerId, game) {
   const onA = isPlayerOnSideA(playerId, game);
   return (onA && game.winner === "A") || (!onA && game.winner === "B");
 }
-function sortByDate(items, descending = false) {
-  return [...items].sort((a, b) =>
-    descending
-      ? new Date(b.date) - new Date(a.date)
-      : new Date(a.date) - new Date(b.date),
-  );
-}
-function sortByPoints(players, descending = true) {
-  return [...players].sort((a, b) =>
-    descending ? (b.pts || 0) - (a.pts || 0) : (a.pts || 0) - (b.pts || 0),
-  );
-}
+
+
 function getSelectedSeason(filter, currentSeason, allSeasons) {
   if (filter === "all") return null;
   if (filter === "current") return currentSeason;
@@ -645,7 +625,7 @@ const CSS = `
   .lb-card-meta{font-size:11px;color:var(--dimmer);margin-top:1px}
 
   /* ── ACCOUNT CARDS (mobile) ───────────────────────────────── */
-  .acct-cards{display:none;flex-direction:column;gap:8px}
+  .acct-table{display:block}.acct-cards{display:none;flex-direction:column;gap:8px}
   .acct-card{display:flex;flex-direction:column;gap:8px;padding:12px;border:1px solid var(--b1);border-radius:8px;background:var(--s2)}
   .acct-card-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
   .acct-card-name{font-weight:600;font-size:14px}
@@ -682,7 +662,7 @@ const CSS = `
   @media(max-width:980px){
     .lb-tbl-wrap{display:none}
     .lb-cards{display:flex}
-    .acct-cards{display:flex}
+    .acct-table{display:none!important}.acct-cards{display:flex!important}
     .topbar{padding:0 14px;gap:8px;height:52px}
     .brand{font-size:14px;letter-spacing:1px}
     .brand span{display:none}
@@ -721,437 +701,21 @@ const CSS = `
 
 // ── MMR ENGINE ─────────────────────────────────────────────────────────────
 
-function streakMult(streakPower, isWinner) {
-  const power = Math.max(0, streakPower || 0);
-  const t = Math.tanh(power / CONFIG.STREAK_POWER_SCALE);
-  const cap = isWinner ? CONFIG.STREAK_WIN_MAX : CONFIG.STREAK_LOSS_MAX;
-  return 1 + t * cap;
-}
 
-function updateStreakPower(currentPower, isWin, qualityScore) {
-  if (!isWin) return 0;
-  const base = currentPower || 0;
-  const decayed =
-    qualityScore < CONFIG.STREAK_DECAY_THRESHOLD
-      ? base * CONFIG.STREAK_QUALITY_DECAY
-      : base;
-  return Math.min(decayed + qualityScore, CONFIG.STREAK_WINDOW * 2);
-}
 
-function avg(ids, players, key) {
-  const found = ids
-    .map((id) => players.find((p) => p.id === id))
-    .filter(Boolean);
-  if (!found.length) return key === "mmr" ? CONFIG.STARTING_MMR : 0;
-  return found.reduce((s, p) => s + (p[key] || 0), 0) / found.length;
-}
 
-function avgWithMap(ids, playerMap, key) {
-  const found = ids.map((id) => playerMap.get(id)).filter(Boolean);
-  if (!found.length) return key === "mmr" ? CONFIG.STARTING_MMR : 0;
-  return found.reduce((s, p) => s + (p[key] || 0), 0) / found.length;
-}
 
-function computePlacements(games, seasons) {
-  const placements = {};
-  for (const g of games) {
-    const mk = getGamePlacementKey(g, seasons);
-    if (!mk) continue;
-    if (!placements[mk]) placements[mk] = {};
-    for (const pid of [...g.sideA, ...g.sideB]) {
-      placements[mk][pid] = (placements[mk][pid] || 0) + 1;
-    }
-  }
-  return placements;
-}
 
-function replayGames(basePlayers, games, seasonStart, seasons) {
-  let players = basePlayers.map((p) => ({
-    ...p,
-    mmr: CONFIG.STARTING_MMR,
-    pts: CONFIG.STARTING_PTS,
-    mmr_atk: CONFIG.STARTING_MMR,
-    mmr_def: CONFIG.STARTING_MMR,
-    wins: 0,
-    losses: 0,
-    streak: 0,
-    streakPower: 0,
-    wins_atk: 0,
-    losses_atk: 0,
-    wins_def: 0,
-    losses_def: 0,
-  }));
-  const seasonStartDate = seasonStart ? new Date(seasonStart) : null;
-  const sorted = sortByDate(games);
-  let playerMap = new Map(basePlayers.map((p) => [p.id, p]));
-  const placementCount = {};
-  const updatedGames = sorted.map((g) => {
-    const gameDate = g.date ? new Date(g.date) : null;
-    const inSeason =
-      !seasonStartDate || !gameDate || gameDate >= seasonStartDate;
-    const winIds = g.winner === "A" ? g.sideA : g.sideB;
-    const losIds = g.winner === "A" ? g.sideB : g.sideA;
-    const mk = getGamePlacementKey(g, seasons);
-    const monthPlacements = placementCount[mk] || {};
-    const isPlacedAtGameTime = (pid) =>
-      (monthPlacements[pid] || 0) >= CONFIG.MAX_PLACEMENTS_PER_MONTH;
-    const allPids = [...winIds, ...losIds];
-    const ranked = sortByPoints(players);
-    const rankOf = (id) => {
-      const i = ranked.findIndex((p) => p.id === id);
-      return i === -1 ? ranked.length : i;
-    };
-    playerMap = new Map(players.map((p) => [p.id, p]));
-    const oppAvgMMR = (ids) => avgWithMap(ids, playerMap, "mmr");
-    const oppAvgRankPlaced = (ids) => {
-      const placed = ids.filter(isPlacedAtGameTime);
-      if (!placed.length) return null;
-      return placed.reduce((s, id) => s + rankOf(id), 0) / placed.length;
-    };
-    const winnerScore = Math.max(g.scoreA, g.scoreB);
-    const loserScore = Math.min(g.scoreA, g.scoreB);
-    const oppWinMMR = oppAvgMMR(winIds);
-    const oppLosMMR = oppAvgMMR(losIds);
-    const oppWinRankPlaced = oppAvgRankPlaced(winIds);
-    const oppLosRankPlaced = oppAvgRankPlaced(losIds);
-    const gameRoles = g.roles || {};
-    const hasRoles = Object.keys(gameRoles).length === 4;
-    const atkRanked = [...players].sort(
-      (a, b) =>
-        (b.mmr_atk ?? CONFIG.STARTING_MMR) - (a.mmr_atk ?? CONFIG.STARTING_MMR),
-    );
-    const defRanked = [...players].sort(
-      (a, b) =>
-        (b.mmr_def ?? CONFIG.STARTING_MMR) - (a.mmr_def ?? CONFIG.STARTING_MMR),
-    );
-    const atkRankOf = (id) => {
-      const i = atkRanked.findIndex((p) => p.id === id);
-      return i === -1 ? atkRanked.length : i;
-    };
-    const defRankOf = (id) => {
-      const i = defRanked.findIndex((p) => p.id === id);
-      return i === -1 ? defRanked.length : i;
-    };
-    const playerDeltas = {};
-    allPids.forEach((pid) => {
-      const p = playerMap.get(pid);
-      if (!p) return;
-      const isWinner = winIds.includes(pid);
-      const myPlaced = isPlacedAtGameTime(pid);
-      const oppRankPlaced = isWinner ? oppLosRankPlaced : oppWinRankPlaced;
-      const myRole = gameRoles[pid];
-      const oppIds = isWinner ? losIds : winIds;
-      let playerMMR, oppMMRval, playerRank, oppRankVal;
-      if (hasRoles && myRole && myRole !== "FLEX") {
-        const oppRole = myRole === "ATK" ? "DEF" : "ATK";
-        const oppMatchId = oppIds.find((id) => gameRoles[id] === oppRole);
-        const oppMatch = oppMatchId ? playerMap.get(oppMatchId) : null;
-        if (myRole === "ATK") {
-          playerMMR = p.mmr_atk ?? p.mmr;
-          oppMMRval = oppMatch
-            ? (oppMatch.mmr_def ?? oppMatch.mmr)
-            : isWinner
-              ? oppLosMMR
-              : oppWinMMR;
-          playerRank = myPlaced ? atkRankOf(pid) : null;
-          oppRankVal =
-            myPlaced && oppMatchId && isPlacedAtGameTime(oppMatchId)
-              ? defRankOf(oppMatchId)
-              : null;
-        } else {
-          playerMMR = p.mmr_def ?? p.mmr;
-          oppMMRval = oppMatch
-            ? (oppMatch.mmr_atk ?? oppMatch.mmr)
-            : isWinner
-              ? oppLosMMR
-              : oppWinMMR;
-          playerRank = myPlaced ? defRankOf(pid) : null;
-          oppRankVal =
-            myPlaced && oppMatchId && isPlacedAtGameTime(oppMatchId)
-              ? atkRankOf(oppMatchId)
-              : null;
-        }
-      } else {
-        playerMMR = p.mmr;
-        oppMMRval = isWinner ? oppLosMMR : oppWinMMR;
-        playerRank = myPlaced ? rankOf(pid) : null;
-        oppRankVal = myPlaced && oppRankPlaced !== null ? oppRankPlaced : null;
-      }
-      const d = calcPlayerDelta({
-        winnerScore,
-        loserScore,
-        playerMMR,
-        playerRank,
-        playerStreakPower: p.streakPower || 0,
-        oppAvgMMR: oppMMRval,
-        oppAvgRank: oppRankVal,
-        isWinner,
-        playerRole: myRole,
-        playerPreferredRole: p.preferredRole,
-      });
-      playerDeltas[pid] = { ...d, role: myRole || null };
-    });
-    if (!placementCount[mk]) placementCount[mk] = {};
-    allPids.forEach((pid) => {
-      placementCount[mk][pid] = (placementCount[mk][pid] || 0) + 1;
-    });
-    players = players.map((p) => {
-      const d = playerDeltas[p.id];
-      if (!d) return p;
-      const isWin = winIds.includes(p.id);
-      const role = d.role;
-      if (isWin) {
-        const base = {
-          ...p,
-          wins: p.wins + 1,
-          wins_atk: (p.wins_atk || 0) + (role === "ATK" ? 1 : 0),
-          wins_def: (p.wins_def || 0) + (role === "DEF" ? 1 : 0),
-        };
-        if (!inSeason) return base;
-        const ns = (p.streak || 0) >= 0 ? (p.streak || 0) + 1 : 1;
-        const newPower = updateStreakPower(
-          p.streakPower || 0,
-          true,
-          d.qualityScore || 1,
-        );
-        const newAtk =
-          role === "ATK" ? (p.mmr_atk ?? p.mmr) + d.gain : (p.mmr_atk ?? p.mmr);
-        const newDef =
-          role === "DEF" ? (p.mmr_def ?? p.mmr) + d.gain : (p.mmr_def ?? p.mmr);
-        const newMMR =
-          role && role !== "FLEX"
-            ? Math.round((newAtk + newDef) / 2)
-            : p.mmr + d.gain;
-        return {
-          ...base,
-          mmr: newMMR,
-          mmr_atk: newAtk,
-          mmr_def: newDef,
-          pts: (p.pts || 0) + d.gain,
-          streak: ns,
-          streakPower: newPower,
-        };
-      }
-      const base = {
-        ...p,
-        losses: p.losses + 1,
-        losses_atk: (p.losses_atk || 0) + (role === "ATK" ? 1 : 0),
-        losses_def: (p.losses_def || 0) + (role === "DEF" ? 1 : 0),
-      };
-      if (!inSeason) return base;
-      const ns = (p.streak || 0) <= 0 ? (p.streak || 0) - 1 : -1;
-      const newAtk =
-        role === "ATK"
-          ? Math.max(0, (p.mmr_atk ?? p.mmr) - d.loss)
-          : (p.mmr_atk ?? p.mmr);
-      const newDef =
-        role === "DEF"
-          ? Math.max(0, (p.mmr_def ?? p.mmr) - d.loss)
-          : (p.mmr_def ?? p.mmr);
-      const newMMR =
-        role && role !== "FLEX"
-          ? Math.round((newAtk + newDef) / 2)
-          : Math.max(0, p.mmr - d.loss);
-      return {
-        ...base,
-        mmr: newMMR,
-        mmr_atk: newAtk,
-        mmr_def: newDef,
-        pts: Math.max(0, (p.pts || 0) - d.loss),
-        streak: ns,
-        streakPower: 0,
-      };
-    });
-    if (g.penalties && inSeason) {
-      players = players.map((p) => {
-        const pen = g.penalties[p.id];
-        if (!pen) return p;
-        const deduct =
-          (pen.yellow || 0) * CONFIG.YELLOW_CARD_PTS +
-          (pen.red || 0) * CONFIG.RED_CARD_PTS;
-        if (!deduct) return p;
-        return { ...p, pts: Math.max(0, (p.pts || 0) - deduct) };
-      });
-    }
-    const perPlayerGains = {},
-      perPlayerLosses = {},
-      perPlayerFactors = {};
-    winIds.forEach((id) => {
-      if (playerDeltas[id]) {
-        perPlayerGains[id] = playerDeltas[id].gain;
-        perPlayerFactors[id] = {
-          eloScale: +playerDeltas[id].eloScale.toFixed(3),
-          rankScale: +playerDeltas[id].rankScale.toFixed(3),
-          matchQuality: +playerDeltas[id].matchQuality.toFixed(3),
-          qualityScore: +playerDeltas[id].qualityScore.toFixed(3),
-          roleMult: +(playerDeltas[id].roleMult || 1).toFixed(3),
-        };
-      }
-    });
-    losIds.forEach((id) => {
-      if (playerDeltas[id]) {
-        perPlayerLosses[id] = playerDeltas[id].loss;
-        perPlayerFactors[id] = {
-          eloScale: +playerDeltas[id].eloScale.toFixed(3),
-          rankScale: +playerDeltas[id].rankScale.toFixed(3),
-          matchQuality: +playerDeltas[id].matchQuality.toFixed(3),
-          qualityScore: +playerDeltas[id].qualityScore.toFixed(3),
-          roleMult: +(playerDeltas[id].roleMult || 1).toFixed(3),
-        };
-      }
-    });
-    const avgGain = Math.round(
-      winIds.reduce((s, id) => s + (playerDeltas[id]?.gain || 0), 0) /
-        Math.max(winIds.length, 1),
-    );
-    const avgLoss = Math.round(
-      losIds.reduce((s, id) => s + (playerDeltas[id]?.loss || 0), 0) /
-        Math.max(losIds.length, 1),
-    );
-    return {
-      ...g,
-      ptsGain: avgGain,
-      ptsLoss: avgLoss,
-      mmrGain: avgGain,
-      mmrLoss: avgLoss,
-      perPlayerGains,
-      perPlayerLosses,
-      perPlayerFactors,
-    };
-  });
-  return { players, games: updatedGames };
-}
 
-function calcPlayerDelta({
-  winnerScore,
-  loserScore,
-  playerMMR,
-  playerRank,
-  playerStreakPower,
-  oppAvgMMR,
-  oppAvgRank,
-  isWinner,
-  playerRole,
-  playerPreferredRole,
-}) {
-  const scoreDiff = winnerScore - loserScore;
-  const scoreRatio = scoreDiff / Math.max(winnerScore, 1);
-  const scoreMult =
-    1 + CONFIG.SCORE_WEIGHT * Math.pow(scoreRatio, CONFIG.SCORE_EXP);
-  const mmrGap = playerMMR - oppAvgMMR;
-  const eloScale = 2 / (1 + Math.exp(mmrGap / CONFIG.ELO_DIVISOR));
-  const rankDifficulty =
-    playerRank === null || oppAvgRank === null
-      ? 1.0
-      : 1 +
-        CONFIG.RANK_WEIGHT *
-          Math.tanh((playerRank - oppAvgRank) / CONFIG.RANK_DIVISOR);
-  const rankScale = rankDifficulty;
-  const matchQuality = (() => {
-    const elo = eloScale,
-      rank = rankDifficulty;
-    if (rank >= 1.0 && elo >= 1.0) return Math.max(elo, 0.7 * elo + 0.3 * rank);
-    if (rank <= 1.0 && elo <= 1.0) return Math.max(0.7 * elo + 0.3 * rank, elo);
-    if (rank > elo) return Math.min(1.0, 0.7 * elo + 0.3 * rank);
-    return elo;
-  })();
-  const mult = streakMult(playerStreakPower, isWinner);
-  const qualityScore = matchQuality;
-  // FLEX is neutral (§3.6 — in position or FLEX = 1.0). Out-of-position = asymmetric bonus.
-  const isOutOfPosition = !!(
-    playerRole &&
-    playerRole !== "FLEX" &&
-    playerPreferredRole &&
-    playerPreferredRole !== "FLEX" &&
-    playerPreferredRole !== playerRole
-  );
-  const roleGainMult = isOutOfPosition ? CONFIG.ROLE_ALIGN_BONUS : 1.0;
-  const roleLossMult = isOutOfPosition ? 1 / CONFIG.ROLE_ALIGN_BONUS : 1.0;
-  const roleMult = roleGainMult;
-  if (isWinner) {
-    const gain = Math.max(
-      2,
-      Math.round(
-        CONFIG.BASE_GAIN * scoreMult * matchQuality * mult * roleGainMult,
-      ),
-    );
-    return {
-      gain,
-      loss: 0,
-      scoreMult,
-      eloScale,
-      rankScale,
-      matchQuality,
-      streakMultVal: mult,
-      qualityScore,
-      roleMult: roleGainMult,
-      roleLossMult,
-    };
-  } else {
-    const loss = Math.max(
-      1,
-      Math.round(
-        CONFIG.BASE_LOSS *
-          scoreMult *
-          (2 - matchQuality) *
-          mult *
-          CONFIG.LOSS_HARSHNESS *
-          roleLossMult,
-      ),
-    );
-    return {
-      gain: 0,
-      loss,
-      scoreMult,
-      eloScale,
-      rankScale,
-      matchQuality,
-      streakMultVal: mult,
-      qualityScore,
-      roleMult: roleGainMult,
-      roleLossMult,
-    };
-  }
-}
 
-function calcDelta({
-  winnerScore,
-  loserScore,
-  winnerAvgMMR,
-  loserAvgMMR,
-  winnerAvgStreakPower,
-  loserAvgStreakPower,
-  winnerAvgRank,
-  loserAvgRank,
-}) {
-  const scoreDiff = winnerScore - loserScore;
-  const scoreRatio = scoreDiff / Math.max(winnerScore, 1);
-  const scoreMult =
-    1 + CONFIG.SCORE_WEIGHT * Math.pow(scoreRatio, CONFIG.SCORE_EXP);
-  const mmrGap = winnerAvgMMR - loserAvgMMR;
-  const eloScale = 2 / (1 + Math.exp(mmrGap / CONFIG.ELO_DIVISOR));
-  const rankDiff = (loserAvgRank ?? 0) - (winnerAvgRank ?? 0);
-  const rankScale =
-    1 + CONFIG.RANK_WEIGHT * Math.tanh(rankDiff / CONFIG.RANK_DIVISOR);
-  const winMult = streakMult(winnerAvgStreakPower ?? 0, true);
-  const lossMult = streakMult(loserAvgStreakPower ?? 0, false);
-  const gain = Math.max(
-    2,
-    Math.round(CONFIG.BASE_GAIN * scoreMult * eloScale * rankScale * winMult),
-  );
-  const loss = Math.max(
-    1,
-    Math.round(
-      CONFIG.BASE_LOSS *
-        scoreMult *
-        (2 - eloScale) *
-        (2 - rankScale) *
-        lossMult *
-        CONFIG.LOSS_HARSHNESS,
-    ),
-  );
-  return { gain, loss, eloScale, rankScale, winMult, lossMult, scoreMult };
-}
+
+
+
+
+
+
+
+
 
 function getMonthKey() {
   const d = new Date();
@@ -1161,28 +725,7 @@ function getMonthKey() {
 // Returns the placement bucket key for a specific game.
 // With an active season: "season_<id>". Without: "all" (lifetime pool).
 // Uses date-only comparison to handle mid-day season starts correctly.
-function getGamePlacementKey(game, seasons) {
-  if (!seasons?.length) return "all";
-  const gameDate = game.date ? new Date(game.date) : null;
-  if (!gameDate) return "all";
 
-  // Strip time for date-only comparison
-  const toDateOnly = (d) =>
-    new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  const gameDay = toDateOnly(gameDate);
-
-  const season = [...seasons]
-    .sort((a, b) => Date.parse(b.startAt) - Date.parse(a.startAt))
-    .find((s) => {
-      const startDate = s.startAt ? new Date(s.startAt) : null;
-      if (!startDate || isNaN(startDate)) return false;
-      const startDay = toDateOnly(startDate);
-      const endDay = s.endAt ? toDateOnly(new Date(s.endAt)) : null;
-      // Game is on/after season start and before/equal to season end
-      return gameDay >= startDay && (!endDay || gameDay <= endDay);
-    });
-  return season ? `season_${season.id}` : "all";
-}
 
 // Returns the placement bucket key for display/checks right now.
 function getCurrentPlacementKey(state) {
@@ -2060,24 +1603,10 @@ function Toast({ t }) {
 // restored once (on the last release), regardless of mount/unmount order.
 // Token-keyed Set makes acquire/release idempotent (safe under StrictMode's
 // double-invoked effects and any accidental double-close).
-const scrollLockTokens = new Set();
-let scrollLockOriginalOverflow = null;
-function acquireScrollLock(token) {
-  if (scrollLockTokens.has(token)) return;
-  scrollLockTokens.add(token);
-  if (scrollLockTokens.size === 1) {
-    scrollLockOriginalOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-  }
-}
-function releaseScrollLock(token) {
-  if (!scrollLockTokens.has(token)) return;
-  scrollLockTokens.delete(token);
-  if (scrollLockTokens.size === 0) {
-    document.body.style.overflow = scrollLockOriginalOverflow ?? "";
-    scrollLockOriginalOverflow = null;
-  }
-}
+
+
+
+
 
 function Modal({
   onClose,
@@ -2096,7 +1625,7 @@ function Modal({
     return () => {
       dialog.close();
       releaseScrollLock(token);
-      if (previous?.isConnected) previous.focus();
+      if (previous?.isConnected) previous.focus({ preventScroll: true });
     };
   }, []);
   return createPortal(
@@ -2397,239 +1926,12 @@ function ConfirmDialog({ title, msg, onConfirm, onCancel, danger = false }) {
 
 // ── MARKDOWN RENDERER ─────────────────────────────────────────────────────
 
-function escapeMdHtml(s) {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
+
 // Only allow http(s)/mailto/relative/hash links -- blocks javascript: and
 // other script-bearing URI schemes in [text](url) links.
-function safeMdUrl(u) {
-  const url = u.trim();
-  return /^(https?:|mailto:|#|\/)/i.test(url) ? url : "#";
-}
 
-function renderMd(md) {
-  if (!md) return "";
-  const lines = md.split("\n");
-  const out = [];
-  let i = 0;
-  function inlineFormat(rawText) {
-    // Escape HTML first so any raw tags/attributes in the source render as
-    // literal text; every tag below this point is one we generate, not one
-    // the author's input can inject.
-    const text = escapeMdHtml(rawText);
-    return text
-      .replace(/\*\*\*(.+?)\*\*\*/g, "<strong><em>$1</em></strong>")
-      .replace(/___(.+?)___/g, "<strong><em>$1</em></strong>")
-      .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-      .replace(/__(.+?)__/g, "<strong>$1</strong>")
-      .replace(/\*([^*\n]+?)\*/g, "<em>$1</em>")
-      .replace(/_([^_\n]+?)_/g, "<em>$1</em>")
-      .replace(/~~(.+?)~~/g, "<del>$1</del>")
-      .replace(
-        /==(.+?)==/g,
-        "<mark style='background:rgba(232,184,74,.25);color:var(--gold);padding:1px 3px;border-radius:3px'>$1</mark>",
-      )
-      .replace(/`([^`]+)`/g, "<code>$1</code>")
-      .replace(
-        /\[([^\]]+)\]\(([^)]+)\)/g,
-        (_m, label, url) =>
-          `<a href='${safeMdUrl(url)}' target='_blank' rel='noopener' style='color:var(--amber);text-decoration:underline'>${label}</a>`,
-      )
-      .replace(
-        /\[\[([^\]]+)\]\]/g,
-        "<span style='color:var(--amber)'>$1</span>",
-      );
-  }
-  const calloutColors = {
-    note: "var(--blue)",
-    info: "var(--blue)",
-    tip: "var(--green)",
-    hint: "var(--green)",
-    success: "var(--green)",
-    check: "var(--green)",
-    done: "var(--green)",
-    warning: "var(--orange)",
-    caution: "var(--orange)",
-    attention: "var(--orange)",
-    danger: "var(--red)",
-    error: "var(--red)",
-    bug: "var(--red)",
-    important: "var(--amber)",
-    quote: "var(--dimmer)",
-    example: "var(--purple)",
-  };
-  const calloutIcons = {
-    note: "",
-    info: "",
-    tip: "",
-    hint: "",
-    success: "",
-    check: "",
-    done: "",
-    warning: "",
-    caution: "",
-    attention: "",
-    danger: "",
-    error: "",
-    bug: "",
-    important: "!",
-    quote: '"',
-    example: "≡",
-  };
-  while (i < lines.length) {
-    const line = lines[i];
-    if (/^```/.test(line)) {
-      const lang = line.slice(3).trim();
-      const codeLines = [];
-      i++;
-      while (i < lines.length && !/^```/.test(lines[i])) {
-        codeLines.push(
-          lines[i]
-            .replace(/&/g, "&amp;")
-            .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;"),
-        );
-        i++;
-      }
-      out.push(
-        `<pre style="background:var(--s2);border:1px solid var(--b2);border-radius:6px;padding:12px 14px;overflow-x:auto;font-family:var(--mono);font-size:12px;line-height:1.7;margin:8px 0">${lang ? `<span style="font-size:10px;color:var(--dimmer);display:block;margin-bottom:6px;letter-spacing:1px;text-transform:uppercase">${lang}</span>` : ""}${codeLines.join("\n")}</pre>`,
-      );
-      i++;
-      continue;
-    }
-    if (/^> \[!(\w+)\]/.test(line)) {
-      const match = line.match(/^> \[!(\w+)\]\s*(.*)$/);
-      const type = (match[1] || "note").toLowerCase();
-      const title = match[2] || type.charAt(0).toUpperCase() + type.slice(1);
-      const color = calloutColors[type] || "var(--blue)";
-      const icon = calloutIcons[type] || "";
-      const bodyLines = [];
-      i++;
-      while (i < lines.length && /^> /.test(lines[i])) {
-        bodyLines.push(lines[i].slice(2));
-        i++;
-      }
-      out.push(
-        `<div style="border-left:3px solid ${color};background:color-mix(in srgb,${color} 8%,var(--s2));border-radius:0 6px 6px 0;padding:10px 14px;margin:8px 0"><div style="font-weight:700;color:${color};font-size:12px;margin-bottom:4px">${icon} ${inlineFormat(title)}</div><div style="color:var(--dim);font-size:13px;line-height:1.7">${bodyLines.map(inlineFormat).join("<br>")}</div></div>`,
-      );
-      continue;
-    }
-    if (/^> /.test(line)) {
-      const bqLines = [];
-      while (i < lines.length && /^> /.test(lines[i])) {
-        bqLines.push(lines[i].slice(2));
-        i++;
-      }
-      out.push(
-        `<blockquote style="border-left:3px solid var(--b2);padding:6px 14px;margin:6px 0;color:var(--dim);font-style:italic">${bqLines.map(inlineFormat).join("<br>")}</blockquote>`,
-      );
-      continue;
-    }
-    if (/^#{1,6} /.test(line)) {
-      const m = line.match(/^(#{1,6}) (.+)$/);
-      const lvl = m[1].length;
-      const sizes = [28, 18, 15, 13, 13, 13];
-      const colors = [
-        "var(--amber)",
-        "var(--text)",
-        "var(--text)",
-        "var(--dim)",
-        "var(--dim)",
-        "var(--dim)",
-      ];
-      out.push(
-        `<div style="font-family:var(--disp);font-size:${sizes[lvl - 1]}px;font-weight:${lvl <= 2 ? 700 : 600};color:${colors[lvl - 1]};margin:${lvl === 1 ? "0 0 12px" : "14px 0 5px"};${lvl === 2 ? "border-bottom:1px solid var(--b1);padding-bottom:4px" : ""}">${inlineFormat(m[2])}</div>`,
-      );
-      i++;
-      continue;
-    }
-    if (/^(-{3,}|\*{3,}|_{3,})$/.test(line.trim())) {
-      out.push(
-        '<hr style="border:none;border-top:1px solid var(--b2);margin:14px 0">',
-      );
-      i++;
-      continue;
-    }
-    if (/^\|.+\|/.test(line)) {
-      const tableLines = [];
-      while (i < lines.length && /^\|/.test(lines[i])) {
-        tableLines.push(lines[i]);
-        i++;
-      }
-      if (tableLines.length >= 2) {
-        const headers = tableLines[0]
-          .split("|")
-          .filter((_, j, a) => j > 0 && j < a.length - 1)
-          .map((h) => h.trim());
-        const alignRow = tableLines[1]
-          .split("|")
-          .filter((_, j, a) => j > 0 && j < a.length - 1);
-        const aligns = alignRow.map((c) => {
-          const t = c.trim();
-          return t.startsWith(":") && t.endsWith(":")
-            ? "center"
-            : t.endsWith(":")
-              ? "right"
-              : "left";
-        });
-        const rows = tableLines.slice(2).map((r) =>
-          r
-            .split("|")
-            .filter((_, j, a) => j > 0 && j < a.length - 1)
-            .map((c) => c.trim()),
-        );
-        out.push(
-          `<div style="overflow-x:auto;margin:8px 0"><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr>${headers.map((h, ci) => `<th style="text-align:${aligns[ci] || "left"};padding:6px 10px;border-bottom:2px solid var(--b2);color:var(--dimmer);font-weight:600;font-size:10px;letter-spacing:.5px;text-transform:uppercase;background:var(--s2)">${inlineFormat(h)}</th>`).join("")}</tr></thead><tbody>${rows.map((row, ri) => `<tr style="${ri % 2 ? "background:rgba(255,255,255,.015)" : ""}">${row.map((cell, ci) => `<td style="text-align:${aligns[ci] || "left"};padding:6px 10px;border-bottom:1px solid var(--b1)">${inlineFormat(cell)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`,
-        );
-      }
-      continue;
-    }
-    if (/^(\s*)([-*+]|\d+\.) /.test(line)) {
-      const listLines = [];
-      while (
-        i < lines.length &&
-        (/^(\s*)([-*+]|\d+\.) /.test(lines[i]) || /^\s{2,}\S/.test(lines[i]))
-      ) {
-        listLines.push(lines[i]);
-        i++;
-      }
-      const isOrdered = /^\s*\d+\./.test(listLines[0]);
-      const items = listLines
-        .map((item) => {
-          const m = item.match(/^(\s*)([-*+]|\d+\.) (.*)$/);
-          if (!m) return "";
-          const text = m[3];
-          if (/^\[[ xX]\] /.test(text)) {
-            const checked = /^\[[xX]\] /.test(text);
-            const label = text.replace(/^\[[ xX]\] /, "");
-            return `<li style="list-style:none;margin-left:-18px"><label style="display:flex;align-items:flex-start;gap:6px"><input type="checkbox" ${checked ? "checked" : ""} disabled style="margin-top:2px;accent-color:var(--amber)"><span style="${checked ? "text-decoration:line-through;opacity:.5" : ""}">${inlineFormat(label)}</span></label></li>`;
-          }
-          return `<li>${inlineFormat(text)}</li>`;
-        })
-        .join("");
-      out.push(
-        isOrdered
-          ? `<ol style="padding-left:20px;margin:6px 0">${items}</ol>`
-          : `<ul style="padding-left:20px;margin:6px 0">${items}</ul>`,
-      );
-      continue;
-    }
-    if (line.trim() === "") {
-      i++;
-      continue;
-    }
-    out.push(
-      `<p style="margin-bottom:8px;line-height:1.7;color:var(--dim);font-size:13px">${inlineFormat(line)}</p>`,
-    );
-    i++;
-  }
-  return out.join("\n");
-}
+
+
 
 function AnnouncementContent({ announcement, preview = false }) {
   const season = announcement.type === "seasonLaunch";
@@ -2661,7 +1963,7 @@ function AnnouncementContent({ announcement, preview = false }) {
       <div
         className="announcement-body md"
         dangerouslySetInnerHTML={{
-          __html: renderMd(
+          __html: renderMarkdown(
             announcement.body || (preview ? "*No content yet.*" : ""),
           ),
         }}
@@ -2976,10 +2278,13 @@ function PlayerProfile({
           </div>
         )}
 
-        <div className="prof-head">
-          <div className="prof-av">{player.name[0].toUpperCase()}</div>
+        <div className="prof-head" style={player.accent ? { borderColor: player.accent } : undefined}>
+          <div className="prof-av" style={player.accent ? { borderColor: player.accent, color: player.accent } : undefined}>
+            {player.avatarUrl ? <img src={player.avatarUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: "inherit" }} onError={(e) => { e.currentTarget.style.display = "none"; }} /> : player.name[0].toUpperCase()}
+          </div>
           <div style={{ flex: 1 }}>
             <div className="prof-name">{player.name}</div>
+            {player.nickname && <div className="prof-sub">“{player.nickname}”</div>}
             <div className="prof-sub">
               Current rank #{rank} ·{" "}
               {seasonMode === "all"
@@ -3445,6 +2750,9 @@ function PlayerProfile({
 
 function EditPlayerModal({ player, state, setState, showToast, onClose }) {
   const [name, setName] = useState(player.name);
+  const [nickname, setNickname] = useState(player.nickname || "");
+  const [avatarUrl, setAvatarUrl] = useState(player.avatarUrl || "");
+  const [accent, setAccent] = useState(player.accent || "");
   const [preferredRole, setPreferredRole] = useState(
     player.preferredRole || "FLEX",
   );
@@ -3479,6 +2787,9 @@ function EditPlayerModal({ player, state, setState, showToast, onClose }) {
           ? {
               ...p,
               name: name.trim(),
+              nickname: nickname.trim() || null,
+              avatarUrl: avatarUrl.trim() || null,
+              accent: accent || null,
               pts: newPts,
               streak: newStreak,
               position: positions.length === 0 ? "none" : positions,
@@ -3567,6 +2878,29 @@ function EditPlayerModal({ player, state, setState, showToast, onClose }) {
         </div>
         <div className="grid-2">
           <div className="field">
+            <label className="lbl">Nickname <span className="text-dd xs">optional</span></label>
+            <input className="inp inp-edit" value={nickname} maxLength={24}
+              onChange={(e) => setNickname(e.target.value)} placeholder="How you want to appear" />
+          </div>
+          <div className="field">
+            <label className="lbl">Profile picture URL <span className="text-dd xs">optional</span></label>
+            <input className="inp inp-edit" value={avatarUrl} maxLength={500}
+              onChange={(e) => setAvatarUrl(e.target.value)} placeholder="https://…" inputMode="url" />
+          </div>
+        </div>
+        <div className="field">
+          <label className="lbl">Profile accent</label>
+          <div className="fac" style={{ gap: 8, flexWrap: "wrap" }}>
+            {["", "#63d297", "#6fa8ff", "#e5b85c", "#d985a5", "#a78bfa"].map((v) => (
+              <button key={v || "default"} type="button" aria-label={v || "Default accent"}
+                aria-pressed={accent === v} onClick={() => setAccent(v)}
+                className={`accent-swatch ${accent === v ? "selected" : ""}`}
+                style={{ background: v || "var(--surface-frame)" }} />
+            ))}
+          </div>
+        </div>
+        <div className="grid-2">
+          <div className="field">
             <label className="lbl">Points (visible)</label>
             <input
               className="inp inp-edit"
@@ -3586,7 +2920,8 @@ function EditPlayerModal({ player, state, setState, showToast, onClose }) {
           </div>
         </div>
         <div className="field mt8">
-          <label className="lbl">Preferred Role</label>
+          <label className="lbl">Competitive preference</label>
+          <div className="xs text-dd" style={{ marginBottom: 8 }}>Used for automatic ATK/DEF assignment and ranking calculations. Changes apply immediately.</div>
           <div className="fac" style={{ gap: 6, marginBottom: 6 }}>
             {["ATK", "DEF", "FLEX"].map((v) => (
               <button
@@ -3599,7 +2934,8 @@ function EditPlayerModal({ player, state, setState, showToast, onClose }) {
               </button>
             ))}
           </div>
-          <label className="lbl">Position Badges</label>
+          <label className="lbl">Position badges</label>
+          <div className="xs text-dd" style={{ marginBottom: 8 }}>Cosmetic badges showing positions you play; they do not change ranking.</div>
           <div
             className="fac"
             style={{ gap: 6, flexWrap: "wrap", marginBottom: 4 }}
@@ -4978,6 +4314,7 @@ function LeaderboardView({
   isAdmin,
   showToast,
   syncStatus,
+  activePlayerId,
 }) {
   const monthKey = getMonthKey();
   const placementKey = getCurrentPlacementKey(state);
@@ -4994,6 +4331,7 @@ function LeaderboardView({
   const [rankingLimit, setRankingLimit] = useState(() =>
     window.matchMedia("(max-width:980px)").matches ? 5 : 10,
   );
+  const [aroundMe, setAroundMe] = useState(false);
   const standingsRef = useRef(null);
   useEffect(() => {
     const media = window.matchMedia("(max-width:980px)");
@@ -5001,9 +4339,13 @@ function LeaderboardView({
     media.addEventListener("change", update);
     return () => media.removeEventListener("change", update);
   }, []);
+  const activeIndex = activePlayerId ? ranked.findIndex((p) => p.id === activePlayerId) : -1;
+  const visibleStart = aroundMe && activeIndex >= 0
+    ? Math.max(0, activeIndex - Math.floor(rankingLimit / 2))
+    : 0;
   const visibleRanked = rankingsExpanded
     ? ranked
-    : ranked.slice(0, rankingLimit);
+    : ranked.slice(visibleStart, visibleStart + rankingLimit);
 
   function doRecalc() {
     const { players, games } = replayGames(
@@ -5276,6 +4618,7 @@ function LeaderboardView({
               Rankings — {currentSeason?.label || fmtMonth(monthKey)}
             </span>
             <div className="fac" style={{ gap: 8 }}>
+              {activeIndex >= 0 && <button className={`btn btn-sm ${aroundMe ? "btn-p" : "btn-g"}`} onClick={() => setAroundMe((value) => !value)} aria-pressed={aroundMe}><UiIcon name="users" />{aroundMe ? "Full leaderboard" : "Around me"}</button>}
               <span
                 className={`rt-dot ${rtConnected ? "live" : ""}`}
                 title={rtConnected ? "Live" : "Connecting…"}
@@ -5326,7 +4669,9 @@ function LeaderboardView({
                 </thead>
                 <tbody>
                   {(() => {
-                    let placedCount = 0;
+                    let placedCount = visibleStart > 0
+                      ? ranked.slice(0, visibleStart).reduce((count, player) => count + (((state.monthlyPlacements[placementKey] || {})[player.id] || 0) >= CONFIG.MAX_PLACEMENTS_PER_MONTH ? 1 : 0), 0)
+                      : 0;
                     return visibleRanked.map((p, i) => {
                       const placements =
                         (state.monthlyPlacements[placementKey] || {})[p.id] ||
@@ -5350,6 +4695,7 @@ function LeaderboardView({
                           key={p.id}
                           data-player-id={p.id}
                           className={`lb-row ${anim}`}
+                          data-active-player={p.id === activePlayerId ? "true" : undefined}
                           style={{
                             animationDelay: `${i * 28}ms`,
                             opacity: isPlaced ? 1 : 0.6,
@@ -12100,7 +11446,7 @@ function RulesView({ state, setState, isAdmin, showToast }) {
           style={{ padding: 24 }}
           className="md"
           dangerouslySetInnerHTML={{
-            __html: renderMd(state.rules || DEFAULT_RULES),
+            __html: renderMarkdown(state.rules || DEFAULT_RULES),
           }}
         />
       </div>
@@ -12120,6 +11466,8 @@ function AdvancedPanel({
   const [loading, setLoading] = useState(false);
   const [history, setHistory] = useState([]);
   const [selected, setSelected] = useState(null);
+  const [auditRows, setAuditRows] = useState([]);
+  const [auditFilter, setAuditFilter] = useState("all");
   const [exportSeasonFilter, setExportSeasonFilter] = useState("current");
   const clientId = getClientId();
   const lastWriterId = state?._meta?.lastWriterId || "—";
@@ -12157,9 +11505,18 @@ function AdvancedPanel({
       .limit(25);
     if (!error) setHistory(data || []);
   }, []);
+  const loadAudit = useCallback(async () => {
+    const { data } = await supabase
+      .from("audit_log")
+      .select("id,action,actor_call_sign,target_type,target_id,details,created_at")
+      .order("created_at", { ascending: false })
+      .limit(100);
+    setAuditRows(data || []);
+  }, []);
   useEffect(() => {
     loadHistory();
-  }, [loadHistory]);
+    loadAudit();
+  }, [loadHistory, loadAudit]);
   async function restoreState(row) {
     if (!row) return;
     setLoading(true);
@@ -12254,7 +11611,7 @@ function AdvancedPanel({
   return (
     <div className="card advanced-workspace" style={{ marginBottom: 12 }}>
       <div className="card-header">
-        <span className="card-title">Advanced Controls</span>
+        <span className="card-title">{section === "access" ? "Audit log" : "Advanced Controls"}</span>
       </div>
       <div style={{ padding: 16 }}>
         <div
@@ -12611,7 +11968,7 @@ function AdvancedPanel({
 
         <div
           className="card"
-          hidden={section !== "diagnostics"}
+          hidden={!(["diagnostics", "access"].includes(section))}
           style={{ marginTop: 12 }}
         >
           <div className="card-header">
@@ -12631,6 +11988,30 @@ function AdvancedPanel({
                 {new Date(state.seasonStart).toLocaleString("en-GB")}
               </div>
             )}
+          </div>
+          <div className="card-header" style={{ borderTop: "1px solid var(--b1)" }}>
+            <span className="card-title">Recent activity</span>
+            <div className="fac" style={{ gap: 6 }}>
+              <select className="inp inp-sm" value={auditFilter} onChange={(e) => setAuditFilter(e.target.value)} aria-label="Filter audit actions">
+                <option value="all">All actions</option>
+                {[...new Set(auditRows.map((row) => row.action).filter(Boolean))].map((action) => <option key={action} value={action}>{action}</option>)}
+              </select>
+              <button className="btn btn-g btn-sm" onClick={loadAudit}>Refresh</button>
+            </div>
+          </div>
+          <div className="audit-list" style={{ padding: "0 14px 14px", display: "grid", gap: 6 }}>
+            {auditRows.filter((row) => auditFilter === "all" || row.action === auditFilter).map((row) => {
+              const recoveryId = row.details?.recovery_id || row.details?.backup_id;
+              const backup = recoveryId ? history.find((entry) => String(entry.id) === String(recoveryId)) : null;
+              return <div className="audit-row" key={row.id} style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 10, alignItems: "center", padding: "10px 12px", border: "1px solid var(--b1)", borderRadius: 8 }}>
+                <div>
+                  <strong>{row.action || "League change"}</strong>
+                  <div className="xs text-dd">{row.actor_call_sign || "System"}{row.target_id ? ` · ${row.target_type || "record"} ${row.target_id}` : ""} · {row.created_at ? new Date(row.created_at).toLocaleString("en-GB") : "—"}</div>
+                </div>
+                {backup ? <button className="btn btn-g btn-sm" onClick={() => setSelected(backup)}>View recovery</button> : <span className="xs text-dd">{recoveryId ? "Recovery unavailable" : "No recovery point"}</span>}
+              </div>;
+            })}
+            {!auditRows.length && <div className="xs text-dd">No audit events available.</div>}
           </div>
         </div>
       </div>
@@ -12768,6 +12149,214 @@ function isPermissionError(msg) {
   return /permission|policy|rls|denied/i.test(msg || "");
 }
 
+const AUTHZ_CAPABILITY_LABELS = {
+  "league:edit_settings": "Change league settings",
+  "roster:edit_player": "Edit player profiles",
+  "roster:manage_access": "Approve profile links and access",
+  "games:score_match": "Record games",
+  "games:approve_match": "Approve submitted games",
+  "games:edit_history": "Correct official history",
+  "authz:manage_roles": "Manage roles and permissions",
+  "authz:assign_roles": "Assign roles to accounts",
+  "audit:view_all": "View the full audit log",
+  "audit:rewind": "Undo supported changes",
+};
+
+function ManageRolesPanel({ showToast }) {
+  const [model, setModel] = useState(null);
+  const [selectedId, setSelectedId] = useState(null);
+  const [draft, setDraft] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [profiles, setProfiles] = useState([]);
+  const [addUserId, setAddUserId] = useState("");
+  const [memberBusy, setMemberBusy] = useState(null);
+
+  async function load() {
+    setError("");
+    const [result, profileResult] = await Promise.all([listAuthorizationModel(), listProfiles()]);
+    if (result.error) { setError(result.error); return; }
+    setModel(result);
+    setSelectedId((current) => current || result.roles[0]?.id || null);
+    if (!profileResult.error) setProfiles(profileResult.profiles || []);
+  }
+  useEffect(() => { load(); }, []);
+
+  async function addMember() {
+    if (!addUserId || !selectedId) return;
+    setMemberBusy(addUserId);
+    const result = await assignAuthzRole(addUserId, selectedId);
+    setMemberBusy(null);
+    if (result.error) { showToast?.(result.error, "err"); return; }
+    setAddUserId("");
+    await load();
+  }
+  async function removeMember(userId) {
+    if (!selectedId) return;
+    setMemberBusy(userId);
+    const result = await revokeAuthzRole(userId, selectedId);
+    setMemberBusy(null);
+    if (result.error) { showToast?.(result.error, "err"); return; }
+    await load();
+  }
+  useEffect(() => {
+    if (!model || !selectedId) return;
+    const role = model.roles.find((item) => item.id === selectedId);
+    if (!role) return;
+    setDraft({ ...role, capabilityIds: model.grants.filter((g) => g.role_id === role.id).map((g) => g.capability_id) });
+  }, [model, selectedId]);
+
+  async function save() {
+    if (!draft?.name.trim()) return;
+    setBusy(true);
+    const result = await saveAuthorizationRole(draft, draft.capabilityIds);
+    setBusy(false);
+    if (result.error) { showToast?.(result.error, "err"); return; }
+    showToast?.("Role permissions saved", "ok");
+    await load();
+  }
+  const grouped = useMemo(() => (model?.capabilities || []).reduce((groups, item) => {
+    const key = item.category || "Other";
+    (groups[key] ||= []).push(item);
+    return groups;
+  }, {}), [model]);
+
+  return <div className="card roles-panel">
+    <div className="card-header"><div><span className="card-title">Roles &amp; permissions</span><p className="xs text-dd">Permissions are assigned to roles and enforced by hierarchy. Individual exceptions belong on an account.</p></div></div>
+    {error && <div className="msg msg-e role-error"><span>{isPermissionError(error) ? "Access denied — role management permission required." : error}</span><button className="btn btn-sm" onClick={load}>Retry</button></div>}
+    {!model && !error && <div className="roles-loading xs text-dd">Loading role policy…</div>}
+    {model && <div className="roles-workspace">
+      <div className="roles-list" aria-label="Roles">
+        {model.roles.map((role) => <button key={role.id} className="role-choice" aria-current={role.id === selectedId ? "true" : undefined} onClick={() => setSelectedId(role.id)}><span>{role.name}</span><small>Rank {role.rank}{role.is_preset ? " · preset" : ""}</small></button>)}
+      </div>
+      {draft && <div className="role-editor">
+        <div className="role-editor-head"><div><h3>{draft.name}</h3><p className="xs text-dd">Higher ranks can manage lower ranks. Keep sensitive permissions limited.</p></div><button className="btn btn-p btn-sm" onClick={save} disabled={busy}>{busy ? "Saving…" : "Save changes"}</button></div>
+        <div className="role-fields"><label className="field"><span className="lbl">Role name</span><input className="inp" value={draft.name} disabled={draft.is_preset} onChange={(e) => setDraft({ ...draft, name: e.target.value })}/></label><label className="field"><span className="lbl">Hierarchy rank</span><input className="inp" type="number" min="0" max="10000" value={draft.rank} onChange={(e) => setDraft({ ...draft, rank: e.target.value })}/></label></div>
+        <div className="capability-groups">{Object.entries(grouped).map(([category, capabilities]) => <fieldset key={category} className="capability-group"><legend>{category}</legend>{capabilities.map((capability) => <label key={capability.id} className="capability-toggle"><input type="checkbox" checked={draft.capabilityIds.includes(capability.id)} onChange={(e) => setDraft({ ...draft, capabilityIds: e.target.checked ? [...draft.capabilityIds, capability.id] : draft.capabilityIds.filter((id) => id !== capability.id) })}/><span><strong>{AUTHZ_CAPABILITY_LABELS[capability.id] || capability.id}</strong><small>{capability.description}</small></span></label>)}</fieldset>)}</div>
+
+        <div className="role-members mt16">
+          <div className="card-header"><span className="card-title">Members</span><p className="xs text-dd">Accounts holding {draft.name}. Assigning requires outranking both this role and the account.</p></div>
+          <div className="fac" style={{ gap: 8, marginTop: 8 }}>
+            <select className="inp" value={addUserId} onChange={(e) => setAddUserId(e.target.value)}>
+              <option value="">Add account…</option>
+              {profiles.filter((p) => !(model.members || []).some((m) => m.role_id === selectedId && m.user_id === p.user_id)).map((p) => (
+                <option key={p.user_id} value={p.user_id}>{p.username}</option>
+              ))}
+            </select>
+            <button className="btn btn-sm btn-p" disabled={!addUserId || memberBusy === addUserId} onClick={addMember}>Add</button>
+          </div>
+          <div className="stack mt8">
+            {(model.members || []).filter((m) => m.role_id === selectedId).map((m) => {
+              const p = profiles.find((item) => item.user_id === m.user_id);
+              return (
+                <div key={m.user_id} className="fac" style={{ justifyContent: "space-between" }}>
+                  <span>{p?.username || m.user_id}</span>
+                  <button className="btn btn-sm btn-d" disabled={memberBusy === m.user_id} onClick={() => removeMember(m.user_id)}>Remove</button>
+                </div>
+              );
+            })}
+            {(model.members || []).filter((m) => m.role_id === selectedId).length === 0 && (
+              <div className="xs text-dd">No accounts hold this role yet.</div>
+            )}
+          </div>
+        </div>
+      </div>}
+    </div>}
+  </div>;
+}
+
+const AUDIT_ACTION_LABELS = {
+  create_account: "Account created",
+  admin_update_profile: "Account updated",
+  admin_delete_profile: "Account deleted",
+  assign_authz_role: "Role assigned",
+  revoke_authz_role: "Role revoked",
+  set_authz_exception: "Exception set",
+  admin_save_authz_role: "Role definition saved",
+  review_profile_request: "Request reviewed",
+  update_state: "League state updated",
+  restore_state: "State restored",
+  hard_reset: "Leaderboard reset",
+};
+
+function AuditLogPanel({ showToast }) {
+  const [rows, setRows] = useState(null);
+  const [error, setError] = useState("");
+  const [actionFilter, setActionFilter] = useState("");
+  const [targetFilter, setTargetFilter] = useState("");
+  const [actorFilter, setActorFilter] = useState("");
+  const [since, setSince] = useState("");
+  const [expandedId, setExpandedId] = useState(null);
+
+  async function load() {
+    setError("");
+    const result = await listAuditLog({
+      action: actionFilter || undefined,
+      targetType: targetFilter || undefined,
+      actorCallSign: actorFilter || undefined,
+      since: since ? new Date(since).toISOString() : undefined,
+    });
+    if (result.error) { setError(result.error); setRows([]); return; }
+    setRows(result.rows);
+  }
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const actionOptions = useMemo(() => Object.keys(AUDIT_ACTION_LABELS), []);
+  const targetOptions = useMemo(() => [...new Set((rows || []).map((r) => r.target_type).filter(Boolean))], [rows]);
+
+  return (
+    <div className="card audit-panel">
+      <div className="card-header">
+        <span className="card-title">Audit log</span>
+        <p className="xs text-dd">Every attributable admin/league change, newest first.</p>
+      </div>
+      <div className="audit-filters">
+        <select className="inp inp-sm" value={actionFilter} onChange={(e) => setActionFilter(e.target.value)}>
+          <option value="">All actions</option>
+          {actionOptions.map((a) => <option key={a} value={a}>{AUDIT_ACTION_LABELS[a] || a}</option>)}
+        </select>
+        <select className="inp inp-sm" value={targetFilter} onChange={(e) => setTargetFilter(e.target.value)}>
+          <option value="">All targets</option>
+          {targetOptions.map((t) => <option key={t} value={t}>{t}</option>)}
+        </select>
+        <input className="inp inp-sm" placeholder="Actor…" value={actorFilter} onChange={(e) => setActorFilter(e.target.value)} />
+        <input className="inp inp-sm" type="date" value={since} onChange={(e) => setSince(e.target.value)} />
+        <button className="btn btn-g btn-sm" onClick={load}>Apply</button>
+      </div>
+      {error && <div className="msg msg-e" style={{ margin: "0 20px 16px" }}>{error}</div>}
+      <div className="audit-rows">
+        {rows === null && <div className="xs text-dd audit-empty">Loading…</div>}
+        {rows && rows.length === 0 && !error && <div className="xs text-dd audit-empty">No matching events.</div>}
+        {(rows || []).map((row) => (
+          <div key={row.id} className="audit-entry">
+            <button className="audit-entry-summary" onClick={() => setExpandedId(expandedId === row.id ? null : row.id)} aria-expanded={expandedId === row.id}>
+              <span className="audit-actor">{row.actor_call_sign || "System"}</span>
+              <span className="audit-action-badge">{AUDIT_ACTION_LABELS[row.action] || row.action}</span>
+              <span className="audit-target">{row.target_id ? `${row.target_type || "record"} · ${row.target_id}` : "—"}</span>
+              <span className="xs text-dd audit-time">{row.created_at ? new Date(row.created_at).toLocaleString("en-GB") : "—"}</span>
+            </button>
+            {expandedId === row.id && (
+              <div className="audit-entry-detail">
+                <div className="xs text-dd">Actor role: {row.actor_role || "—"}</div>
+                <pre className="audit-details-json">{row.details ? JSON.stringify(row.details, null, 2) : "No additional details recorded."}</pre>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ProfileRequestsPanel({ showToast }) {
+  const [requests, setRequests] = useState(null);
+  const [busy, setBusy] = useState(null);
+  const load = useCallback(async () => { const result = await listProfileRequests(); setRequests(result.error ? [] : result.requests); }, []);
+  useEffect(() => { load(); }, [load]);
+  async function review(request, status) { setBusy(request.id); const result = await reviewProfileRequest(request.id, status, request.player_id); setBusy(null); if (result.error) showToast?.(result.error, "err"); else { showToast?.(`Request ${status}`, "ok"); load(); } }
+  return <div className="card profile-requests"><div className="card-header"><div><span className="card-title">Pending profile requests</span><p className="xs text-dd">Claims and onboarding requests require staff review.</p></div><button className="btn btn-sm btn-g" onClick={load}>Refresh</button></div><div style={{padding:16}}>{requests === null && <div className="xs text-dd">Loading requests…</div>}{requests?.length === 0 && <div className="xs text-dd">No pending requests.</div>}{requests?.filter((r) => r.status === "pending").map((request) => <div className="request-row" key={request.id}><div><strong>{request.request_type === "onboarding_creation" ? "Onboarding creation" : "Profile claim"}</strong><div className="xs text-dd">{request.canonical_name || request.player_id || "No profile selected"}</div></div><div className="fac"><button className="btn btn-sm btn-p" disabled={busy===request.id} onClick={() => review(request, "approved")}>Approve</button><button className="btn btn-sm btn-d" disabled={busy===request.id} onClick={() => review(request, "rejected")}>Reject</button></div></div>)}</div></div>;
+}
+
 function ManageLoginsPanel({ showToast, currentUserId }) {
   const [username, setUsername] = useState("");
   const [role, setRole] = useState("referee");
@@ -12841,6 +12430,23 @@ function ManageLoginsPanel({ showToast, currentUserId }) {
     loadProfiles();
   }
 
+  async function handleDelete(userId, username) {
+    if (userId === currentUserId) {
+      showToast?.("You can't delete your own account", "err");
+      return;
+    }
+    if (!confirm(`Permanently delete "${username}"? This cannot be undone.`)) return;
+    setSavingId(userId);
+    const result = await deleteAccount(userId);
+    setSavingId(null);
+    if (result.error) {
+      showToast?.(result.error, "err");
+      return;
+    }
+    showToast?.("Account deleted", "ok");
+    loadProfiles();
+  }
+
   return (
     <div className="card" style={{ marginTop: 12 }}>
       <div className="card-header">
@@ -12849,7 +12455,7 @@ function ManageLoginsPanel({ showToast, currentUserId }) {
       <div style={{ padding: 16 }}>
         <div className="xs text-dd" style={{ marginBottom: 14 }}>
           Creates a username + passphrase login. The passphrase is generated
-          automatically (via DinoPass) and shown exactly once below. Write it
+          automatically and shown exactly once below. Write it
           down and hand it to the person now; it cannot be retrieved again after
           you navigate away.
         </div>
@@ -12942,7 +12548,7 @@ function ManageLoginsPanel({ showToast, currentUserId }) {
 
             {profiles && profiles.length > 0 && (
               <>
-                <div className="tbl-wrap">
+                <div className="tbl-wrap acct-table">
                   <table className="tbl">
                     <thead>
                       <tr>
@@ -12999,6 +12605,14 @@ function ManageLoginsPanel({ showToast, currentUserId }) {
                             >
                               {p.active ? "Deactivate" : "Reactivate"}
                             </button>
+                            <button
+                              className="btn btn-sm btn-d"
+                              style={{ marginLeft: 6 }}
+                              disabled={savingId === p.user_id}
+                              onClick={() => handleDelete(p.user_id, p.username)}
+                            >
+                              Delete
+                            </button>
                           </td>
                         </tr>
                       ))}
@@ -13045,6 +12659,13 @@ function ManageLoginsPanel({ showToast, currentUserId }) {
                           }
                         >
                           {p.active ? "Deactivate" : "Reactivate"}
+                        </button>
+                        <button
+                          className="btn btn-sm btn-d"
+                          disabled={savingId === p.user_id}
+                          onClick={() => handleDelete(p.user_id, p.username)}
+                        >
+                          Delete
                         </button>
                       </div>
                       <div className="acct-card-meta">
@@ -13154,8 +12775,9 @@ export default function App() {
   }, []);
 
   const [state, setState] = useState(SEED);
-  const [adminProfile, setAdminProfile] = useState(null); // { user_id, role, call_sign, active } | null
-  const isAdmin = !!adminProfile;
+  const [adminProfile, setAdminProfile] = useState(null); // signed-in account profile
+  const isStaff = ["referee", "gameadmin", "sysadmin"].includes(adminProfile?.role);
+  const isAdmin = isStaff;
   useEffect(() => {
     restoreSession().then((p) => {
       if (p) setAdminProfile(p);
@@ -13173,6 +12795,9 @@ export default function App() {
   const [loadError, setLoadError] = useState(null);
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [showLogin, setShowLogin] = useState(false);
+  const [showAccountAuth, setShowAccountAuth] = useState(false);
+  const [showAccountWorkspace, setShowAccountWorkspace] = useState(false);
+  const [showGameEntry, setShowGameEntry] = useState(false);
   const [toast, setToast] = useState(null);
   const [showAnnouncement, setShowAnnouncement] = useState(false);
   const [selPlayer, setSelPlayer] = useState(null);
@@ -13254,7 +12879,7 @@ export default function App() {
       isRemoteUpdate.current = false;
       return;
     }
-    if (!adminProfile) return;
+    if (!isAdmin) return;
     setSyncStatus("saving");
     const pendingSnapshot = stateRef.current;
     saveState(
@@ -13524,6 +13149,8 @@ export default function App() {
           connected={rtConnected}
           loading={loading}
           onLogin={() => setShowLogin(true)}
+          onAccount={() => adminProfile ? setShowAccountWorkspace(true) : setShowAccountAuth(true)}
+          onLogGame={() => setShowGameEntry(true)}
           onLogout={() => {
             signOutAdmin();
             setAdminProfile(null);
@@ -13554,6 +13181,7 @@ export default function App() {
             </section>
           ) : (
             <>
+              {!adminProfile && <GuestAccountPrompt onOpenAccount={() => setShowAccountAuth(true)} />}
               {(tab === "ranks" || tab === "stats") && (
                 <RanksHeading
                   view={tab}
@@ -13583,6 +13211,7 @@ export default function App() {
                       setProfileSeasonMode("season");
                       setProfileSeasonId(getCurrentSeason(state)?.id || "");
                     }}
+                    activePlayerId={adminProfile?.player_id || state.currentUserPlayerId || (typeof localStorage !== "undefined" ? localStorage.getItem("ft_player_id") : null)}
                   />
                 )}
               </section>
@@ -13665,8 +13294,10 @@ export default function App() {
               </section>
               {visited.has("admin") && (
                 <section hidden={tab !== "admin"} aria-label="Administration">
-                  {!isAdmin ? (
+                  {!adminProfile ? (
                     <AdminLogin onLogin={setAdminProfile} />
+                  ) : !isStaff ? (
+                    <section className="card access-denied" role="status"><div className="card-header"><h1 className="card-title">Staff access required</h1></div><div style={{padding:16}}><p className="text-d sm">Your player account can browse the league and submit games, but it cannot open staff tools.</p><button className="btn btn-g" onClick={() => navTo("ranks")}>Return to standings</button></div></section>
                   ) : (
                     <>
                       <div
@@ -13715,6 +13346,7 @@ export default function App() {
                                   "recovery",
                                   "diagnostics",
                                   "advanced",
+                                  "access",
                                 ].includes(adminTab)
                               }
                             >
@@ -13731,13 +13363,7 @@ export default function App() {
                             {adminTab === "diagnostics" && (
                               <SyncTestPanel {...commonProps} />
                             )}
-                            {adminTab === "accounts" &&
-                              adminProfile.role === "sysadmin" && (
-                                <ManageLoginsPanel
-                                  showToast={showToast}
-                                  currentUserId={adminProfile.user_id}
-                                />
-                              )}
+                            {adminTab === "access" && adminProfile.role === "sysadmin" && <div className="access-control-stack"><ManageLoginsPanel showToast={showToast} currentUserId={adminProfile.user_id} /><ProfileRequestsPanel showToast={showToast} /><ManageRolesPanel showToast={showToast} /><AuditLogPanel showToast={showToast} /></div>}
                           </div>
                         </div>
                       </div>
@@ -13776,6 +13402,21 @@ export default function App() {
                 navTo("admin", "onboard");
               }}
             />
+          </Modal>
+        )}
+        {showAccountAuth && (
+          <Modal onClose={() => setShowAccountAuth(false)}>
+            <AccountAuthModal onClose={() => setShowAccountAuth(false)} onAuthenticated={(profile) => { setAdminProfile(profile); setShowAccountAuth(false); }} showToast={showToast} />
+          </Modal>
+        )}
+        {showAccountWorkspace && adminProfile && (
+          <Modal large onClose={() => setShowAccountWorkspace(false)}>
+            <AccountWorkspace profile={adminProfile} state={state} showToast={showToast} onSignOut={() => { signOutAdmin(); setAdminProfile(null); setShowAccountWorkspace(false); }} />
+          </Modal>
+        )}
+        {showGameEntry && adminProfile && !isStaff && (
+          <Modal large onClose={() => setShowGameEntry(false)}>
+            <AccountWorkspace profile={adminProfile} state={state} showToast={showToast} showSubmit onSignOut={() => { signOutAdmin(); setAdminProfile(null); setShowGameEntry(false); }} />
           </Modal>
         )}
         {currentSelPlayer && !editPlayer && (

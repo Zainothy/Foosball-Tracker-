@@ -10,7 +10,7 @@ export function UiIcon({ name, size = 18, label, ...props }) {
 
 export const destinations = [ ["ranks","Ranks","ranks"], ["history","History","history"], ["play","Champions","trophy"], ["seasons","Seasons","calendar"] ];
 const validViews = new Set(["ranks","stats","history","play","seasons","rules","admin"]);
-const validTasks = new Set(["onboard","logGames","announcements","exports","recovery","accounts","diagnostics","advanced"]);
+const validTasks = new Set(["onboard","logGames","announcements","exports","recovery","access","accounts","roles","diagnostics","advanced"]);
 export function readLocation() {
   const params = new URLSearchParams(window.location.hash.slice(1));
   const view = params.get("view");
@@ -43,11 +43,12 @@ export function useLeagueNavigation() {
   return { ...location, navigate, visited };
 }
 
-export function LeagueHeader({ view, task, navigate, profile, connected, onLogin, onLogout, loading }) {
+export function LeagueHeader({ view, task, navigate, profile, connected, onLogin, onLogout, onAccount, onLogGame, loading }) {
   const [open,setOpen] = useState(false);
   const menuRef = useRef(null);
   const triggerRef = useRef(null);
   const active = view === "stats" ? "ranks" : view;
+  const staff = ["referee", "gameadmin", "sysadmin"].includes(profile?.role);
   useEffect(() => {
     if(!open) return;
     const close = e => { if(!menuRef.current?.contains(e.target) && !triggerRef.current?.contains(e.target)) setOpen(false); };
@@ -67,14 +68,15 @@ export function LeagueHeader({ view, task, navigate, profile, connected, onLogin
         </nav>
         <div className="league-actions">
           <span className={`connection-label ${connected?"connected":""}`} title={connected?"Live connection":"Connection unavailable"}><i />{loading?"Loading":connected?"Live":"Offline"}</span>
-          {profile && <button className="btn btn-g manage-action" onClick={()=>go("admin","onboard")} aria-current={view==="admin"&&task!=="logGames"?"page":undefined}>Manage</button>}
-          {profile && <button className="btn btn-p log-action" onClick={()=>go("admin","logGames")}><UiIcon name="plus" /><span>Log game</span></button>}
+          {staff && <button className="btn btn-g manage-action" onClick={()=>go("admin","onboard")} aria-current={view==="admin"&&task!=="logGames"?"page":undefined}>Manage</button>}
+          {profile && <button className="btn btn-p log-action" onClick={()=>staff ? go("admin","logGames") : onLogGame?.()}><UiIcon name="plus" /><span>Log game</span></button>}
           <button ref={triggerRef} className="icon-button" title="Menu" aria-label="Menu" aria-expanded={open} aria-controls="league-menu" onClick={()=>setOpen(v=>!v)}><UiIcon name={open?"x":"menu"}/></button>
         </div>
         {open && <nav id="league-menu" ref={menuRef} className="league-menu" aria-label="Utilities">
           <button onClick={()=>go("rules")}><UiIcon name="rules"/>Rules</button>
-          {profile && <button onClick={()=>go("admin","onboard")}><UiIcon name="settings"/>Manage</button>}
+          {staff && <button onClick={()=>go("admin","onboard")}><UiIcon name="settings"/>Manage</button>}
           {profile && <span className="menu-identity">{profile.username || profile.call_sign}<small>{profile.role}</small></span>}
+          {onAccount && <button onClick={()=>{setOpen(false);onAccount();}}><UiIcon name="users"/>{profile ? "My account" : "Player account"}</button>}
           <button onClick={()=>{setOpen(false);profile?onLogout():onLogin();}}><UiIcon name={profile?"logout":"login"}/>{profile?"Sign out":"Admin sign in"}</button>
         </nav>}
       </div>
@@ -89,11 +91,11 @@ export function RanksHeading({ view, navigate, seasonLabel }) {
   return <div className="page-heading"><div className="heading-identity"><h1>Ranks</h1><span className="season-context">{seasonLabel || "Current season"}</span></div><nav className="segmented" aria-label="Ranks views"><button aria-current={view==="ranks"?"page":undefined} onClick={()=>navigate("ranks")}>Standings</button><button aria-current={view==="stats"?"page":undefined} onClick={()=>navigate("stats")}>Stats</button></nav></div>;
 }
 
-export const managementTasks = [["onboard","Roster","users"],["announcements","Announcements","announcement"],["exports","Exports","download"],["recovery","Recovery","recovery"],["accounts","Accounts","accounts"],["diagnostics","Diagnostics","activity"]];
+export const managementTasks = [["onboard","Roster","users"],["announcements","Announcements","announcement"],["exports","Exports","download"],["recovery","Recovery","recovery"],["access","Access control","accounts"],["diagnostics","Diagnostics","activity"]];
 export function ManagementNav({ task,navigate,profile,playerCount }) {
   return <nav className="management-nav" aria-label="Management workspace">
     <span className="workspace-label">Workspace</span>
-    {managementTasks.filter(([id])=>id!=="accounts"||profile?.role==="sysadmin").map(([id,label,icon])=><button key={id} aria-current={task===id?"page":undefined} onClick={()=>navigate("admin",id)}><UiIcon name={icon}/>{label}{id === "onboard" && <span className="workspace-count">{playerCount}</span>}</button>)}
+    {managementTasks.filter(([id])=>(id!=="accounts"&&id!=="roles")||profile?.role==="sysadmin").map(([id,label,icon])=><button key={id} aria-current={task===id?"page":undefined} onClick={()=>navigate("admin",id)}><UiIcon name={icon}/>{label}{id === "onboard" && <span className="workspace-count">{playerCount}</span>}</button>)}
     <button className="management-rulebook" onClick={()=>navigate("rules")}><UiIcon name="rules"/>Rulebook</button>
   </nav>;
 }

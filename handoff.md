@@ -1,5 +1,9 @@
 # Implementation handoff
 
+## Current implementation checkpoint (16 September 2026)
+
+The worktree now contains the first implementation slice as well as the planning documents. Preserve all existing edits. The account list has separate desktop and mobile representations, shared Markdown and scroll-lock modules are tested, and the scoring engine is extracted with regression fixtures. Profile modals now support nickname, avatar URL, and curated accent colours with clearer competitive-preference wording. The admin diagnostics panel exposes filtered audit activity and recovery-point links. `src/authz.js` is a valid pure capability evaluator, and migrations `0005_dynamic_authorization.sql` and `0008_authz_role_commands.sql` add capability, role hierarchy, exception, seed, RLS, and role-save command foundations. The admin UI now distinguishes ordinary player accounts from staff: player sessions cannot access the admin dashboard, while the consolidated Access control workspace contains Accounts and Roles & permissions. Authoritative command coverage for all state mutations remains Phase 3/4 work. `npm run build` and `node --test tests/*.test.mjs` pass (12 tests). The older `authz_init` draft migration should be reviewed before applying; use the numbered migrations as the current backend starting point.
+
 Prepared 15 September 2026 for the next agent. The user requested technical planning, PKM synchronization, and a handoff so implementation can continue. This session changed documentation only. Start with the first actionable phase rather than reopening settled product questions.
 
 ## Start here
