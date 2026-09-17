@@ -31,9 +31,11 @@ import {
   createAccount,
   listProfiles,
   updateProfile,
+  deleteAccount,
   listAuthorizationModel,
   assignAuthzRole,
   revokeAuthzRole,
+  listAuditLog,
   saveAuthorizationRole,
   listProfileRequests,
   reviewProfileRequest,
@@ -11506,7 +11508,7 @@ function AdvancedPanel({
   const loadAudit = useCallback(async () => {
     const { data } = await supabase
       .from("audit_log")
-      .select("id,action,actor_username,target_type,target_id,metadata,created_at")
+      .select("id,action,actor_call_sign,target_type,target_id,details,created_at")
       .order("created_at", { ascending: false })
       .limit(100);
     setAuditRows(data || []);
@@ -11999,12 +12001,12 @@ function AdvancedPanel({
           </div>
           <div className="audit-list" style={{ padding: "0 14px 14px", display: "grid", gap: 6 }}>
             {auditRows.filter((row) => auditFilter === "all" || row.action === auditFilter).map((row) => {
-              const recoveryId = row.metadata?.recovery_id || row.metadata?.backup_id;
+              const recoveryId = row.details?.recovery_id || row.details?.backup_id;
               const backup = recoveryId ? history.find((entry) => String(entry.id) === String(recoveryId)) : null;
               return <div className="audit-row" key={row.id} style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 10, alignItems: "center", padding: "10px 12px", border: "1px solid var(--b1)", borderRadius: 8 }}>
                 <div>
                   <strong>{row.action || "League change"}</strong>
-                  <div className="xs text-dd">{row.actor_username || "System"}{row.target_id ? ` · ${row.target_type || "record"} ${row.target_id}` : ""} · {row.created_at ? new Date(row.created_at).toLocaleString("en-GB") : "—"}</div>
+                  <div className="xs text-dd">{row.actor_call_sign || "System"}{row.target_id ? ` · ${row.target_type || "record"} ${row.target_id}` : ""} · {row.created_at ? new Date(row.created_at).toLocaleString("en-GB") : "—"}</div>
                 </div>
                 {backup ? <button className="btn btn-g btn-sm" onClick={() => setSelected(backup)}>View recovery</button> : <span className="xs text-dd">{recoveryId ? "Recovery unavailable" : "No recovery point"}</span>}
               </div>;
@@ -12263,6 +12265,89 @@ function ManageRolesPanel({ showToast }) {
   </div>;
 }
 
+const AUDIT_ACTION_LABELS = {
+  create_account: "Account created",
+  admin_update_profile: "Account updated",
+  admin_delete_profile: "Account deleted",
+  assign_authz_role: "Role assigned",
+  revoke_authz_role: "Role revoked",
+  set_authz_exception: "Exception set",
+  admin_save_authz_role: "Role definition saved",
+  review_profile_request: "Request reviewed",
+  update_state: "League state updated",
+  restore_state: "State restored",
+  hard_reset: "Leaderboard reset",
+};
+
+function AuditLogPanel({ showToast }) {
+  const [rows, setRows] = useState(null);
+  const [error, setError] = useState("");
+  const [actionFilter, setActionFilter] = useState("");
+  const [targetFilter, setTargetFilter] = useState("");
+  const [actorFilter, setActorFilter] = useState("");
+  const [since, setSince] = useState("");
+  const [expandedId, setExpandedId] = useState(null);
+
+  async function load() {
+    setError("");
+    const result = await listAuditLog({
+      action: actionFilter || undefined,
+      targetType: targetFilter || undefined,
+      actorCallSign: actorFilter || undefined,
+      since: since ? new Date(since).toISOString() : undefined,
+    });
+    if (result.error) { setError(result.error); setRows([]); return; }
+    setRows(result.rows);
+  }
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const actionOptions = useMemo(() => Object.keys(AUDIT_ACTION_LABELS), []);
+  const targetOptions = useMemo(() => [...new Set((rows || []).map((r) => r.target_type).filter(Boolean))], [rows]);
+
+  return (
+    <div className="card audit-panel">
+      <div className="card-header">
+        <span className="card-title">Audit log</span>
+        <p className="xs text-dd">Every attributable admin/league change, newest first.</p>
+      </div>
+      <div className="audit-filters">
+        <select className="inp inp-sm" value={actionFilter} onChange={(e) => setActionFilter(e.target.value)}>
+          <option value="">All actions</option>
+          {actionOptions.map((a) => <option key={a} value={a}>{AUDIT_ACTION_LABELS[a] || a}</option>)}
+        </select>
+        <select className="inp inp-sm" value={targetFilter} onChange={(e) => setTargetFilter(e.target.value)}>
+          <option value="">All targets</option>
+          {targetOptions.map((t) => <option key={t} value={t}>{t}</option>)}
+        </select>
+        <input className="inp inp-sm" placeholder="Actor…" value={actorFilter} onChange={(e) => setActorFilter(e.target.value)} />
+        <input className="inp inp-sm" type="date" value={since} onChange={(e) => setSince(e.target.value)} />
+        <button className="btn btn-g btn-sm" onClick={load}>Apply</button>
+      </div>
+      {error && <div className="msg msg-e" style={{ margin: "0 20px 16px" }}>{error}</div>}
+      <div className="audit-rows">
+        {rows === null && <div className="xs text-dd audit-empty">Loading…</div>}
+        {rows && rows.length === 0 && !error && <div className="xs text-dd audit-empty">No matching events.</div>}
+        {(rows || []).map((row) => (
+          <div key={row.id} className="audit-entry">
+            <button className="audit-entry-summary" onClick={() => setExpandedId(expandedId === row.id ? null : row.id)} aria-expanded={expandedId === row.id}>
+              <span className="audit-actor">{row.actor_call_sign || "System"}</span>
+              <span className="audit-action-badge">{AUDIT_ACTION_LABELS[row.action] || row.action}</span>
+              <span className="audit-target">{row.target_id ? `${row.target_type || "record"} · ${row.target_id}` : "—"}</span>
+              <span className="xs text-dd audit-time">{row.created_at ? new Date(row.created_at).toLocaleString("en-GB") : "—"}</span>
+            </button>
+            {expandedId === row.id && (
+              <div className="audit-entry-detail">
+                <div className="xs text-dd">Actor role: {row.actor_role || "—"}</div>
+                <pre className="audit-details-json">{row.details ? JSON.stringify(row.details, null, 2) : "No additional details recorded."}</pre>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ProfileRequestsPanel({ showToast }) {
   const [requests, setRequests] = useState(null);
   const [busy, setBusy] = useState(null);
@@ -12345,6 +12430,23 @@ function ManageLoginsPanel({ showToast, currentUserId }) {
     loadProfiles();
   }
 
+  async function handleDelete(userId, username) {
+    if (userId === currentUserId) {
+      showToast?.("You can't delete your own account", "err");
+      return;
+    }
+    if (!confirm(`Permanently delete "${username}"? This cannot be undone.`)) return;
+    setSavingId(userId);
+    const result = await deleteAccount(userId);
+    setSavingId(null);
+    if (result.error) {
+      showToast?.(result.error, "err");
+      return;
+    }
+    showToast?.("Account deleted", "ok");
+    loadProfiles();
+  }
+
   return (
     <div className="card" style={{ marginTop: 12 }}>
       <div className="card-header">
@@ -12353,7 +12455,7 @@ function ManageLoginsPanel({ showToast, currentUserId }) {
       <div style={{ padding: 16 }}>
         <div className="xs text-dd" style={{ marginBottom: 14 }}>
           Creates a username + passphrase login. The passphrase is generated
-          automatically (via DinoPass) and shown exactly once below. Write it
+          automatically and shown exactly once below. Write it
           down and hand it to the person now; it cannot be retrieved again after
           you navigate away.
         </div>
@@ -12503,6 +12605,14 @@ function ManageLoginsPanel({ showToast, currentUserId }) {
                             >
                               {p.active ? "Deactivate" : "Reactivate"}
                             </button>
+                            <button
+                              className="btn btn-sm btn-d"
+                              style={{ marginLeft: 6 }}
+                              disabled={savingId === p.user_id}
+                              onClick={() => handleDelete(p.user_id, p.username)}
+                            >
+                              Delete
+                            </button>
                           </td>
                         </tr>
                       ))}
@@ -12549,6 +12659,13 @@ function ManageLoginsPanel({ showToast, currentUserId }) {
                           }
                         >
                           {p.active ? "Deactivate" : "Reactivate"}
+                        </button>
+                        <button
+                          className="btn btn-sm btn-d"
+                          disabled={savingId === p.user_id}
+                          onClick={() => handleDelete(p.user_id, p.username)}
+                        >
+                          Delete
                         </button>
                       </div>
                       <div className="acct-card-meta">
@@ -13246,7 +13363,7 @@ export default function App() {
                             {adminTab === "diagnostics" && (
                               <SyncTestPanel {...commonProps} />
                             )}
-                            {adminTab === "access" && adminProfile.role === "sysadmin" && <div className="access-control-stack"><ManageLoginsPanel showToast={showToast} currentUserId={adminProfile.user_id} /><ProfileRequestsPanel showToast={showToast} /><ManageRolesPanel showToast={showToast} /></div>}
+                            {adminTab === "access" && adminProfile.role === "sysadmin" && <div className="access-control-stack"><ManageLoginsPanel showToast={showToast} currentUserId={adminProfile.user_id} /><ProfileRequestsPanel showToast={showToast} /><ManageRolesPanel showToast={showToast} /><AuditLogPanel showToast={showToast} /></div>}
                           </div>
                         </div>
                       </div>
