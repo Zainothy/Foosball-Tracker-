@@ -66,7 +66,7 @@ async function fetchActiveProfile() {
   if (!userData?.user) return null;
   let { data, error } = await supabase
     .from("profiles")
-    .select("user_id, username, role, call_sign, player_id, active")
+    .select("user_id, username, role, call_sign, player_id, active, display_nickname, accent")
     .eq("user_id", userData.user.id).maybeSingle();
   if (error) {
     // Older deployments may not have the player_id column yet. Keep login
@@ -181,6 +181,25 @@ export async function setAuthzException(userId, capabilityId, effect) {
   return error ? { error: error.message } : { ok: true };
 }
 
+export const PROFILE_ACCENTS = ["amber", "mint", "coral", "violet", "sky", "gold"];
+export async function setProfileCustomization(nickname, accent) {
+  const { data, error } = await supabase.rpc("set_own_profile_customization", { p_nickname: nickname || null, p_accent: accent || null });
+  return error ? { error: error.message } : { profile: data };
+}
+
+// Discord-style audit explorer. Filters are applied server-side so the
+// 200-row cap doesn't silently hide older matches.
+export async function listAuditLog({ action, targetType, actorCallSign, since, until } = {}) {
+  let query = supabase.from("audit_log").select("id, actor_call_sign, actor_role, action, target_type, target_id, details, created_at").order("created_at", { ascending: false }).limit(200);
+  if (action) query = query.eq("action", action);
+  if (targetType) query = query.eq("target_type", targetType);
+  if (actorCallSign) query = query.ilike("actor_call_sign", `%${actorCallSign}%`);
+  if (since) query = query.gte("created_at", since);
+  if (until) query = query.lte("created_at", until);
+  const { data, error } = await query;
+  return error ? { error: error.message } : { rows: data || [] };
+}
+
 // These calls intentionally use audited SECURITY DEFINER commands. Direct
 // browser writes to authorization tables stay disabled by RLS.
 export async function saveAuthorizationRole(role, capabilityIds) {
@@ -219,6 +238,24 @@ export async function createAccount(username, role) {
     callSign: body.call_sign,
     role: body.role,
   };
+}
+
+export async function deleteAccount(userId) {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const token = sessionData?.session?.access_token;
+  if (!token) return { error: "Not authenticated" };
+
+  const res = await fetch(
+    `${supabase.supabaseUrl}/functions/v1/delete-account`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: userId }),
+    },
+  );
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) return { error: body.error || "Account deletion failed" };
+  return { ok: true };
 }
 
 export async function registerAccount(username, password) {
