@@ -179,6 +179,7 @@ export async function revokeAuthzRole(userId, roleId) {
 export async function setAuthzException(userId, capabilityId, effect) {
   const { error } = await supabase.rpc("admin_set_authz_exception", { p_user_id: userId, p_capability_id: capabilityId, p_effect: effect });
   return error ? { error: error.message } : { ok: true };
+<<<<<<< HEAD
 }
 
 export const PROFILE_ACCENTS = ["amber", "mint", "coral", "violet", "sky", "gold"];
@@ -198,6 +199,8 @@ export async function listAuditLog({ action, targetType, actorCallSign, since, u
   if (until) query = query.lte("created_at", until);
   const { data, error } = await query;
   return error ? { error: error.message } : { rows: data || [] };
+=======
+>>>>>>> origin/codex/phase3-authz-impl
 }
 
 // These calls intentionally use audited SECURITY DEFINER commands. Direct
