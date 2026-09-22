@@ -1,4 +1,6 @@
 :root{--dim:#a0b7a9;--dimmer:#8aa595;--silver:#c0c8c4;--copper:#c8864a;--radius-control:8px;--radius-record:12px}
+.audit-row{min-width:0}.audit-row strong{overflow-wrap:anywhere}
+@media(max-width:800px){.audit-row{grid-template-columns:minmax(0,1fr)!important}.audit-row .btn{width:100%}}
 *,*::before,*::after{letter-spacing:0!important}
 [hidden]{display:none!important}
 button,input,select,textarea{font:inherit}button{touch-action:manipulation}button:focus-visible,a:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--gold);outline-offset:3px}
@@ -20,3 +22,15 @@ button,input,select,textarea{font:inherit}button{touch-action:manipulation}butto
 @media(max-width:800px){.stats-picker{display:none!important}.stats-mobile-controls{display:grid;grid-template-columns:1fr;gap:12px}.stats-mobile-controls .lbl{margin:0}.stats-mobile-controls .inp{margin-top:6px}.stats-mobile-controls .segmented{justify-self:start}.stats-columns{display:block!important}.stats-columns>.card-header{display:none}.stats-overview .grid-2{grid-template-columns:repeat(2,minmax(0,1fr))!important}.stats-overview .stat-val{font-size:20px}.log-view>.stack,.log-view>div>.stack{gap:16px}.log-view .stack>.card{border:0;background:transparent;overflow:visible}.log-view .stack>.card>.card-header{padding-inline:0}.log-view .stack>.card>div:last-child{padding:0!important}.log-game-entry{padding:12px!important}.log-picker-grid{grid-template-columns:minmax(0,1fr)!important;gap:20px!important}.log-team-a{order:1}.log-team-b{order:2}.log-score-entry{order:3;display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px!important;padding-top:0!important}.log-score-entry>div:nth-child(n+3){grid-column:1/-1}.log-score-entry .lbl{font-size:12px!important;line-height:1.5!important;min-height:38px!important}.log-team-a>div:last-child,.log-team-b>div:last-child{max-height:176px!important}.championship-countdown{grid-template-columns:1fr;gap:8px}.championship-countdown .event-countdown{grid-column:1;grid-row:auto;order:3}.championship-countdown .finals-heading{font-size:24px}.championship-countdown>.finals-date{margin-bottom:0}.ranks-view .league-summary .btn{font-size:12px;min-height:36px}.stats-view .card>div{padding-inline:0!important}.stats-view .stat-box{padding:10px!important}}
 .race-gap{font-size:12px;color:var(--dim);margin-top:6px}.race-spread{padding:8px 20px 20px}.race-spread>div:first-child{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;color:var(--dim);font-size:12px;margin-bottom:10px}.race-track{position:relative;height:6px;border-radius:6px;background:var(--s3);margin:0 3px}.race-track i{position:absolute;top:-2px;width:4px;height:10px;border-radius:2px;transform:translateX(-50%)}.championship-race .card-title{display:flex;align-items:center;gap:8px}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+.account-prompt{display:flex;align-items:center;justify-content:space-between;gap:18px;margin:0 0 24px;padding:14px 16px;border:1px solid var(--b1);border-left:3px solid var(--amber);background:var(--surface-frame);border-radius:10px}
+.account-auth .card-header{margin:0 0 18px;padding:0;background:transparent;border:0}
+.account-auth form{padding:0!important}
+.account-workspace>.page-heading{position:relative;padding-right:52px;align-items:center}
+.account-workspace>.page-heading .btn{flex:0 0 auto}
+.account-claim>div:last-child{display:flex;flex-direction:column;gap:12px}
+.account-prompt strong{font:600 16px var(--disp);color:var(--text)}
+.account-prompt p{margin:4px 0 0;line-height:1.4}
+.account-prompt .fac{flex:0 0 auto}
+@media(max-width:800px){.account-workspace>.page-heading{padding-right:52px;align-items:flex-start}.account-workspace>.page-heading .btn{min-height:40px}.account-prompt{align-items:flex-start;flex-direction:column;gap:12px;margin-bottom:18px;padding:14px}.account-prompt .fac{width:100%;display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.account-prompt .fac .btn:last-child{grid-column:1/-1}.account-prompt .btn{width:100%;min-height:40px}}
+.audit-row{min-width:0}.audit-row strong{overflow-wrap:anywhere}
+@media(max-width:800px){.audit-row{grid-template-columns:minmax(0,1fr)!important}.audit-row .btn{width:100%}}

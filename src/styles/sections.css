@@ -67,6 +67,13 @@
  .management-nav button{min-height:44px}
 }
 
+/* Access control is intentionally compact on phones: the role catalogue and
+   account tools remain separate surfaces so destructive actions stay easy to
+   review. */
+.access-control-stack{display:grid;gap:20px}.roles-panel{margin-top:0}.roles-panel .card-header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:18px 20px}.roles-panel .card-header p{margin:6px 0 0;max-width:62ch;line-height:1.5}.roles-workspace{display:grid;grid-template-columns:minmax(190px,.55fr) minmax(0,1.45fr);gap:24px;padding:0 20px 20px}.roles-list{display:grid;align-content:start;gap:8px}.role-choice{display:flex;flex-direction:column;align-items:flex-start;gap:4px;border:1px solid transparent;border-radius:9px;background:transparent;color:var(--dim);padding:12px 14px;text-align:left;cursor:pointer;min-height:64px}.role-choice:hover,.role-choice[aria-current=true]{background:var(--surface-frame);border-color:var(--b2);color:var(--text)}.role-choice small{font-size:11px;color:var(--dimmer)}.role-editor{min-width:0;border-left:1px solid var(--b1);padding-left:24px}.role-editor-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}.role-editor-head h3{font:600 18px var(--disp);margin:0}.role-editor-head p{margin:5px 0 0;line-height:1.5}.role-fields{display:grid;grid-template-columns:minmax(0,1fr) 150px;gap:16px;margin-top:20px}.capability-groups{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-top:22px}.capability-group{border:1px solid var(--b1);border-radius:10px;padding:14px;background:var(--surface-frame)}.capability-group legend{padding:0 6px;color:var(--dim);font-size:11px;text-transform:uppercase}.capability-toggle{display:flex;gap:11px;align-items:flex-start;padding:11px 8px;border-radius:7px;color:var(--text);cursor:pointer}.capability-toggle:hover{background:rgba(255,255,255,.035)}.capability-toggle input{accent-color:var(--amber);margin-top:3px;width:16px;height:16px;flex:none}.capability-toggle span{display:grid;gap:4px;min-width:0}.capability-toggle strong{font-size:13px}.capability-toggle small{font-size:11px;line-height:1.45;color:var(--dimmer)}.role-members{margin-top:22px;border-top:1px solid var(--b1);padding-top:16px}.role-members .card-header{padding:0 0 12px}.role-members .fac{gap:12px!important}.role-members .inp{min-width:0}.role-error{margin:0 20px 16px;display:flex;justify-content:space-between;align-items:center;gap:12px}.roles-loading{padding:0 20px 20px}
+[data-active-player=true]{background:rgba(232,184,74,.08)!important;box-shadow:inset 3px 0 var(--gold)}
+@media(max-width:800px){.access-control-stack{gap:16px}.roles-workspace{grid-template-columns:1fr;padding:0 14px 16px;gap:16px}.roles-list{display:flex;overflow-x:auto;gap:8px;padding:0 0 8px;scroll-snap-type:x proximity}.role-choice{min-width:142px;min-height:68px;scroll-snap-align:start}.role-editor{border-left:0;border-top:1px solid var(--b1);padding:18px 0 0}.role-editor-head{align-items:stretch;flex-direction:column;gap:14px}.role-editor-head .btn{width:100%;min-height:44px}.role-fields{grid-template-columns:1fr;gap:14px;margin-top:18px}.capability-groups{grid-template-columns:1fr;gap:14px;margin-top:18px}.capability-group{padding:12px}.capability-toggle{padding:12px 8px;min-height:52px}.role-members{margin-top:18px}.role-members .fac{align-items:stretch;flex-direction:column}.role-members .btn,.role-members .inp{width:100%;min-height:44px}.roles-panel .card-header{padding:16px 14px}.role-error{margin:0 14px 14px;align-items:stretch;flex-direction:column}.role-error .btn{width:100%}.access-control-stack .card{border-radius:10px}}
+
 /* Detail dialogs: one reading surface, bounded scrolling, persistent close. */
 .modal{color:var(--text);background:var(--surface-content);box-shadow:0 24px 80px #0009;padding:24px;scrollbar-gutter:stable}
 .modal-close{position:sticky;top:0;float:right;margin:-8px -8px 8px 12px;background:var(--surface-frame);z-index:3}
@@ -77,6 +84,7 @@
 .player-profile .prof-name{font:700 28px var(--disp)}.player-profile .prof-sub{font-size:13px;color:var(--dim);margin-top:6px}
 .player-profile .prof-head select{width:auto;max-width:240px}.profile-insights{border:0!important;border-bottom:1px solid var(--b1)!important;background:transparent!important;border-radius:0!important;padding:0 0 16px!important}.profile-insights>summary{cursor:pointer;font-size:14px;color:var(--dim);padding:12px 0}.profile-insights>.grid-2{padding-top:12px}
 .player-profile .prof-av{border:1px solid var(--b2);background:var(--surface-frame);width:56px;height:56px;font:600 24px var(--disp);flex-shrink:0;border-radius:12px}
+.accent-swatch{width:28px;height:28px;border-radius:50%;border:1px solid var(--b2);cursor:pointer;padding:0;box-shadow:inset 0 0 0 3px var(--surface)}.accent-swatch.selected{outline:2px solid var(--text);outline-offset:2px}
 .player-profile .championship-banner{order:-2;background:transparent!important;border:0!important;border-bottom:1px solid var(--b1)!important;border-radius:0;padding:12px 0;margin:0 0 16px!important;box-shadow:none}
 .player-profile .championship-banner button{display:none}.player-profile .championship-banner svg{width:20px;height:20px}
 .player-profile>.grid-3{grid-template-columns:repeat(3,minmax(0,1fr));gap:24px;margin-bottom:20px}
@@ -130,3 +138,34 @@
   .factor-record>div>div>span:nth-child(2):not(:last-child){grid-column:1/-1;grid-row:2}.match-scoreboard button.role-tag{min-height:44px;min-width:44px}.match-scoreboard .fac{flex-wrap:wrap}
   .player-profile>.btn:last-child{margin-bottom:env(safe-area-inset-bottom)}.match-detail{padding-bottom:calc(24px + env(safe-area-inset-bottom))!important}
 }
+
+/* ── AUDIT LOG PANEL ──────────────────────────────────────────────────── */
+.mt8{margin-top:8px}.mt16{margin-top:16px}
+.audit-panel{margin-top:0}
+.audit-filters{display:flex;flex-wrap:wrap;gap:8px;padding:0 20px 16px}
+.audit-filters .inp{min-width:0;flex:1 1 140px}
+.audit-rows{display:grid;gap:8px;padding:0 20px 20px}
+.audit-empty{padding:0 0 4px}
+.audit-entry{border:1px solid var(--b1);border-radius:9px;background:var(--surface-frame);overflow:hidden}
+.audit-entry-summary{display:grid;grid-template-columns:minmax(0,.9fr) minmax(0,1.1fr) minmax(0,1.1fr) auto;gap:10px;align-items:center;width:100%;padding:11px 14px;text-align:left;color:var(--text);background:transparent;border:0;cursor:pointer;font:inherit}
+.audit-entry-summary:hover{background:rgba(255,255,255,.035)}
+.audit-actor{font-weight:600;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.audit-action-badge{display:inline-flex;align-self:start;font-size:11px;padding:3px 8px;border-radius:6px;background:var(--amber-g);color:var(--amber);white-space:normal}
+.audit-target{font-size:12px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.audit-time{white-space:nowrap}
+.audit-entry-detail{padding:0 14px 14px;border-top:1px solid var(--b1)}
+.audit-details-json{font-size:11px;line-height:1.5;color:var(--dim);white-space:pre-wrap;word-break:break-word;margin:10px 0 0;max-height:260px;overflow:auto}
+@media(max-width:800px){
+  .audit-filters{padding:0 14px 14px}
+  .audit-rows{padding:0 14px 16px}
+  .audit-entry-summary{grid-template-columns:1fr;gap:4px;padding:12px}
+  .audit-action-badge{justify-self:start}
+}
+
+/* ── PROFILE CUSTOMIZATION ────────────────────────────────────────────── */
+.profile-preview{display:flex;align-items:center;gap:12px;padding:12px;border:1px solid var(--b1);border-radius:10px;background:var(--surface-frame)}
+.profile-preview-avatar{display:flex;align-items:center;justify-content:center;width:40px;height:40px;flex:none;border-radius:50%;font:700 16px var(--disp);color:#092313}
+.profile-preview-name{font-weight:600;font-size:14px}
+.accent-swatches{display:flex;gap:10px;margin-top:8px}
+.accent-swatch{width:30px;height:30px;border-radius:50%;border:2px solid transparent;cursor:pointer;padding:0}
+.accent-swatch[aria-pressed=true]{border-color:var(--text);box-shadow:0 0 0 2px var(--s1)}
