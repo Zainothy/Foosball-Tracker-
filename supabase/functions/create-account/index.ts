@@ -137,13 +137,20 @@ Deno.serve(async (req) => {
       });
     }
 
-    const { error: insertErr } = await admin.from("profiles").insert({
+    // The live database already has a self-registration signup trigger
+    // (from the account-expansion work, applied directly -- this repo's
+    // main-branch migration folder doesn't describe it yet). It fires on
+    // every auth.users insert, including this one, and creates a baseline
+    // profiles row before this line runs. A plain insert here collided with
+    // it on the profiles_pkey (user_id) every single time. Upsert instead,
+    // so the staff-specified role/username overwrite that baseline.
+    const { error: insertErr } = await admin.from("profiles").upsert({
       user_id: newUser.user.id,
       username,
       role,
       call_sign: username,
       created_by: user.id,
-    });
+    }, { onConflict: "user_id" });
     if (insertErr) {
       // Roll back the auth user so we don't leave an orphaned account with no profile.
       await admin.auth.admin.deleteUser(newUser.user.id);
