@@ -1,4 +1,4 @@
-# St. Marylebone Table Tracker
+# Table Tracker
 
 A foosball league app with player rankings, match history, statistics, championship brackets, season archives, and staff management tools. Built with React 18 and Vite 6, with Supabase for shared data and staff sign-in.
 
